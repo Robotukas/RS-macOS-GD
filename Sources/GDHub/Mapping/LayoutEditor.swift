@@ -4,7 +4,30 @@ import SwiftUI
 /// align actions the toolbar can trigger. Each view's callout layer registers an aligner for itself.
 @MainActor
 final class LayoutEditor: ObservableObject {
-    enum AlignAction { case leftEdges, rightEdges, sameRow, distributeVertically }
+    enum AlignAction: CaseIterable {
+        case leftEdges, rightEdges, centersHorizontal, topEdges, bottomEdges, sameRow, distributeVertically, distributeHorizontally
+
+        var title: String {
+            switch self {
+            case .leftEdges: return "Left edges"
+            case .rightEdges: return "Right edges"
+            case .centersHorizontal: return "Centres (vertical line)"
+            case .topEdges: return "Top edges"
+            case .bottomEdges: return "Bottom edges"
+            case .sameRow: return "Centres (same row)"
+            case .distributeVertically: return "Distribute vertically"
+            case .distributeHorizontally: return "Distribute horizontally"
+            }
+        }
+
+        /// Minimum number of selected labels the action makes sense for.
+        var minimumSelection: Int {
+            switch self {
+            case .distributeVertically, .distributeHorizontally: return 3
+            default: return 2
+            }
+        }
+    }
 
     @Published var isEditing = false
     @Published var selection: Set<String> = []
@@ -34,6 +57,12 @@ final class LayoutEditor: ObservableObject {
 
     func perform(_ action: AlignAction) {
         for aligner in aligners.values { aligner(action) }
+    }
+
+    /// Align the selection, making sure the label the user right-clicked is part of it.
+    func perform(_ action: AlignAction, including id: String) {
+        selection.insert(id)
+        perform(action)
     }
 }
 

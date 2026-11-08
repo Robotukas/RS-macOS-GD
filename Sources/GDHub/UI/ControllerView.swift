@@ -483,6 +483,32 @@ private struct CalloutLayer: View {
         case .sameRow:
             let y = ids.map { placed[$0]!.anchor.y }.reduce(0, +) / CGFloat(ids.count)
             for id in ids { setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: y), kind: placed[id]!.kind) }
+        case .centersHorizontal:
+            // Same centre x: store every label by its centre so the line holds at any zoom.
+            let x = ids.map { pillRect($0, placed[$0]!).midX }.reduce(0, +) / CGFloat(ids.count)
+            for id in ids { setLabel(id, anchor: CGPoint(x: x, y: placed[id]!.anchor.y), kind: .center) }
+        case .topEdges:
+            let top = ids.map { pillRect($0, placed[$0]!).minY }.min()!
+            for id in ids {
+                let h = pillRect(id, placed[id]!).height
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + h / 2), kind: placed[id]!.kind)
+            }
+        case .bottomEdges:
+            let bottom = ids.map { pillRect($0, placed[$0]!).maxY }.max()!
+            for id in ids {
+                let h = pillRect(id, placed[id]!).height
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: bottom - h / 2), kind: placed[id]!.kind)
+            }
+        case .distributeHorizontally:
+            let sorted = ids.sorted { pillRect($0, placed[$0]!).midX < pillRect($1, placed[$1]!).midX }
+            guard sorted.count > 2 else { return }
+            let first = pillRect(sorted.first!, placed[sorted.first!]!).midX
+            let last = pillRect(sorted.last!, placed[sorted.last!]!).midX
+            let step = (last - first) / CGFloat(sorted.count - 1)
+            for (i, id) in sorted.enumerated() {
+                let shift = (first + step * CGFloat(i)) - pillRect(id, placed[id]!).midX
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x + shift, y: placed[id]!.anchor.y), kind: placed[id]!.kind)
+            }
         case .distributeVertically:
             let sorted = ids.sorted { placed[$0]!.anchor.y < placed[$1]!.anchor.y }
             guard let top = placed[sorted.first!]?.anchor.y, let bottom = placed[sorted.last!]?.anchor.y, sorted.count > 2 else { return }
@@ -739,6 +765,12 @@ private struct CalloutLayer: View {
             }
             .contextMenu {
                 if editor.isEditing {
+                    Menu("Align") {
+                        ForEach(LayoutEditor.AlignAction.allCases, id: \.self) { action in
+                            Button(action.title) { editor.perform(action, including: c.id) }
+                                .disabled(editor.selection.union([c.id]).count < action.minimumSelection)
+                        }
+                    }
                     Menu("Leader") {
                         Button("Straight") { device.setLeaderPreset(nil, for: [c.id]) }
                         Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: [c.id]) }
@@ -876,14 +908,14 @@ private struct LayoutToolbar: View {
                 Button("Done (lock layout)") { device.lockLayout() }.buttonStyle(.borderedProminent)
                 Button("Cancel") { device.cancelEditingLayout() }
                 Divider().frame(height: 16)
-                Group {
-                    Button("Align left") { editor.perform(.leftEdges) }
-                    Button("Align right") { editor.perform(.rightEdges) }
-                    Button("Same row") { editor.perform(.sameRow) }
+                Menu("Align") {
+                    ForEach(LayoutEditor.AlignAction.allCases, id: \.self) { action in
+                        Button(action.title) { editor.perform(action) }
+                            .disabled(editor.selection.count < action.minimumSelection)
+                    }
                 }
+                .fixedSize()
                 .disabled(editor.selection.count < 2)
-                Button("Distribute") { editor.perform(.distributeVertically) }
-                    .disabled(editor.selection.count < 3)
                 Menu("Leader") {
                     Button("Straight") { device.setLeaderPreset(nil, for: editor.selection) }
                     Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: editor.selection) }
