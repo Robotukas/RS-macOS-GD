@@ -36,8 +36,22 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     private let asleepAfter: TimeInterval = 2
     private let maxLogEntries = 500
 
-    @Published var layout: ControlLayout?
+    /// While editing, every change is written to the user layout file shortly after it happens, so a
+    /// crash or relaunch never loses work; Done only locks, Cancel restores the snapshot taken at start.
+    @Published var layout: ControlLayout? {
+        didSet { if editor.isEditing { scheduleLayoutAutosave() } }
+    }
     let editor = LayoutEditor()
+    private var autosaveWork: DispatchWorkItem?
+
+    private func scheduleLayoutAutosave() {
+        autosaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.layout?.saveAsUserLayout() }
+        }
+        autosaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
 
     @Published private(set) var frame = GamepadFrame()
     @Published private(set) var status: Status = .disconnected
@@ -161,8 +175,9 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
 
     /// Leave edit mode and throw away everything changed since it was entered.
     func cancelEditingLayout() {
-        if let l = layoutBeforeEdit { layout = l }
         editor.isEditing = false
+        autosaveWork?.cancel()
+        if let l = layoutBeforeEdit { layout = l; l.saveAsUserLayout() }
         editor.selection = []
         editor.zoom = 1
         log("layout edits discarded")
@@ -171,6 +186,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     /// Lock the layout: leave edit mode and persist it.
     func lockLayout() {
         editor.isEditing = false
+        autosaveWork?.cancel()
         editor.selection = []
         editor.zoom = 1
         layout?.saveAsUserLayout()
