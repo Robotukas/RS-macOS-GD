@@ -27,7 +27,7 @@ struct ControllerView: View {
                     let views: [ControlLayout.Side] = [.sideLeft, .front, .back, .sideRight]
                     let spacing: CGFloat = 16
                     let titleHeight: CGFloat = 18
-                    let totalWidth = views.reduce(0) { $0 + layout.images.info(for: $1).width }
+                    let totalWidth = views.reduce(0) { $0 + layout.framedWidth(for: $1) }
                     let maxHeight = views.map { layout.images.info(for: $0).height }.max() ?? 1
                     let availWidth = max(geo.size.width - spacing * CGFloat(views.count - 1), 1)
                     let availHeight = max(geo.size.height - titleHeight, 1)
@@ -36,7 +36,7 @@ struct ControllerView: View {
                         ForEach(views, id: \.self) { side in
                             let info = layout.images.info(for: side)
                             ControllerSideView(device: device, layout: layout, side: side)
-                                .frame(width: info.width * scale, height: info.height * scale + titleHeight)
+                                .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -73,17 +73,23 @@ private struct ControllerSideView: View {
             .filter { $0.view == side }
             .sorted { layout.radius(of: $0) > layout.radius(of: $1) }
         let learningId = device.learn?.currentControl?.id
+        let gutters = layout.gutters(for: side)
+        let framedFraction = 1 + gutters.left + gutters.right
         VStack(spacing: 4) {
             Text(side.title).font(.caption).foregroundStyle(.secondary)
-            ZStack {
-                if let img = ControllerImages.image(file: info.file) {
-                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
-                } else {
-                    Rectangle().fill(.quaternary)
-                }
-                GeometryReader { geo in
+            GeometryReader { geo in
+                let imgW = geo.size.width / framedFraction
+                let imgH = imgW / info.aspectRatio
+                let originX = gutters.left * imgW
+                let imgSize = CGSize(width: imgW, height: imgH)
+                ZStack(alignment: .topLeading) {
+                    if let img = ControllerImages.image(file: info.file) {
+                        Image(nsImage: img).resizable().frame(width: imgW, height: imgH).offset(x: originX)
+                    } else {
+                        Rectangle().fill(.quaternary).frame(width: imgW, height: imgH).offset(x: originX)
+                    }
                     ForEach(controls) { c in
-                        let d = 2 * layout.radius(of: c) * geo.size.width
+                        let d = 2 * layout.radius(of: c) * imgW
                         HotspotView(
                             control: c,
                             diameter: d,
@@ -95,13 +101,14 @@ private struct ControllerSideView: View {
                             coverage: learningId == c.id ? device.learn?.circleCovered : nil,
                             onTap: { device.startLearn(controlId: c.id) }
                         )
-                        .position(x: c.x * geo.size.width, y: c.y * geo.size.height)
+                        .position(x: originX + c.x * imgW, y: c.y * imgH)
                     }
-                    CalloutLayer(controls: controls, layout: layout, size: geo.size, device: device, learningId: learningId)
+                    CalloutLayer(controls: controls, layout: layout, size: imgSize, origin: CGPoint(x: originX, y: 0),
+                                 frameSize: geo.size, device: device, learningId: learningId)
                         .allowsHitTesting(false)
                 }
             }
-            .aspectRatio(info.aspectRatio, contentMode: .fit)
+            .aspectRatio(info.aspectRatio * framedFraction, contentMode: .fit)
         }
     }
 }
@@ -218,12 +225,15 @@ private struct HotspotView: View {
 private struct CalloutLayer: View {
     let controls: [ControlLayout.Control]
     let layout: ControlLayout
+    /// Size of the controller image; `origin` is where it sits inside the framed area of `frameSize`.
     let size: CGSize
+    let origin: CGPoint
+    let frameSize: CGSize
     @ObservedObject var device: EnvisionProDevice
     let learningId: String?
 
     private func point(_ c: ControlLayout.Control) -> CGPoint {
-        CGPoint(x: c.x * size.width, y: c.y * size.height)
+        CGPoint(x: origin.x + c.x * size.width, y: origin.y + c.y * size.height)
     }
 
     private enum Placement { case free(CGPoint), left(CGFloat, CGFloat), right(CGFloat, CGFloat) } // column x, y
@@ -232,7 +242,7 @@ private struct CalloutLayer: View {
         let r = layout.radius(of: c)
         let dx = c.labelDx ?? 0
         let dy = c.labelDy ?? (r * size.width / size.height + 0.06)
-        return CGPoint(x: (c.x + dx) * size.width, y: (c.y + dy) * size.height)
+        return CGPoint(x: origin.x + (c.x + dx) * size.width, y: origin.y + (c.y + dy) * size.height)
     }
 
     /// Column labels are stacked by their control's height and pushed apart so they never overlap.
@@ -243,16 +253,17 @@ private struct CalloutLayer: View {
         for side in ["left", "right"] {
             let members = controls.filter { $0.labelSide == side }.sorted { $0.y < $1.y }
             guard !members.isEmpty, let cols else { continue }
-            var ys = members.map { $0.y * size.height }
+            var ys = members.map { origin.y + $0.y * size.height }
             for i in 1..<ys.count where ys[i] < ys[i - 1] + gap { ys[i] = ys[i - 1] + gap }
-            let bottom = size.height - 10
+            let bottom = origin.y + size.height - 10
             if let last = ys.last, last > bottom {
                 ys[ys.count - 1] = bottom
                 for i in stride(from: ys.count - 2, through: 0, by: -1) where ys[i] > ys[i + 1] - gap { ys[i] = ys[i + 1] - gap }
             }
             for (i, c) in members.enumerated() {
                 let y = max(ys[i], 10)
-                let x = (side == "left" ? cols.left : cols.right) * size.width
+                // Column x may lie outside the image (negative or > 1): that is the label gutter.
+                let x = origin.x + (side == "left" ? cols.left : cols.right) * size.width
                 out[c.id] = side == "left" ? .left(x, y) : .right(x, y)
             }
         }
@@ -277,7 +288,7 @@ private struct CalloutLayer: View {
 
     var body: some View {
         // Hide the callouts entirely when the view is too small for 10pt text to be useful.
-        if size.width >= 220 {
+        if size.width >= 110 {
             let placed = placements
             ZStack(alignment: .topLeading) {
                 Canvas { ctx, _ in
@@ -315,11 +326,11 @@ private struct CalloutLayer: View {
                         // Right-aligned so every label in the column ends on the same x.
                         pill.frame(width: x, alignment: .trailing).position(x: x / 2, y: y)
                     case .right(let x, let y):
-                        pill.frame(width: size.width - x, alignment: .leading).position(x: x + (size.width - x) / 2, y: y)
+                        pill.frame(width: frameSize.width - x, alignment: .leading).position(x: x + (frameSize.width - x) / 2, y: y)
                     }
                 }
             }
-            .frame(width: size.width, height: size.height)
+            .frame(width: frameSize.width, height: frameSize.height)
         }
     }
 }

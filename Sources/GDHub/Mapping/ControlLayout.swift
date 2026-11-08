@@ -52,6 +52,12 @@ struct ControlLayout: Codable {
         var right: Double
     }
 
+    /// Extra space reserved beside a view's image for callout labels, as fractions of the image width.
+    struct LabelGutters: Codable {
+        var left: Double
+        var right: Double
+    }
+
     struct Control: Codable, Identifiable, Hashable {
         var id: String
         var label: String
@@ -78,6 +84,7 @@ struct ControlLayout: Codable {
     var defaultHotspotRadius: Double
     /// Per view (by Side raw value): x positions (fractions of width) of the left and right label columns.
     var labelColumns: [String: LabelColumns]?
+    var labelGutters: [String: LabelGutters]?
     var note: String?
     var controls: [Control]
 
@@ -86,6 +93,14 @@ struct ControlLayout: Codable {
     func control(id: String) -> Control? { controls.first { $0.id == id } }
 
     func radius(of control: Control) -> Double { control.radius ?? defaultHotspotRadius }
+
+    func gutters(for side: Side) -> LabelGutters { labelGutters?[side.rawValue] ?? LabelGutters(left: 0, right: 0) }
+
+    /// Width of the view including its label gutters, in image pixels.
+    func framedWidth(for side: Side) -> Double {
+        let g = gutters(for: side)
+        return images.info(for: side).width * (1 + g.left + g.right)
+    }
 
     /// Loads the bundled layout, or nil (with a console message) if it is missing or malformed.
     static func loadFromBundle() -> ControlLayout? {

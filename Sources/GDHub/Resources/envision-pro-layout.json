@@ -39,7 +39,8 @@
    "y": 0.1083,
    "radius": 0.1,
    "labelDx": -0.25,
-   "labelDy": -0.04
+   "labelDy": -0.04,
+   "labelSide": "left"
   },
   {
    "id": "lb",
@@ -51,7 +52,8 @@
    "y": 0.0583,
    "radius": 0.09,
    "labelDx": 0.3,
-   "labelDy": 0.04
+   "labelDy": 0.04,
+   "labelSide": "left"
   },
   {
    "id": "sax_left",
@@ -63,7 +65,8 @@
    "y": 0.2396,
    "radius": 0.11,
    "labelDx": -0.3,
-   "labelDy": 0.12
+   "labelDy": 0.12,
+   "labelSide": "left"
   },
   {
    "id": "dpad_up",
@@ -342,7 +345,8 @@
    "y": 0.2396,
    "radius": 0.11,
    "labelDx": 0.3,
-   "labelDy": 0.12
+   "labelDy": 0.12,
+   "labelSide": "right"
   },
   {
    "id": "rb",
@@ -354,7 +358,8 @@
    "y": 0.0583,
    "radius": 0.09,
    "labelDx": -0.3,
-   "labelDy": 0.04
+   "labelDy": 0.04,
+   "labelSide": "right"
   },
   {
    "id": "rt",
@@ -366,7 +371,8 @@
    "y": 0.1083,
    "radius": 0.1,
    "labelDx": 0.25,
-   "labelDy": -0.04
+   "labelDy": -0.04,
+   "labelSide": "right"
   },
   {
    "id": "paddle_outer_left",
@@ -423,12 +429,38 @@
  ],
  "labelColumns": {
   "front": {
-   "left": 0.145,
-   "right": 0.875
+   "left": -0.03,
+   "right": 1.03
   },
   "back": {
-   "left": 0.22,
-   "right": 0.78
+   "left": -0.03,
+   "right": 1.03
+  },
+  "sideLeft": {
+   "left": -0.06,
+   "right": 1.0
+  },
+  "sideRight": {
+   "left": 0.0,
+   "right": 1.06
+  }
+ },
+ "labelGutters": {
+  "front": {
+   "left": 0.24,
+   "right": 0.24
+  },
+  "back": {
+   "left": 0.3,
+   "right": 0.3
+  },
+  "sideLeft": {
+   "left": 0.6,
+   "right": 0.0
+  },
+  "sideRight": {
+   "left": 0.0,
+   "right": 0.6
   }
  }
 }
