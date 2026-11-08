@@ -599,7 +599,9 @@ private struct CalloutLayer: View {
                 let changed = sizes.filter { editor.pillSizes[$0.key] != $0.value }
                 if !changed.isEmpty { editor.pillSizes.merge(changed) { $1 } }
             }
-            .onAppear { editor.aligners[viewKey] = { action in align(action) } }
+            .onChange(of: editor.alignRequest) { _, request in
+                if let request { align(request.action) }
+            }
         }
     }
 

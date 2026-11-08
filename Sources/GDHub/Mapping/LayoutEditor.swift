@@ -42,11 +42,17 @@ final class LayoutEditor: ObservableObject {
     var dragOrigin: [String: CGPoint] = [:]
     /// Label anchors while a drag is in progress (frame coordinates); committed to the layout on release.
     @Published var liveAnchors: [String: CGPoint] = [:]
+
+    /// An align action to carry out. Each view's callout layer observes this and runs the action with
+    /// its *current* geometry (a closure captured at registration would use stale sizes after zooming).
+    struct AlignRequest: Equatable {
+        let id: UUID
+        let action: AlignAction
+    }
+    @Published var alignRequest: AlignRequest?
     /// Rubber-band selection in progress: which view it belongs to and its rectangle (frame coordinates).
     @Published var marquee: (view: String, rect: CGRect)?
     var marqueeStart: CGPoint?
-    var aligners: [String: (AlignAction) -> Void] = [:]
-
     func toggleSelection(_ id: String, extend: Bool) {
         if extend {
             if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
@@ -56,7 +62,7 @@ final class LayoutEditor: ObservableObject {
     }
 
     func perform(_ action: AlignAction) {
-        for aligner in aligners.values { aligner(action) }
+        alignRequest = AlignRequest(id: UUID(), action: action)
     }
 
     /// Align the selection, making sure the label the user right-clicked is part of it.
