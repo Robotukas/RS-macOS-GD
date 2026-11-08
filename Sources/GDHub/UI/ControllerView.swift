@@ -24,34 +24,42 @@ struct ControllerView: View {
                 // One scale factor for all four views: each gets a width proportional to its image,
                 // so resizing the window grows or shrinks every view by the same amount.
                 GeometryReader { geo in
-                    let views: [ControlLayout.Side] = [.sideLeft, .front, .back, .sideRight]
+                    let columns = layout.columns
                     let spacing: CGFloat = 16
-                    // Title above each view, plus the gutter sliders while the layout is being edited.
-                    let titleHeight: CGFloat = 18 + (device.editor.isEditing ? 26 : 0)
-                    let totalWidth = views.reduce(0) { $0 + layout.framedWidth(for: $1) }
-                    let maxHeight = views.map { layout.images.info(for: $0).height }.max() ?? 1
-                    let availWidth = max(geo.size.width - spacing * CGFloat(views.count - 1), 1)
-                    let availHeight = max(geo.size.height - titleHeight, 1)
+                    // Title above each view, plus the sliders / arrows while the layout is being edited.
+                    let titleHeight: CGFloat = 18 + (device.editor.isEditing ? 50 : 0)
+                    // Natural size of the arrangement in image pixels (titles added in points below).
+                    let colWidths = columns.map { col in col.map { layout.framedWidth(for: $0) }.max() ?? 1 }
+                    let totalWidth = colWidths.reduce(0, +)
+                    let colHeights = columns.map { col in col.reduce(0.0) { $0 + layout.images.info(for: $1).height } }
+                    let maxRows = columns.map(\.count).max() ?? 1
+                    let totalHeight = colHeights.max() ?? 1
+                    let availWidth = max(geo.size.width - spacing * CGFloat(columns.count - 1), 1)
+                    let availHeight = max(geo.size.height - CGFloat(maxRows) * titleHeight - spacing * CGFloat(maxRows - 1), 1)
                     let zoom = device.editor.isEditing ? CGFloat(device.editor.zoom) : 1
-                    let scale = min(availWidth / totalWidth, availHeight / maxHeight) * zoom
-                    let row = HStack(alignment: .bottom, spacing: spacing) {
-                        ForEach(views, id: \.self) { side in
-                            let info = layout.images.info(for: side)
-                            ControllerSideView(device: device, layout: layout, side: side)
-                                .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
+                    let scale = min(availWidth / totalWidth, availHeight / totalHeight) * zoom
+                    let grid = HStack(alignment: .bottom, spacing: spacing) {
+                        ForEach(0..<columns.count, id: \.self) { ci in
+                            VStack(spacing: spacing) {
+                                ForEach(columns[ci], id: \.self) { side in
+                                    let info = layout.images.info(for: side)
+                                    ControllerSideView(device: device, layout: layout, side: side)
+                                        .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
+                                }
+                            }
                         }
                     }
                     if device.editor.isEditing {
-                        // Editing: the row lives in a scroll view that zooms toward the pointer on mouse wheel.
+                        // Editing: the grid lives in a scroll view that zooms toward the pointer on mouse wheel.
                         let padding: CGFloat = 8
                         let contentSize = CGSize(
-                            width: max(totalWidth * scale + spacing * CGFloat(views.count - 1) + padding * 2, geo.size.width),
-                            height: max(maxHeight * scale + titleHeight + padding * 2, geo.size.height))
+                            width: max(totalWidth * scale + spacing * CGFloat(columns.count - 1) + padding * 2, geo.size.width),
+                            height: max(totalHeight * scale + CGFloat(maxRows) * titleHeight + spacing * CGFloat(maxRows - 1) + padding * 2, geo.size.height))
                         ZoomScrollView(editor: device.editor, contentSize: contentSize,
-                                       content: row.padding(padding).frame(width: contentSize.width, height: contentSize.height, alignment: .center))
+                                       content: grid.padding(padding).frame(width: contentSize.width, height: contentSize.height, alignment: .center))
                             .frame(width: geo.size.width, height: geo.size.height)
                     } else {
-                        row.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        grid.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
                 .padding(.horizontal)
@@ -125,6 +133,14 @@ private struct ControllerSideView: View {
             .aspectRatio(info.aspectRatio * framedFraction, contentMode: .fit)
             if device.editor.isEditing {
                 GutterSliders(device: device, side: side, gutters: gutters)
+                HStack(spacing: 4) {
+                    Button { device.moveView(side, dx: -1, dy: 0) } label: { Image(systemName: "arrow.left") }
+                    Button { device.moveView(side, dx: 0, dy: -1) } label: { Image(systemName: "arrow.up") }
+                    Button { device.moveView(side, dx: 0, dy: 1) } label: { Image(systemName: "arrow.down") }
+                    Button { device.moveView(side, dx: 1, dy: 0) } label: { Image(systemName: "arrow.right") }
+                }
+                .controlSize(.mini)
+                .help("Move this view between and within columns")
             }
         }
     }
@@ -804,6 +820,13 @@ private struct LayoutToolbar: View {
                 .fixedSize()
                 .disabled(editor.selection.isEmpty)
                 Toggle("Orthogonal", isOn: $editor.orthogonal).toggleStyle(.checkbox)
+                Menu("Views") {
+                    Button("Row: left, front, back, right") { device.setViewColumns([[.sideLeft], [.front], [.back], [.sideRight]]) }
+                    Button("Front over back, sides beside") { device.setViewColumns([[.sideLeft], [.front, .back], [.sideRight]]) }
+                    Button("Front over back, sides stacked") { device.setViewColumns([[.sideLeft, .sideRight], [.front, .back]]) }
+                    Button("Two by two") { device.setViewColumns([[.front, .sideLeft], [.back, .sideRight]]) }
+                }
+                .fixedSize()
                 Divider().frame(height: 16)
                 Button("Reset layout") { device.resetLayout() }
                 Divider().frame(height: 16)

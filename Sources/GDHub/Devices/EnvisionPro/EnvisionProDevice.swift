@@ -189,6 +189,18 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         for id in ids { updateControl(id) { $0.leaderAttach = attach } }
     }
 
+    func moveView(_ side: ControlLayout.Side, dx: Int, dy: Int) {
+        guard var l = layout else { return }
+        l.moveView(side, dx: dx, dy: dy)
+        layout = l
+    }
+
+    func setViewColumns(_ cols: [[ControlLayout.Side]]) {
+        guard var l = layout else { return }
+        l.viewColumns = cols.map { $0.map(\.rawValue) }
+        layout = l
+    }
+
     /// Lock the layout: leave edit mode and persist it.
     func lockLayout() {
         editor.isEditing = false

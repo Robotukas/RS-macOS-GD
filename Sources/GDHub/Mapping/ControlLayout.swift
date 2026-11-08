@@ -100,6 +100,37 @@ struct ControlLayout: Codable {
     var labelColumns: [String: LabelColumns]?
     var labelGutters: [String: LabelGutters]?
     var labelFont: LabelFont?
+    /// Arrangement of the views: columns left to right, each listing views top to bottom (Side raw values).
+    var viewColumns: [[String]]?
+
+    static let defaultViewColumns: [[Side]] = [[.sideLeft], [.front], [.back], [.sideRight]]
+
+    var columns: [[Side]] {
+        guard let raw = viewColumns else { return Self.defaultViewColumns }
+        let cols = raw.map { $0.compactMap(Side.init(rawValue:)) }.filter { !$0.isEmpty }
+        // Every view must appear exactly once; otherwise fall back to the default.
+        let all = cols.flatMap { $0 }
+        return Set(all).count == Side.allCases.count && all.count == Side.allCases.count ? cols : Self.defaultViewColumns
+    }
+
+    /// Move a view one step; crossing a column edge moves it into the neighbouring column (or a new one).
+    mutating func moveView(_ side: Side, dx: Int, dy: Int) {
+        var cols = columns
+        guard let ci = cols.firstIndex(where: { $0.contains(side) }), let ri = cols[ci].firstIndex(of: side) else { return }
+        if dy != 0 {
+            let target = ri + dy
+            guard cols[ci].indices.contains(target) else { return }
+            cols[ci].swapAt(ri, target)
+        } else if dx != 0 {
+            cols[ci].remove(at: ri)
+            var target = ci + dx
+            if target < 0 { cols.insert([side], at: 0); target = 0 }
+            else if target >= cols.count { cols.append([side]) }
+            else { cols[target].insert(side, at: min(ri, cols[target].count)) }
+            cols.removeAll { $0.isEmpty }
+        }
+        viewColumns = cols.map { $0.map(\.rawValue) }
+    }
 
     /// Callout text size. Fixed: always `size` points. Scaled: `size` at the image's natural pixel
     /// width, growing and shrinking with the view, locked between `minSize` and `maxSize`.
