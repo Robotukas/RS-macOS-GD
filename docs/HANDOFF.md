@@ -4,7 +4,12 @@
 
 ## Why this handoff exists
 
-The macOS user account that built this repo has **no Apple Developer signing identity** (only an "Apple Configurator" certificate). The owner has an **Apple Developer licence under a different macOS user account**, and work continues there. Nothing in the repo depends on the old account: clone, build, and carry on.
+The macOS user account that built this repo originally had **no Apple Developer signing identity**. Update, same day: the owner's Apple Developer account (team `79XF6HYX8A`) was added to Xcode on this user, an Apple Development certificate was created, and `scripts/bundle.sh` now signs with it. Work can continue on either macOS user; the notes below still apply when setting up a fresh account.
+
+Gotcha hit during setup: Xcode created the certificate but left out its issuer, the **Apple WWDR G3 intermediate**, so `codesign` failed with `errSecInternalComponent` / "unable to build chain to self-signed root". Fix: import Xcode's bundled copy:
+```bash
+security import /Applications/Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/Resources/AppleWWDRCA-2030.cer -k ~/Library/Keychains/login.keychain-db
+```
 
 ## Where the project stands
 
@@ -27,7 +32,7 @@ Personal use only; not for the App Store. The dext is signed with a **developmen
    ```bash
    scripts/bundle.sh
    ```
-   `bundle.sh` ad-hoc signs today; it must switch to the Development certificate once the dext exists, so TCC grants survive rebuilds.
+   `bundle.sh` signs with the first Apple Development identity it finds (`GDHUB_SIGN_IDENTITY` overrides), falling back to ad-hoc.
 2. In Xcode, sign in with the Developer account. Create an App ID for `com.interlinked.gdhub` and a second one for the dext, `com.interlinked.gdhub.driver`. Enable the **DriverKit** capability and the **HID device** family on the dext App ID. These development entitlements are self-serve on a paid account (`com.apple.developer.driverkit`, `com.apple.developer.driverkit.family.hid.device`); the distribution variants need an Apple request and are *not* needed for personal use.
 3. Register the Mac's provisioning UDID (Xcode does this on first run) so the development profile covers it. A dev-signed dext loads with SIP **on**, provided the app bundle that embeds it is run from `/Applications`.
 4. Build the dext as an Xcode target (SwiftPM cannot build dexts). Plan: keep the Swift package for the app, add an `Xcode/` project that links the package and embeds `GDHubDriver.dext`.

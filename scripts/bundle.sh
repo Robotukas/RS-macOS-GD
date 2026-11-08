@@ -28,7 +28,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+# Sign with the first Apple Development identity in the keychain (stable identity, so
+# TCC grants survive rebuilds); fall back to ad-hoc when none is present.
+# Override with GDHUB_SIGN_IDENTITY="<name or SHA-1>" or GDHUB_SIGN_IDENTITY=- for ad-hoc.
+IDENTITY="${GDHUB_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development:/{print $2; exit}')}"
+IDENTITY="${IDENTITY:--}"
+codesign --force --timestamp=none --sign "$IDENTITY" "$APP"
+echo "signed as: $(codesign -dvv "$APP" 2>&1 | awk -F= '/^Authority=/{print $2; exit}')"
 echo "bundled $APP"
 [[ "$2" == "--no-open" ]] && exit 0
 pkill -f "GDHub.app/Contents/MacOS/GDHub" 2>/dev/null && sleep 0.5
