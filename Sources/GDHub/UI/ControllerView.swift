@@ -30,7 +30,13 @@ struct ControllerView: View {
                         .frame(maxWidth: 170)
                 }
                 .padding(.horizontal)
-                LearnToolbar(device: device)
+                HStack(alignment: .top, spacing: 16) {
+                    LearnToolbar(device: device)
+                    if let current = device.learn?.currentControl {
+                        MagnifierView(device: device, layout: layout, control: current)
+                            .padding(.trailing)
+                    }
+                }
             }
             .padding(.top, 8)
         } else {
@@ -82,6 +88,55 @@ private struct ControllerSideView: View {
                 }
             }
             .aspectRatio(info.aspectRatio, contentMode: .fit)
+        }
+    }
+}
+
+/// Loupe: a zoomed crop of the view that holds the control being learned, with the live hotspot on top.
+private struct MagnifierView: View {
+    @ObservedObject var device: EnvisionProDevice
+    let layout: ControlLayout
+    let control: ControlLayout.Control
+
+    private let size: CGFloat = 200
+    private let zoom: CGFloat = 3.2
+
+    var body: some View {
+        let info = layout.images.info(for: control.view)
+        // The crop is `zoom` times wider than the loupe; the hotspot is scaled with it.
+        let dw = size * zoom
+        let dh = dw / info.aspectRatio
+        let diameter = 2 * layout.radius(of: control) * dw
+        VStack(spacing: 4) {
+            ZStack {
+                if let img = ControllerImages.image(file: info.file) {
+                    Image(nsImage: img)
+                        .resizable()
+                        .frame(width: dw, height: dh)
+                        .offset(x: size / 2 - control.x * dw, y: size / 2 - control.y * dh)
+                } else {
+                    Color.gray
+                }
+                HotspotView(
+                    control: control,
+                    diameter: diameter,
+                    active: device.mapping.isActive(control.id, device.frame),
+                    mapped: device.mapping.isMapped(control.id),
+                    learning: true,
+                    stick: control.kind == .stick ? device.mapping.stickPosition(control.id, device.frame) : nil,
+                    trigger: control.kind == .trigger ? device.mapping.triggerValue(control.id, device.frame) : nil,
+                    coverage: device.learn?.circleCovered,
+                    onTap: {}
+                )
+                .allowsHitTesting(false)
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.6), lineWidth: 1.5))
+            .shadow(radius: 6)
+            Text("\(control.view.title): \(control.label)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
