@@ -41,12 +41,15 @@ struct ControllerView: View {
                                 .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
                         }
                     }
-                    if zoom > 1 {
-                        // Magnified: scroll both ways to reach every label.
-                        ScrollView([.horizontal, .vertical]) {
-                            row.padding(8)
-                        }
-                        .frame(width: geo.size.width, height: geo.size.height)
+                    if device.editor.isEditing {
+                        // Editing: the row lives in a scroll view that zooms toward the pointer on mouse wheel.
+                        let padding: CGFloat = 8
+                        let contentSize = CGSize(
+                            width: max(totalWidth * scale + spacing * CGFloat(views.count - 1) + padding * 2, geo.size.width),
+                            height: max(maxHeight * scale + titleHeight + padding * 2, geo.size.height))
+                        ZoomScrollView(editor: device.editor, contentSize: contentSize,
+                                       content: row.padding(padding).frame(width: contentSize.width, height: contentSize.height, alignment: .center))
+                            .frame(width: geo.size.width, height: geo.size.height)
                     } else {
                         row.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -644,7 +647,7 @@ private struct LayoutToolbar: View {
                 Slider(value: $editor.zoom, in: 1...4).frame(width: 120)
                 Text(String(format: "%.1fx", editor.zoom)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Spacer()
-                Text("Drag labels. Shift-click to select several. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space.")
+                Text("Drag labels. Shift-click to select several. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Mouse wheel zooms toward the pointer; trackpad pans, pinch or Cmd-scroll zooms.")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else {
                 Button("Edit layout") { editor.isEditing = true }
