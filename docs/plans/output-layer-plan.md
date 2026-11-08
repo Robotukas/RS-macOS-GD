@@ -558,11 +558,20 @@ Run this only if the P1 spike shows CGEvent fails with GFN's Direct mouse input 
 - Does the dext `xbox-bt-dual` pad with Transport BLE get matched by GameController, and is it parsed as BT by SDL3? (P7d)
 - Where are Steam's "Steam Input for Xbox" toggles stored? (P5; until then, checklist text only)
 
+## 7b. User observation 2026-11-08: Shadow PC latency
+
+The user reports Shadow PC already recognises the controller but it is **very laggy**, while keyboard and mouse have no lag. This matches the USB-forwarding path (R4): ShadowUSB tunnels the receiver's raw USB traffic over the network and the receiver emits a 16-byte report every millisecond even when idle, so every frame becomes a network packet. Keyboard and mouse use Shadow's own low-latency input channel; a virtual pad presented on the Mac goes through that same channel.
+
+**Decisions taken from this:**
+- Shadow PC gets the **virtual pad (R1 / R3)**, not USB forwarding. Decision 5 in §8 is closed.
+- Every GDHub output sink sends **only on change**, with a rate cap (default 250 Hz, configurable down to 125 Hz) and analogue deadbands, so idle streams never flood a network channel. The same applies to the pad GDHub feeds through OJD if OJD exposes a rate option; otherwise GDHub owns the pad only through its own engine (R3).
+- P0 step 7 (ShadowUSB trial) becomes a measurement only: unforward the receiver before testing the virtual pad in Shadow, and record the difference.
+
 ## 8. Decisions needed from you
 
 1. **Paid Apple Developer membership?** Do you have one with the Account Holder or Admin role? The Apple Configurator certificate for INTERLINKED GROUP LTD suggests an organisation account may exist. This decides between P7 and the OJD path.
 2. **May GDHub change OpenJoystickDriver's setup?** That means writing its controller record and map profiles, and switching its identity per host. Is upgrading to 0.6.0-alpha.2 (PolyForm Noncommercial) OK if 0.5 cannot read the receiver?
 3. **GeForce NOW keyboard and mouse:** turn GFN's "Direct mouse input" off, or install the Karabiner VirtualHIDDevice (a system extension plus a root daemon)? On the paid path the dext covers this.
 4. **Razer's virtual controller driver:** should it be disabled if it takes a player slot?
-5. **Shadow PC:** OJD/GDHub virtual pad, or forward the receiver into the VM (iCUE does paddles and macros there; GDHub loses the controller meanwhile)?
+5. ~~Shadow PC: virtual pad or USB forward?~~ Closed: virtual pad (see §7b; USB forwarding is the laggy path the user already experienced).
 6. **Games:** which ones per host? That sets the default profiles and the anti-cheat caution for macros.
