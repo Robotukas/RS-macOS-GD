@@ -47,6 +47,8 @@ struct ControlLayout: Codable {
         }
     }
 
+    enum LabelAnchor: String, Codable { case center, leading, trailing }
+
     struct LabelColumns: Codable {
         var left: Double
         var right: Double
@@ -74,6 +76,13 @@ struct ControlLayout: Codable {
         var labelDy: Double?
         /// "left" or "right": put the label in that view's aligned label column instead of at labelDx/labelDy.
         var labelSide: String?
+        /// User-positioned label (edit mode): anchor point as fractions of the image (may lie outside 0...1,
+        /// i.e. in the gutters) and which edge of the pill the anchor refers to. Overrides labelSide / labelDx.
+        var labelX: Double?
+        var labelY: Double?
+        var labelAnchor: LabelAnchor?
+        /// Intermediate corner points of the leader line, control -> corners -> label, as image fractions.
+        var leader: [[Double]]?
 
         var isPill: Bool { shape == "pill" }
     }
@@ -100,6 +109,39 @@ struct ControlLayout: Codable {
     func framedWidth(for side: Side) -> Double {
         let g = gutters(for: side)
         return images.info(for: side).width * (1 + g.left + g.right)
+    }
+
+    // MARK: User layout (edit mode)
+
+    static var userLayoutURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("GDHub", isDirectory: true)
+        return dir.appendingPathComponent("envision-pro-layout.json")
+    }
+
+    /// The user's edited layout if one was saved, otherwise the bundled one.
+    static func load() -> ControlLayout? {
+        if let data = try? Data(contentsOf: userLayoutURL),
+           let user = try? JSONDecoder().decode(ControlLayout.self, from: data) {
+            return user
+        }
+        return loadFromBundle()
+    }
+
+    func saveAsUserLayout() {
+        do {
+            let dir = Self.userLayoutURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try enc.encode(self).write(to: Self.userLayoutURL, options: .atomic)
+        } catch {
+            print("ControlLayout: failed to save user layout: \(error)")
+        }
+    }
+
+    static func deleteUserLayout() {
+        try? FileManager.default.removeItem(at: userLayoutURL)
     }
 
     /// Loads the bundled layout, or nil (with a console message) if it is missing or malformed.

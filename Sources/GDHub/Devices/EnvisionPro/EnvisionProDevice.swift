@@ -36,7 +36,8 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     private let asleepAfter: TimeInterval = 2
     private let maxLogEntries = 500
 
-    let layout: ControlLayout?
+    @Published var layout: ControlLayout?
+    let editor = LayoutEditor()
 
     @Published private(set) var frame = GamepadFrame()
     @Published private(set) var status: Status = .disconnected
@@ -56,6 +57,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     private var lastRawText: String?
     private var timer: Timer?
     private var learnForward: AnyCancellable?
+    private var editorForward: AnyCancellable?
 
     // Frame publishing is limited to ~125 Hz; events and learning see every frame.
     private var lastPublish = Date.distantPast
@@ -71,6 +73,10 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        // Views observe the device; re-publish when edit-mode state changes.
+        editorForward = editor.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.objectWillChange.send() } }
+        }
     }
 
     deinit { timer?.invalidate() }
@@ -132,6 +138,30 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     }
 
     func skipLearn() { learn?.skip() }
+
+    // MARK: Layout editing
+
+    func updateControl(_ id: String, _ change: (inout ControlLayout.Control) -> Void) {
+        guard var l = layout, let i = l.controls.firstIndex(where: { $0.id == id }) else { return }
+        change(&l.controls[i])
+        layout = l
+    }
+
+    /// Lock the layout: leave edit mode and persist it.
+    func lockLayout() {
+        editor.isEditing = false
+        editor.selection = []
+        editor.zoom = 1
+        layout?.saveAsUserLayout()
+        log("layout saved")
+    }
+
+    func resetLayout() {
+        ControlLayout.deleteUserLayout()
+        layout = ControlLayout.loadFromBundle()
+        editor.selection = []
+        log("layout reset to built-in")
+    }
     func backLearn() { learn?.back() }
 
     func cancelLearn() { learn?.cancel() }

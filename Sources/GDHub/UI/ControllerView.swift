@@ -26,22 +26,33 @@ struct ControllerView: View {
                 GeometryReader { geo in
                     let views: [ControlLayout.Side] = [.sideLeft, .front, .back, .sideRight]
                     let spacing: CGFloat = 16
-                    let titleHeight: CGFloat = 18
+                    // Title above each view, plus the gutter sliders while the layout is being edited.
+                    let titleHeight: CGFloat = 18 + (device.editor.isEditing ? 26 : 0)
                     let totalWidth = views.reduce(0) { $0 + layout.framedWidth(for: $1) }
                     let maxHeight = views.map { layout.images.info(for: $0).height }.max() ?? 1
                     let availWidth = max(geo.size.width - spacing * CGFloat(views.count - 1), 1)
                     let availHeight = max(geo.size.height - titleHeight, 1)
-                    let scale = min(availWidth / totalWidth, availHeight / maxHeight)
-                    HStack(alignment: .bottom, spacing: spacing) {
+                    let zoom = device.editor.isEditing ? CGFloat(device.editor.zoom) : 1
+                    let scale = min(availWidth / totalWidth, availHeight / maxHeight) * zoom
+                    let row = HStack(alignment: .bottom, spacing: spacing) {
                         ForEach(views, id: \.self) { side in
                             let info = layout.images.info(for: side)
                             ControllerSideView(device: device, layout: layout, side: side)
                                 .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if zoom > 1 {
+                        // Magnified: scroll both ways to reach every label.
+                        ScrollView([.horizontal, .vertical]) {
+                            row.padding(8)
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                    } else {
+                        row.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
                 .padding(.horizontal)
+                LayoutToolbar(device: device, editor: device.editor)
                 HStack(alignment: .top, spacing: 16) {
                     LearnToolbar(device: device)
                     if let current = device.learn?.currentControl {
@@ -99,16 +110,19 @@ private struct ControllerSideView: View {
                             stick: c.kind == .stick ? device.mapping.stickPosition(c.id, device.frame) : nil,
                             trigger: c.kind == .trigger ? device.mapping.triggerValue(c.id, device.frame) : nil,
                             coverage: learningId == c.id ? device.learn?.circleCovered : nil,
-                            onTap: { device.startLearn(controlId: c.id) }
+                            onTap: { if !device.editor.isEditing { device.startLearn(controlId: c.id) } }
                         )
                         .position(x: originX + c.x * imgW, y: c.y * imgH)
                     }
                     CalloutLayer(controls: controls, layout: layout, size: imgSize, origin: CGPoint(x: originX, y: 0),
-                                 frameSize: geo.size, device: device, learningId: learningId)
-                        .allowsHitTesting(false)
+                                 frameSize: geo.size, device: device, editor: device.editor, learningId: learningId)
+                        .allowsHitTesting(device.editor.isEditing)
                 }
             }
             .aspectRatio(info.aspectRatio * framedFraction, contentMode: .fit)
+            if device.editor.isEditing {
+                GutterSliders(device: device, side: side, gutters: gutters)
+            }
         }
     }
 }
@@ -230,28 +244,48 @@ private struct CalloutLayer: View {
     let origin: CGPoint
     let frameSize: CGSize
     @ObservedObject var device: EnvisionProDevice
+    @ObservedObject var editor: LayoutEditor
     let learningId: String?
+
+    /// Where a label's anchor point is (frame coordinates) and which pill edge the anchor refers to.
+    struct Placed {
+        var anchor: CGPoint
+        var kind: ControlLayout.LabelAnchor
+    }
+
+    private var viewKey: String { controls.first?.view.rawValue ?? "" }
 
     private func point(_ c: ControlLayout.Control) -> CGPoint {
         CGPoint(x: origin.x + c.x * size.width, y: origin.y + c.y * size.height)
     }
 
-    private enum Placement { case free(CGPoint), left(CGFloat, CGFloat), right(CGFloat, CGFloat) } // column x, y
+    private func toFrame(_ fx: Double, _ fy: Double) -> CGPoint {
+        CGPoint(x: origin.x + fx * size.width, y: origin.y + fy * size.height)
+    }
+
+    private func toFraction(_ p: CGPoint) -> (Double, Double) {
+        ((p.x - origin.x) / size.width, (p.y - origin.y) / size.height)
+    }
 
     private func freePoint(_ c: ControlLayout.Control) -> CGPoint {
         let r = layout.radius(of: c)
         let dx = c.labelDx ?? 0
         let dy = c.labelDy ?? (r * size.width / size.height + 0.06)
-        return CGPoint(x: origin.x + (c.x + dx) * size.width, y: origin.y + (c.y + dy) * size.height)
+        return toFrame(c.x + dx, c.y + dy)
     }
 
-    /// Column labels are stacked by their control's height and pushed apart so they never overlap.
-    private var placements: [String: Placement] {
-        var out: [String: Placement] = [:]
+    /// User positions win; then column labels (stacked and pushed apart); then per-control offsets.
+    private var placements: [String: Placed] {
+        var out: [String: Placed] = [:]
+        for c in controls {
+            if let lx = c.labelX, let ly = c.labelY {
+                out[c.id] = Placed(anchor: toFrame(lx, ly), kind: c.labelAnchor ?? .center)
+            }
+        }
         let gap: CGFloat = 20
-        let cols = layout.labelColumns?[controls.first?.view.rawValue ?? ""]
+        let cols = layout.labelColumns?[viewKey]
         for side in ["left", "right"] {
-            let members = controls.filter { $0.labelSide == side }.sorted { $0.y < $1.y }
+            let members = controls.filter { $0.labelSide == side && out[$0.id] == nil }.sorted { $0.y < $1.y }
             guard !members.isEmpty, let cols else { continue }
             var ys = members.map { origin.y + $0.y * size.height }
             for i in 1..<ys.count where ys[i] < ys[i - 1] + gap { ys[i] = ys[i - 1] + gap }
@@ -261,76 +295,240 @@ private struct CalloutLayer: View {
                 for i in stride(from: ys.count - 2, through: 0, by: -1) where ys[i] > ys[i + 1] - gap { ys[i] = ys[i + 1] - gap }
             }
             for (i, c) in members.enumerated() {
-                let y = max(ys[i], 10)
-                // Column x may lie outside the image (negative or > 1): that is the label gutter.
                 let x = origin.x + (side == "left" ? cols.left : cols.right) * size.width
-                out[c.id] = side == "left" ? .left(x, y) : .right(x, y)
+                out[c.id] = Placed(anchor: CGPoint(x: x, y: max(ys[i], 10)), kind: side == "left" ? .trailing : .leading)
             }
         }
-        for c in controls where out[c.id] == nil { out[c.id] = .free(freePoint(c)) }
+        for c in controls where out[c.id] == nil { out[c.id] = Placed(anchor: freePoint(c), kind: .center) }
         return out
     }
 
-    /// Where the leader line ends (label side).
-    private func leaderEnd(_ p: Placement) -> CGPoint {
-        switch p {
-        case .free(let pt): return pt
-        case .left(let x, let y): return CGPoint(x: x + 3, y: y)
-        case .right(let x, let y): return CGPoint(x: x - 3, y: y)
+    private func leaderEnd(_ p: Placed) -> CGPoint {
+        switch p.kind {
+        case .center: return p.anchor
+        case .trailing: return CGPoint(x: p.anchor.x + 3, y: p.anchor.y)
+        case .leading: return CGPoint(x: p.anchor.x - 3, y: p.anchor.y)
         }
     }
 
+    private func corners(_ c: ControlLayout.Control) -> [CGPoint] {
+        (c.leader ?? []).compactMap { $0.count == 2 ? toFrame($0[0], $0[1]) : nil }
+    }
+
+    /// Points of the leader polyline: control edge, corners, label.
+    private func leaderPoints(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
+        let centre = point(c)
+        let cs = corners(c)
+        let end = leaderEnd(p)
+        let first = cs.first ?? end
+        let r = layout.radius(of: c) * size.width
+        let v = CGVector(dx: first.x - centre.x, dy: first.y - centre.y)
+        let len = max((v.dx * v.dx + v.dy * v.dy).squareRoot(), 1)
+        let start = CGPoint(x: centre.x + v.dx / len * r * 0.9, y: centre.y + v.dy / len * r * 0.9)
+        return [start] + cs + [end]
+    }
+
     private func color(_ c: ControlLayout.Control) -> Color {
+        if editor.isEditing && editor.selection.contains(c.id) { return .yellow }
         if learningId == c.id { return .blue }
         if device.mapping.isActive(c.id, device.frame) { return .orange }
         return device.mapping.isMapped(c.id) ? .white : .gray
     }
+
+    // MARK: Editing
+
+    private func leftEdge(_ id: String, _ p: Placed) -> CGFloat {
+        let w = editor.pillSizes[id]?.width ?? 40
+        switch p.kind { case .center: return p.anchor.x - w / 2; case .leading: return p.anchor.x; case .trailing: return p.anchor.x - w }
+    }
+
+    private func rightEdge(_ id: String, _ p: Placed) -> CGFloat {
+        let w = editor.pillSizes[id]?.width ?? 40
+        switch p.kind { case .center: return p.anchor.x + w / 2; case .leading: return p.anchor.x + w; case .trailing: return p.anchor.x }
+    }
+
+    private func setLabel(_ id: String, anchor: CGPoint, kind: ControlLayout.LabelAnchor) {
+        let (fx, fy) = toFraction(anchor)
+        device.updateControl(id) { $0.labelX = fx; $0.labelY = fy; $0.labelAnchor = kind }
+    }
+
+    /// Snap to other labels' anchor x (same edge kind) or y when within a few points.
+    private func snapped(_ p: CGPoint, kind: ControlLayout.LabelAnchor, excluding id: String, in placed: [String: Placed]) -> CGPoint {
+        var out = p
+        let tol: CGFloat = 6
+        for (oid, o) in placed where oid != id {
+            if o.kind == kind && abs(o.anchor.x - p.x) < tol { out.x = o.anchor.x }
+            if abs(o.anchor.y - p.y) < tol { out.y = o.anchor.y }
+        }
+        return out
+    }
+
+    private func align(_ action: LayoutEditor.AlignAction) {
+        let placed = placements
+        let ids = controls.map(\.id).filter { editor.selection.contains($0) }
+        guard ids.count >= 2 else { return }
+        switch action {
+        case .leftEdges:
+            let target = ids.map { leftEdge($0, placed[$0]!) }.min()!
+            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .leading) }
+        case .rightEdges:
+            let target = ids.map { rightEdge($0, placed[$0]!) }.max()!
+            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .trailing) }
+        case .sameRow:
+            let y = ids.map { placed[$0]!.anchor.y }.reduce(0, +) / CGFloat(ids.count)
+            for id in ids { setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: y), kind: placed[id]!.kind) }
+        case .distributeVertically:
+            let sorted = ids.sorted { placed[$0]!.anchor.y < placed[$1]!.anchor.y }
+            guard let top = placed[sorted.first!]?.anchor.y, let bottom = placed[sorted.last!]?.anchor.y, sorted.count > 2 else { return }
+            let step = (bottom - top) / CGFloat(sorted.count - 1)
+            for (i, id) in sorted.enumerated() {
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + step * CGFloat(i)), kind: placed[id]!.kind)
+            }
+        }
+    }
+
+    private func addCorner(_ c: ControlLayout.Control, segment: Int, at p: CGPoint) {
+        let (fx, fy) = toFraction(p)
+        device.updateControl(c.id) {
+            var l = $0.leader ?? []
+            l.insert([fx, fy], at: min(segment, l.count))
+            $0.leader = l
+        }
+    }
+
+    private func removeCorner(_ c: ControlLayout.Control, index: Int) {
+        device.updateControl(c.id) {
+            guard var l = $0.leader, l.indices.contains(index) else { return }
+            l.remove(at: index)
+            $0.leader = l.isEmpty ? nil : l
+        }
+    }
+
+    private func moveCorner(_ c: ControlLayout.Control, index: Int, to p: CGPoint) {
+        let (fx, fy) = toFraction(p)
+        device.updateControl(c.id) {
+            guard var l = $0.leader, l.indices.contains(index) else { return }
+            l[index] = [fx, fy]
+            $0.leader = l
+        }
+    }
+
+    // MARK: Body
 
     var body: some View {
         // Hide the callouts entirely when the view is too small for 10pt text to be useful.
         if size.width >= 110 {
             let placed = placements
             ZStack(alignment: .topLeading) {
-                Canvas { ctx, _ in
-                    for c in controls {
-                        guard let pl = placed[c.id] else { continue }
-                        let p = point(c), l = leaderEnd(pl)
-                        let r = layout.radius(of: c) * size.width
-                        let v = CGVector(dx: l.x - p.x, dy: l.y - p.y)
-                        let len = max((v.dx * v.dx + v.dy * v.dy).squareRoot(), 1)
-                        // Leader starts just outside the control and ends under the label pill.
-                        let start = CGPoint(x: p.x + v.dx / len * r * 0.9, y: p.y + v.dy / len * r * 0.9)
-                        var path = Path()
-                        path.move(to: start)
-                        path.addLine(to: l)
+                ForEach(controls) { c in
+                    if let pl = placed[c.id] {
+                        let pts = leaderPoints(c, pl)
                         let col = color(c)
-                        ctx.stroke(path, with: .color(col.opacity(0.75)), lineWidth: 0.75)
-                        ctx.fill(Path(ellipseIn: CGRect(x: start.x - 1.5, y: start.y - 1.5, width: 3, height: 3)),
-                                 with: .color(col.opacity(0.95)))
+                        leaderView(c, pts, col)
+                        if editor.isEditing {
+                            cornerHandles(c, pts)
+                        }
                     }
                 }
                 ForEach(controls) { c in
-                    let col = color(c)
-                    let pill = Text(c.label)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(col)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Color.black.opacity(0.6), in: Capsule())
-                        .overlay(Capsule().stroke(col.opacity(0.5), lineWidth: 0.5))
-                        .fixedSize()
-                    switch placed[c.id] ?? .free(freePoint(c)) {
-                    case .free(let pt):
-                        pill.position(pt)
-                    case .left(let x, let y):
-                        // Right-aligned so every label in the column ends on the same x.
-                        pill.frame(width: x, alignment: .trailing).position(x: x / 2, y: y)
-                    case .right(let x, let y):
-                        pill.frame(width: frameSize.width - x, alignment: .leading).position(x: x + (frameSize.width - x) / 2, y: y)
+                    if let pl = placed[c.id] {
+                        labelView(c, pl, placed)
                     }
                 }
             }
             .frame(width: frameSize.width, height: frameSize.height)
+            .onContinuousHover { phase in
+                if case .active(let loc) = phase { editor.hoverPoint[viewKey] = loc }
+            }
+            .onPreferenceChange(PillSizeKey.self) { sizes in
+                editor.pillSizes.merge(sizes) { $1 }
+            }
+            .onAppear { editor.aligners[viewKey] = { action in align(action) } }
+        }
+    }
+
+    @ViewBuilder
+    private func leaderView(_ c: ControlLayout.Control, _ pts: [CGPoint], _ col: Color) -> some View {
+        Path { path in
+            path.move(to: pts[0])
+            for p in pts.dropFirst() { path.addLine(to: p) }
+        }
+        .stroke(col.opacity(0.75), lineWidth: 0.75)
+        Circle().fill(col.opacity(0.95)).frame(width: 3, height: 3).position(pts[0])
+        if editor.isEditing {
+            // One wide invisible hit strip per segment: double-click adds a corner there.
+            ForEach(0..<(pts.count - 1), id: \.self) { i in
+                let seg = Path { $0.move(to: pts[i]); $0.addLine(to: pts[i + 1]) }
+                let mid = CGPoint(x: (pts[i].x + pts[i + 1].x) / 2, y: (pts[i].y + pts[i + 1].y) / 2)
+                seg.stroke(Color.clear, lineWidth: 12)
+                    .contentShape(seg.strokedPath(StrokeStyle(lineWidth: 12)))
+                    .onTapGesture(count: 2, coordinateSpace: .local) { loc in addCorner(c, segment: i, at: loc) }
+                    .contextMenu {
+                        Button("Add corner here") { addCorner(c, segment: i, at: editor.hoverPoint[viewKey] ?? mid) }
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cornerHandles(_ c: ControlLayout.Control, _ pts: [CGPoint]) -> some View {
+        // pts = [start] + corners + [end]
+        let n = max(pts.count - 2, 0)
+        ForEach(0..<n, id: \.self) { i in
+            let key = "\(c.id)#\(i)"
+            Circle()
+                .fill(Color.blue)
+                .overlay(Circle().stroke(Color.white, lineWidth: 1))
+                .frame(width: 9, height: 9)
+                .position(pts[i + 1])
+                .onTapGesture(count: 2) { removeCorner(c, index: i) }
+                .contextMenu { Button("Remove corner") { removeCorner(c, index: i) } }
+                .gesture(DragGesture(minimumDistance: 2)
+                    .onChanged { v in
+                        let o = editor.dragOrigin[key] ?? pts[i + 1]
+                        editor.dragOrigin[key] = o
+                        moveCorner(c, index: i, to: CGPoint(x: o.x + v.translation.width, y: o.y + v.translation.height))
+                    }
+                    .onEnded { _ in editor.dragOrigin[key] = nil })
+        }
+    }
+
+    @ViewBuilder
+    private func labelView(_ c: ControlLayout.Control, _ pl: Placed, _ placed: [String: Placed]) -> some View {
+        let col = color(c)
+        let pill = Text(c.label)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(col)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.black.opacity(0.6), in: Capsule())
+            .overlay(Capsule().stroke(col.opacity(editor.isEditing ? 0.9 : 0.5),
+                                      style: StrokeStyle(lineWidth: editor.isEditing ? 1 : 0.5, dash: editor.isEditing ? [3, 2] : [])))
+            .fixedSize()
+            .background(GeometryReader { g in Color.clear.preference(key: PillSizeKey.self, value: [c.id: g.size]) })
+            .onTapGesture {
+                guard editor.isEditing else { return }
+                editor.toggleSelection(c.id, extend: NSEvent.modifierFlags.contains(.shift))
+            }
+            .gesture(DragGesture(minimumDistance: 3)
+                .onChanged { v in
+                    guard editor.isEditing else { return }
+                    let o = editor.dragOrigin[c.id] ?? pl.anchor
+                    editor.dragOrigin[c.id] = o
+                    let raw = CGPoint(x: o.x + v.translation.width, y: o.y + v.translation.height)
+                    setLabel(c.id, anchor: snapped(raw, kind: pl.kind, excluding: c.id, in: placed), kind: pl.kind)
+                }
+                .onEnded { _ in editor.dragOrigin[c.id] = nil })
+        switch pl.kind {
+        case .center:
+            pill.position(pl.anchor)
+        case .trailing:
+            // Right-aligned: the pill ends on the anchor x.
+            let w = max(pl.anchor.x, 1)
+            pill.frame(width: w, alignment: .trailing).position(x: w / 2, y: pl.anchor.y)
+        case .leading:
+            let w = max(frameSize.width - pl.anchor.x, 1)
+            pill.frame(width: w, alignment: .leading).position(x: pl.anchor.x + w / 2, y: pl.anchor.y)
         }
     }
 }
@@ -418,5 +616,71 @@ private struct LearnToolbar: View {
         case .disconnected: return "Receiver not found - plug it in."
         case .active: return ""
         }
+    }
+}
+
+/// Edit-mode controls: unlock/lock the callout layout, align selected labels, reset.
+private struct LayoutToolbar: View {
+    @ObservedObject var device: EnvisionProDevice
+    @ObservedObject var editor: LayoutEditor
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if editor.isEditing {
+                Button("Done (lock layout)") { device.lockLayout() }.buttonStyle(.borderedProminent)
+                Divider().frame(height: 16)
+                Group {
+                    Button("Align left") { editor.perform(.leftEdges) }
+                    Button("Align right") { editor.perform(.rightEdges) }
+                    Button("Same row") { editor.perform(.sameRow) }
+                }
+                .disabled(editor.selection.count < 2)
+                Button("Distribute") { editor.perform(.distributeVertically) }
+                    .disabled(editor.selection.count < 3)
+                Divider().frame(height: 16)
+                Button("Reset layout") { device.resetLayout() }
+                Divider().frame(height: 16)
+                Text("Zoom").font(.caption).foregroundStyle(.secondary)
+                Slider(value: $editor.zoom, in: 1...4).frame(width: 120)
+                Text(String(format: "%.1fx", editor.zoom)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Spacer()
+                Text("Drag labels. Shift-click to select several. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space.")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            } else {
+                Button("Edit layout") { editor.isEditing = true }
+                Spacer()
+            }
+        }
+        .padding(.horizontal)
+    }
+}
+
+/// Left / right label-space sliders shown under a view while editing the layout.
+private struct GutterSliders: View {
+    @ObservedObject var device: EnvisionProDevice
+    let side: ControlLayout.Side
+    let gutters: ControlLayout.LabelGutters
+
+    private func set(left: Double? = nil, right: Double? = nil) {
+        guard var l = device.layout else { return }
+        var g = l.gutters(for: side)
+        if let left { g.left = left }
+        if let right { g.right = right }
+        var all = l.labelGutters ?? [:]
+        all[side.rawValue] = g
+        l.labelGutters = all
+        device.layout = l
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("space").font(.caption2).foregroundStyle(.secondary)
+            Slider(value: SwiftUI.Binding<Double>(get: { gutters.left }, set: { set(left: $0) }), in: 0...1.2)
+                .frame(maxWidth: 110)
+            Text("|").font(.caption2).foregroundStyle(.secondary)
+            Slider(value: SwiftUI.Binding<Double>(get: { gutters.right }, set: { set(right: $0) }), in: 0...1.2)
+                .frame(maxWidth: 110)
+        }
+        .controlSize(.mini)
     }
 }

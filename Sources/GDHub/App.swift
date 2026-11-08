@@ -11,7 +11,7 @@ final class AppModel: ObservableObject {
     private var routes: [ObjectIdentifier: (module: DeviceModule, usagePage: Int)] = [:]
 
     init() {
-        let layout = ControlLayout.loadFromBundle()
+        let layout = ControlLayout.load()
         envision = EnvisionProDevice(layout: layout)
         modules = [envision]
         monitor = HIDMonitor(matchList: modules.flatMap { $0.matchList })
