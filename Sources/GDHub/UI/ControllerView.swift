@@ -370,6 +370,14 @@ private struct CalloutLayer: View {
 
     // MARK: Editing
 
+    /// Rendered rectangle of a label pill (frame coordinates).
+    private func pillRect(_ id: String, _ p: Placed) -> CGRect {
+        let sz = editor.pillSizes[id] ?? CGSize(width: 40, height: 16)
+        let x: CGFloat
+        switch p.kind { case .center: x = p.anchor.x - sz.width / 2; case .leading: x = p.anchor.x; case .trailing: x = p.anchor.x - sz.width }
+        return CGRect(x: x, y: p.anchor.y - sz.height / 2, width: sz.width, height: sz.height)
+    }
+
     private func leftEdge(_ id: String, _ p: Placed) -> CGFloat {
         let w = editor.pillSizes[id]?.width ?? 40
         switch p.kind { case .center: return p.anchor.x - w / 2; case .leading: return p.anchor.x; case .trailing: return p.anchor.x - w }
@@ -465,6 +473,9 @@ private struct CalloutLayer: View {
         if size.width >= 110 {
             let placed = placements
             ZStack(alignment: .topLeading) {
+                if editor.isEditing {
+                    marqueeBackground(placed)
+                }
                 ForEach(controls) { c in
                     if let pl = placed[c.id] {
                         let pts = leaderPoints(c, pl)
@@ -480,6 +491,14 @@ private struct CalloutLayer: View {
                         labelView(c, pl, placed)
                     }
                 }
+                if let m = editor.marquee, m.view == viewKey {
+                    Rectangle()
+                        .fill(Color.blue.opacity(0.12))
+                        .overlay(Rectangle().stroke(Color.blue, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                        .frame(width: m.rect.width, height: m.rect.height)
+                        .position(x: m.rect.midX, y: m.rect.midY)
+                        .allowsHitTesting(false)
+                }
             }
             .frame(width: frameSize.width, height: frameSize.height)
             .onContinuousHover { phase in
@@ -489,6 +508,48 @@ private struct CalloutLayer: View {
                 editor.pillSizes.merge(sizes) { $1 }
             }
             .onAppear { editor.aligners[viewKey] = { action in align(action) } }
+        }
+    }
+
+    /// Empty-space gestures: drag draws a selection box (Shift adds to the selection), click clears it.
+    private func marqueeBackground(_ placed: [String: Placed]) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture { if !NSEvent.modifierFlags.contains(.shift) { editor.selection = [] } }
+            .gesture(DragGesture(minimumDistance: 4)
+                .onChanged { v in
+                    let start = editor.marqueeStart ?? v.startLocation
+                    editor.marqueeStart = start
+                    let rect = CGRect(x: min(start.x, v.location.x), y: min(start.y, v.location.y),
+                                      width: abs(v.location.x - start.x), height: abs(v.location.y - start.y))
+                    editor.marquee = (viewKey, rect)
+                }
+                .onEnded { _ in
+                    defer { editor.marquee = nil; editor.marqueeStart = nil }
+                    guard let m = editor.marquee, m.view == viewKey else { return }
+                    let hit = Set(controls.compactMap { c -> String? in
+                        guard let p = placed[c.id] else { return nil }
+                        return pillRect(c.id, p).intersects(m.rect) ? c.id : nil
+                    })
+                    if NSEvent.modifierFlags.contains(.shift) { editor.selection.formUnion(hit) } else { editor.selection = hit }
+                })
+    }
+
+    /// Move the dragged label (snapped) and carry every other selected label in this view by the same delta.
+    private func dragLabels(_ c: ControlLayout.Control, _ pl: Placed, _ placed: [String: Placed], translation: CGSize) {
+        let origin = editor.dragOrigin[c.id] ?? pl.anchor
+        editor.dragOrigin[c.id] = origin
+        let raw = CGPoint(x: origin.x + translation.width, y: origin.y + translation.height)
+        let group = editor.selection.contains(c.id) && editor.selection.count > 1
+        let snappedPoint = snapped(raw, kind: pl.kind, excluding: c.id, in: group ? placed.filter { !editor.selection.contains($0.key) } : placed)
+        setLabel(c.id, anchor: snappedPoint, kind: pl.kind)
+        guard group else { return }
+        let delta = CGSize(width: snappedPoint.x - origin.x, height: snappedPoint.y - origin.y)
+        for other in controls where other.id != c.id && editor.selection.contains(other.id) {
+            guard let op = placed[other.id] else { continue }
+            let o = editor.dragOrigin[other.id] ?? op.anchor
+            editor.dragOrigin[other.id] = o
+            setLabel(other.id, anchor: CGPoint(x: o.x + delta.width, y: o.y + delta.height), kind: op.kind)
         }
     }
 
@@ -570,12 +631,9 @@ private struct CalloutLayer: View {
             .gesture(DragGesture(minimumDistance: 3)
                 .onChanged { v in
                     guard editor.isEditing else { return }
-                    let o = editor.dragOrigin[c.id] ?? pl.anchor
-                    editor.dragOrigin[c.id] = o
-                    let raw = CGPoint(x: o.x + v.translation.width, y: o.y + v.translation.height)
-                    setLabel(c.id, anchor: snapped(raw, kind: pl.kind, excluding: c.id, in: placed), kind: pl.kind)
+                    dragLabels(c, pl, placed, translation: v.translation)
                 }
-                .onEnded { _ in editor.dragOrigin[c.id] = nil })
+                .onEnded { _ in editor.dragOrigin = [:] })
         switch pl.kind {
         case .center:
             pill.position(pl.anchor)
@@ -685,6 +743,7 @@ private struct LayoutToolbar: View {
         HStack(spacing: 10) {
             if editor.isEditing {
                 Button("Done (lock layout)") { device.lockLayout() }.buttonStyle(.borderedProminent)
+                Button("Cancel") { device.cancelEditingLayout() }
                 Divider().frame(height: 16)
                 Group {
                     Button("Align left") { editor.perform(.leftEdges) }
@@ -709,10 +768,10 @@ private struct LayoutToolbar: View {
                 Slider(value: $editor.zoom, in: 1...4).frame(width: 120)
                 Text(String(format: "%.1fx", editor.zoom)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Spacer()
-                Text("Drag labels. Shift-click to select several. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Leader menu sets the shape of the selected labels' lines; Orthogonal keeps segments straight while dragging corners. Mouse wheel zooms toward the pointer.")
+                Text("Drag labels, or drag a box on empty space to select several (Shift adds); selected labels move together. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Leader menu sets the shape of the selected labels' lines; Orthogonal keeps segments straight while dragging corners. Mouse wheel zooms toward the pointer.")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else {
-                Button("Edit layout") { editor.isEditing = true }
+                Button("Edit layout") { device.beginEditingLayout() }
                 Spacer()
             }
         }

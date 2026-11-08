@@ -152,6 +152,22 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         for id in ids { updateControl(id) { $0.leaderPreset = preset; $0.leader = nil } }
     }
 
+    private var layoutBeforeEdit: ControlLayout?
+
+    func beginEditingLayout() {
+        layoutBeforeEdit = layout
+        editor.isEditing = true
+    }
+
+    /// Leave edit mode and throw away everything changed since it was entered.
+    func cancelEditingLayout() {
+        if let l = layoutBeforeEdit { layout = l }
+        editor.isEditing = false
+        editor.selection = []
+        editor.zoom = 1
+        log("layout edits discarded")
+    }
+
     /// Lock the layout: leave edit mode and persist it.
     func lockLayout() {
         editor.isEditing = false
