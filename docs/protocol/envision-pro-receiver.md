@@ -54,3 +54,29 @@ Raw descriptors: `scuf-envision/captures/desc_if3_ff58.hex`, `desc_if4_consumer.
 - GDHub matches both and shows "Receiver idle (controller off)" for 0x3a09.
 - Related prior art, ranked in `docs/research/slipstream-prior-art-brief.md`: OpenLinkHub (Go) has a driver for this exact receiver including rumble on if3 output report 0x09; ZeroCue (C#, Windows) implements the Corsair Bragi control protocol on the 0xFF42 channel; Scuf2Switch documents the V1 dongle.
 - This Mac also has iCUE 5 for Mac installed with its DriverKit extension `com.corsair.cue.main.VirtualHIDDeviceDriver` active, plus OpenJoystickDriver and Razer's virtual HID dext. Any of these can interfere with or explain device behaviour.
+
+## Report 0x06 control table (learned in GDHub, 2026-11-08, factory profile)
+| Control | Field |
+|---|---|
+| A, B, X, Y | buttons 1, 2, 3, 4 |
+| LB, RB | buttons 5, 6 |
+| View, Menu | buttons 7, 8 |
+| L3, R3 | buttons 9, 10 |
+| Start (centre power button) | button 11 |
+| G1 … G5 | buttons 12 … 16 |
+| Profile | button 17 |
+| buttons 18, 19 | not seen |
+| LT, RT | Rx (0..1023), Ry (0..1023) |
+| Left stick | X (right +), Y (down +) |
+| Right stick | Z (right +), Rz (down +) |
+| D-pad | hat 0 up, 2 right, 4 down, 6 left |
+
+Extra bits (the 13 "vendor padding" bits) are the **physical** paddle / SAX state. The standard fields carry whatever the on-controller profile maps them to (factory profile: paddles = D-pad, SAX = A / B).
+| Physical control | Extra bit | Factory-profile function |
+|---|---|---|
+| Paddle outer right (as seen from the back) | bit 0 | hat 2 (right) |
+| Paddle inner right | bit 1 | hat 4 (down) |
+| Paddle inner left | bit 2 | hat 0 (up) |
+| Paddle outer left | bit 3 | hat 6 (left) |
+| SAX left | bit 4 | button 1 (A) |
+| SAX right | bit 5 | button 2 (B) |

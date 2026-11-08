@@ -146,7 +146,11 @@ final class LearnSession: ObservableObject {
                 risenButtons.append(bit + 1)
             }
         }
-        risenExtra |= f.extra & ~baseline.extra
+        // Keep only the first extra bit that rose: a neighbouring paddle brushed later must not merge in.
+        if risenExtra == 0 {
+            let newExtra = f.extra & ~baseline.extra
+            if newExtra != 0 { risenExtra = newExtra & (~newExtra &+ 1) }
+        }
         if f.hat != 8 && f.hat != baseline.hat { hatCounts[f.hat, default: 0] += 1 }
         for name in GamepadFrame.axisNames {
             if let v = f.axis(name), let b = baseline.axis(name) { recordPeak(name, v - b) }

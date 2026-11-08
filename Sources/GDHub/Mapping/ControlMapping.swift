@@ -47,13 +47,37 @@ struct LearnAssignment {
 struct ControlMapping: Codable, Equatable {
     var buttons: [String: Binding] = [:]
     var sticks: [String: StickBinding] = [:]
-    /// Diagnostic: "extra" bits (13-bit field) seen rising while the control was pressed.
+    /// "Extra" bit (13-bit field) that identifies the physical paddle / SAX button. When present it
+    /// takes precedence over `buttons`, because the standard field only carries the function the
+    /// on-controller profile maps the paddle to (D-pad, A, B ...).
     var physicalBits: [String: UInt16] = [:]
 
+    /// Factory layout of the SCUF Envision Pro as learned on real hardware (docs/protocol).
     static var `default`: ControlMapping {
         var m = ControlMapping()
-        m.buttons["menu"] = .button(7)
-        m.buttons["start"] = .button(11)
+        let buttons: [(String, Int)] = [
+            ("a", 1), ("b", 2), ("x", 3), ("y", 4), ("lb", 5), ("rb", 6), ("view", 7), ("menu", 8),
+            ("l3", 9), ("r3", 10), ("start", 11), ("g1", 12), ("g2", 13), ("g3", 14), ("g4", 15), ("g5", 16),
+            ("profile", 17),
+        ]
+        for (id, n) in buttons { m.buttons[id] = .button(n) }
+        m.buttons["lt"] = .trigger("lt")
+        m.buttons["rt"] = .trigger("rt")
+        m.buttons["dpad_up"] = .hat(0)
+        m.buttons["dpad_right"] = .hat(2)
+        m.buttons["dpad_down"] = .hat(4)
+        m.buttons["dpad_left"] = .hat(6)
+        m.sticks["left_stick"] = StickBinding(horizontal: .axis("x", sign: 1), vertical: .axis("y", sign: 1))
+        m.sticks["right_stick"] = StickBinding(horizontal: .axis("z", sign: 1), vertical: .axis("rz", sign: 1))
+        // Factory profile: paddles act as the D-pad, SAX buttons as A / B.
+        m.buttons["paddle_outer_right"] = .hat(2)
+        m.buttons["paddle_inner_right"] = .hat(4)
+        m.buttons["paddle_inner_left"] = .hat(0)
+        m.buttons["paddle_outer_left"] = .hat(6)
+        m.buttons["sax_left"] = .button(1)
+        m.buttons["sax_right"] = .button(2)
+        m.physicalBits = ["paddle_outer_right": 1, "paddle_inner_right": 2, "paddle_inner_left": 4,
+                          "paddle_outer_left": 8, "sax_left": 16, "sax_right": 32]
         return m
     }
 
@@ -67,6 +91,11 @@ struct ControlMapping: Codable, Equatable {
     }
 
     func isActive(_ controlId: String, _ frame: GamepadFrame) -> Bool {
+        // Physical identity wins: a paddle lights only when that paddle is pressed, not when the
+        // button it is mapped to is pressed on the face.
+        if let bits = physicalBits[controlId], bits != 0 {
+            return frame.extra & bits == bits
+        }
         if let b = buttons[controlId] {
             switch b {
             case .button(let n):
@@ -87,10 +116,6 @@ struct ControlMapping: Codable, Equatable {
         if let s = sticks[controlId] {
             if let p = stickPosition(controlId, frame, binding: s) { return abs(p.x) > 0.5 || abs(p.y) > 0.5 }
             return false
-        }
-        // Only the physical (extra) bits are known for this control.
-        if let bits = physicalBits[controlId], bits != 0 {
-            return frame.extra & bits == bits
         }
         return false
     }
@@ -135,8 +160,11 @@ struct ControlMapping: Codable, Equatable {
                 sticks[a.controlId] = s
             }
         }
+        // Replace rather than merge so re-learning clears a stale bit.
         if a.physicalBits != 0 {
-            physicalBits[a.controlId, default: 0] |= a.physicalBits
+            physicalBits[a.controlId] = a.physicalBits
+        } else if a.target == .whole {
+            physicalBits[a.controlId] = nil
         }
     }
 }
