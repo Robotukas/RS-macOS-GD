@@ -147,6 +147,11 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         layout = l
     }
 
+    /// Apply a leader preset ("oneCorner", "twoCorners" or nil for straight) to controls, discarding hand-placed corners.
+    func setLeaderPreset(_ preset: String?, for ids: Set<String>) {
+        for id in ids { updateControl(id) { $0.leaderPreset = preset; $0.leader = nil } }
+    }
+
     /// Lock the layout: leave edit mode and persist it.
     func lockLayout() {
         editor.isEditing = false

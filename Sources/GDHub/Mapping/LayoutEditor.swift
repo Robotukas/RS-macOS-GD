@@ -11,6 +11,8 @@ final class LayoutEditor: ObservableObject {
     @Published var pillSizes: [String: CGSize] = [:]
     /// Magnification of the controller row while editing (1 = fit to window).
     @Published var zoom: Double = 1
+    /// Keep leader segments horizontal / vertical while dragging corners.
+    @Published var orthogonal = true
     /// Last pointer position per view (frame coordinates), for "Add corner here".
     var hoverPoint: [String: CGPoint] = [:]
 

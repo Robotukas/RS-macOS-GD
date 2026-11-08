@@ -314,14 +314,44 @@ private struct CalloutLayer: View {
         }
     }
 
-    private func corners(_ c: ControlLayout.Control) -> [CGPoint] {
-        (c.leader ?? []).compactMap { $0.count == 2 ? toFrame($0[0], $0[1]) : nil }
+    private func corners(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
+        if let l = c.leader { return l.compactMap { $0.count == 2 ? toFrame($0[0], $0[1]) : nil } }
+        return presetCorners(c, p)
+    }
+
+    /// Orthogonal presets: horizontal from the label, vertical into the control (or the other way round
+    /// when the label is mostly above / below the control). Two corners put a vertical middle segment in.
+    private func presetCorners(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
+        guard let preset = c.leaderPreset else { return [] }
+        let e = leaderEnd(p), ctr = point(c)
+        let horizontal = abs(e.x - ctr.x) >= abs(e.y - ctr.y)
+        switch preset {
+        case "oneCorner":
+            return [horizontal ? CGPoint(x: ctr.x, y: e.y) : CGPoint(x: e.x, y: ctr.y)]
+        case "twoCorners":
+            if horizontal {
+                let m = (e.x + ctr.x) / 2
+                return [CGPoint(x: m, y: e.y), CGPoint(x: m, y: ctr.y)]
+            } else {
+                let m = (e.y + ctr.y) / 2
+                return [CGPoint(x: e.x, y: m), CGPoint(x: ctr.x, y: m)]
+            }
+        default:
+            return []
+        }
+    }
+
+    /// Turn a preset into explicit corners so they can be edited individually.
+    private func materializeCorners(_ c: ControlLayout.Control, _ p: Placed) {
+        guard c.leader == nil else { return }
+        let cs = corners(c, p).map { pt -> [Double] in let (fx, fy) = toFraction(pt); return [fx, fy] }
+        device.updateControl(c.id) { $0.leader = cs.isEmpty ? [] : cs; $0.leaderPreset = nil }
     }
 
     /// Points of the leader polyline: control edge, corners, label.
     private func leaderPoints(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
         let centre = point(c)
-        let cs = corners(c)
+        let cs = corners(c, p)
         let end = leaderEnd(p)
         let first = cs.first ?? end
         let r = layout.radius(of: c) * size.width
@@ -391,6 +421,7 @@ private struct CalloutLayer: View {
     }
 
     private func addCorner(_ c: ControlLayout.Control, segment: Int, at p: CGPoint) {
+        if let pl = placements[c.id] { materializeCorners(c, pl) }
         let (fx, fy) = toFraction(p)
         device.updateControl(c.id) {
             var l = $0.leader ?? []
@@ -407,7 +438,18 @@ private struct CalloutLayer: View {
         }
     }
 
-    private func moveCorner(_ c: ControlLayout.Control, index: Int, to p: CGPoint) {
+    private func moveCorner(_ c: ControlLayout.Control, index: Int, to raw: CGPoint) {
+        guard let pl = placements[c.id] else { return }
+        materializeCorners(c, pl)
+        var p = raw
+        if editor.orthogonal {
+            // Snap to the neighbouring points so the adjacent segments become horizontal / vertical.
+            let pts = leaderPoints(c, pl)          // [start] + corners + [end]
+            let prev = pts[index], next = pts[index + 2]
+            let tol: CGFloat = 10
+            if abs(p.x - prev.x) < tol { p.x = prev.x } else if abs(p.x - next.x) < tol { p.x = next.x }
+            if abs(p.y - prev.y) < tol { p.y = prev.y } else if abs(p.y - next.y) < tol { p.y = next.y }
+        }
         let (fx, fy) = toFraction(p)
         device.updateControl(c.id) {
             guard var l = $0.leader, l.indices.contains(index) else { return }
@@ -512,6 +554,18 @@ private struct CalloutLayer: View {
             .onTapGesture {
                 guard editor.isEditing else { return }
                 editor.toggleSelection(c.id, extend: NSEvent.modifierFlags.contains(.shift))
+            }
+            .contextMenu {
+                if editor.isEditing {
+                    Menu("Leader") {
+                        Button("Straight") { device.setLeaderPreset(nil, for: [c.id]) }
+                        Button("One corner") { device.setLeaderPreset("oneCorner", for: [c.id]) }
+                        Button("Two corners") { device.setLeaderPreset("twoCorners", for: [c.id]) }
+                    }
+                    Button("Reset label position") {
+                        device.updateControl(c.id) { $0.labelX = nil; $0.labelY = nil; $0.labelAnchor = nil }
+                    }
+                }
             }
             .gesture(DragGesture(minimumDistance: 3)
                 .onChanged { v in
@@ -640,6 +694,14 @@ private struct LayoutToolbar: View {
                 .disabled(editor.selection.count < 2)
                 Button("Distribute") { editor.perform(.distributeVertically) }
                     .disabled(editor.selection.count < 3)
+                Menu("Leader") {
+                    Button("Straight") { device.setLeaderPreset(nil, for: editor.selection) }
+                    Button("One corner") { device.setLeaderPreset("oneCorner", for: editor.selection) }
+                    Button("Two corners") { device.setLeaderPreset("twoCorners", for: editor.selection) }
+                }
+                .fixedSize()
+                .disabled(editor.selection.isEmpty)
+                Toggle("Orthogonal", isOn: $editor.orthogonal).toggleStyle(.checkbox)
                 Divider().frame(height: 16)
                 Button("Reset layout") { device.resetLayout() }
                 Divider().frame(height: 16)
@@ -647,7 +709,7 @@ private struct LayoutToolbar: View {
                 Slider(value: $editor.zoom, in: 1...4).frame(width: 120)
                 Text(String(format: "%.1fx", editor.zoom)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Spacer()
-                Text("Drag labels. Shift-click to select several. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Mouse wheel zooms toward the pointer; trackpad pans, pinch or Cmd-scroll zooms.")
+                Text("Drag labels. Shift-click to select several. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Leader menu sets the shape of the selected labels' lines; Orthogonal keeps segments straight while dragging corners. Mouse wheel zooms toward the pointer.")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else {
                 Button("Edit layout") { editor.isEditing = true }

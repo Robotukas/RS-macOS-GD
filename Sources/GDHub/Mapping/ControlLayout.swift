@@ -82,7 +82,10 @@ struct ControlLayout: Codable {
         var labelY: Double?
         var labelAnchor: LabelAnchor?
         /// Intermediate corner points of the leader line, control -> corners -> label, as image fractions.
+        /// When nil, `leaderPreset` (if any) computes the corners from the label and control positions.
         var leader: [[Double]]?
+        /// "oneCorner" or "twoCorners": orthogonal leader shape recomputed as the label moves.
+        var leaderPreset: String?
 
         var isPill: Bool { shape == "pill" }
     }
