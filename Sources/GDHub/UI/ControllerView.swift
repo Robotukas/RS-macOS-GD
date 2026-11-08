@@ -620,8 +620,8 @@ private struct CalloutLayer: View {
                 if editor.isEditing {
                     Menu("Leader") {
                         Button("Straight") { device.setLeaderPreset(nil, for: [c.id]) }
-                        Button("One corner") { device.setLeaderPreset("oneCorner", for: [c.id]) }
-                        Button("Two corners") { device.setLeaderPreset("twoCorners", for: [c.id]) }
+                        Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: [c.id]) }
+                        Button("Z shape (two corners)") { device.setLeaderPreset("twoCorners", for: [c.id]) }
                     }
                     Button("Reset label position") {
                         device.updateControl(c.id) { $0.labelX = nil; $0.labelY = nil; $0.labelAnchor = nil }
@@ -755,8 +755,8 @@ private struct LayoutToolbar: View {
                     .disabled(editor.selection.count < 3)
                 Menu("Leader") {
                     Button("Straight") { device.setLeaderPreset(nil, for: editor.selection) }
-                    Button("One corner") { device.setLeaderPreset("oneCorner", for: editor.selection) }
-                    Button("Two corners") { device.setLeaderPreset("twoCorners", for: editor.selection) }
+                    Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: editor.selection) }
+                    Button("Z shape (two corners)") { device.setLeaderPreset("twoCorners", for: editor.selection) }
                 }
                 .fixedSize()
                 .disabled(editor.selection.isEmpty)
