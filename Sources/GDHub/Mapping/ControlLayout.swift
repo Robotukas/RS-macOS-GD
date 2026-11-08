@@ -97,6 +97,26 @@ struct ControlLayout: Codable {
     /// Per view (by Side raw value): x positions (fractions of width) of the left and right label columns.
     var labelColumns: [String: LabelColumns]?
     var labelGutters: [String: LabelGutters]?
+    var labelFont: LabelFont?
+
+    /// Callout text size. Fixed: always `size` points. Scaled: `size` at the image's natural pixel
+    /// width, growing and shrinking with the view, locked between `minSize` and `maxSize`.
+    struct LabelFont: Codable, Equatable {
+        var size: Double = 10
+        var scaled: Bool = false
+        var minSize: Double = 7
+        var maxSize: Double = 16
+
+        static let standard = LabelFont()
+
+        /// Point size for a view drawn `viewScale` times its natural image size.
+        func pointSize(viewScale: Double) -> Double {
+            guard scaled else { return size }
+            return min(max(size * viewScale, minSize), maxSize)
+        }
+    }
+
+    var font: LabelFont { labelFont ?? .standard }
     var note: String?
     var controls: [Control]
 

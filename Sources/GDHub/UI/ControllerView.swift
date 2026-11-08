@@ -258,6 +258,13 @@ private struct CalloutLayer: View {
 
     private var viewKey: String { controls.first?.view.rawValue ?? "" }
 
+    /// Label font for this view: fixed, or scaled by how large the image is drawn versus its pixel size.
+    private var fontSize: CGFloat {
+        guard let side = controls.first?.view else { return 10 }
+        let natural = layout.images.info(for: side).width
+        return CGFloat(layout.font.pointSize(viewScale: natural > 0 ? size.width / natural : 1))
+    }
+
     private func point(_ c: ControlLayout.Control) -> CGPoint {
         CGPoint(x: origin.x + c.x * size.width, y: origin.y + c.y * size.height)
     }
@@ -285,7 +292,7 @@ private struct CalloutLayer: View {
                 out[c.id] = Placed(anchor: toFrame(lx, ly), kind: c.labelAnchor ?? .center)
             }
         }
-        let gap: CGFloat = 20
+        let gap: CGFloat = fontSize * 2
         let cols = layout.labelColumns?[viewKey]
         for side in ["left", "right"] {
             let members = controls.filter { $0.labelSide == side && out[$0.id] == nil }.sorted { $0.y < $1.y }
@@ -602,11 +609,12 @@ private struct CalloutLayer: View {
     @ViewBuilder
     private func labelView(_ c: ControlLayout.Control, _ pl: Placed, _ placed: [String: Placed]) -> some View {
         let col = color(c)
+        let fs = fontSize
         let pill = Text(c.label)
-            .font(.system(size: 10, weight: .medium))
+            .font(.system(size: fs, weight: .medium))
             .foregroundStyle(col)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .padding(.horizontal, fs * 0.5)
+            .padding(.vertical, fs * 0.2)
             .background(Color.black.opacity(0.6), in: Capsule())
             .overlay(Capsule().stroke(col.opacity(editor.isEditing ? 0.9 : 0.5),
                                       style: StrokeStyle(lineWidth: editor.isEditing ? 1 : 0.5, dash: editor.isEditing ? [3, 2] : [])))
@@ -776,6 +784,51 @@ private struct LayoutToolbar: View {
             }
         }
         .padding(.horizontal)
+        if editor.isEditing {
+            FontToolbar(device: device)
+                .padding(.horizontal)
+        }
+    }
+}
+
+/// Label font controls: point size, fixed or scaled with the view, and the lock range for scaled.
+private struct FontToolbar: View {
+    @ObservedObject var device: EnvisionProDevice
+
+    private var font: ControlLayout.LabelFont { device.layout?.font ?? .standard }
+
+    private func update(_ change: (inout ControlLayout.LabelFont) -> Void) {
+        guard var l = device.layout else { return }
+        var f = l.font
+        change(&f)
+        if f.minSize > f.maxSize { f.minSize = f.maxSize }
+        l.labelFont = f
+        device.layout = l
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Label font").font(.caption).foregroundStyle(.secondary)
+            Slider(value: SwiftUI.Binding<Double>(get: { font.size }, set: { v in update { $0.size = v } }), in: 6...20, step: 0.5)
+                .frame(width: 140)
+            Text(String(format: "%.1f pt", font.size)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Picker("", selection: SwiftUI.Binding<Bool>(get: { font.scaled }, set: { v in update { $0.scaled = v } })) {
+                Text("Fixed size").tag(false)
+                Text("Scales with view").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            if font.scaled {
+                Text("lock between").font(.caption).foregroundStyle(.secondary)
+                Stepper(String(format: "%.0f pt", font.minSize),
+                        value: SwiftUI.Binding<Double>(get: { font.minSize }, set: { v in update { $0.minSize = v } }), in: 4...30)
+                Text("and").font(.caption).foregroundStyle(.secondary)
+                Stepper(String(format: "%.0f pt", font.maxSize),
+                        value: SwiftUI.Binding<Double>(get: { font.maxSize }, set: { v in update { $0.maxSize = max(v, $0.minSize) } }), in: 4...40)
+            }
+            Spacer()
+        }
+        .controlSize(.small)
     }
 }
 
