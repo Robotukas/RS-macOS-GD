@@ -189,6 +189,20 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         for id in ids { updateControl(id) { $0.leaderAttach = attach } }
     }
 
+    func setLeaderOrientation(_ orientation: String?, for ids: Set<String>) {
+        for id in ids { updateControl(id) { $0.leaderOrientation = orientation } }
+    }
+
+    /// Swap horizontal-first / vertical-first for each control (relative to what it currently shows).
+    func flipLeaderOrientation(for ids: Set<String>) {
+        for id in ids {
+            updateControl(id) {
+                let current = $0.leaderOrientation ?? "auto"
+                $0.leaderOrientation = current == "vFirst" ? "hFirst" : (current == "hFirst" ? "vFirst" : "flip")
+            }
+        }
+    }
+
     func moveView(_ side: ControlLayout.Side, dx: Int, dy: Int) {
         guard var l = layout else { return }
         l.moveView(side, dx: dx, dy: dy)

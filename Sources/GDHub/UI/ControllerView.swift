@@ -333,6 +333,9 @@ private struct CalloutLayer: View {
     /// Where the leader meets the label: a side edge, or the bottom / top centre of the pill.
     private func leaderEnd(_ c: ControlLayout.Control, _ p: Placed) -> CGPoint {
         let rect = pillRect(c.id, p)
+        if let dx = c.leaderEndDx, let dy = c.leaderEndDy {
+            return CGPoint(x: rect.midX + dx * rect.width, y: rect.midY + dy * rect.height)
+        }
         let ctr = point(c)
         var attach = c.leaderAttach ?? "auto"
         if attach == "auto" {
@@ -347,6 +350,13 @@ private struct CalloutLayer: View {
         }
     }
 
+    /// Where the leader meets the control: the hand-set target, or the control centre (trimmed to the
+    /// hotspot edge in `leaderPoints`).
+    private func targetPoint(_ c: ControlLayout.Control) -> CGPoint? {
+        guard let dx = c.leaderTargetDx, let dy = c.leaderTargetDy else { return nil }
+        return toFrame(c.x + dx, c.y + dy)
+    }
+
     private func corners(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
         if let l = c.leader { return l.compactMap { $0.count == 2 ? toFrame($0[0], $0[1]) : nil } }
         return presetCorners(c, p)
@@ -356,8 +366,15 @@ private struct CalloutLayer: View {
     /// when the label is mostly above / below the control). Two corners put a vertical middle segment in.
     private func presetCorners(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
         guard let preset = c.leaderPreset else { return [] }
-        let e = leaderEnd(c, p), ctr = point(c)
-        let horizontal = abs(e.x - ctr.x) >= abs(e.y - ctr.y)
+        let e = leaderEnd(c, p), ctr = targetPoint(c) ?? point(c)
+        let byGeometry = abs(e.x - ctr.x) >= abs(e.y - ctr.y)
+        let horizontal: Bool
+        switch c.leaderOrientation {
+        case "hFirst": horizontal = true
+        case "vFirst": horizontal = false
+        case "flip": horizontal = !byGeometry
+        default: horizontal = byGeometry
+        }
         switch preset {
         case "oneCorner":
             return [horizontal ? CGPoint(x: ctr.x, y: e.y) : CGPoint(x: e.x, y: ctr.y)]
@@ -383,15 +400,30 @@ private struct CalloutLayer: View {
 
     /// Points of the leader polyline: control edge, corners, label.
     private func leaderPoints(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
-        let centre = point(c)
         let cs = corners(c, p)
         let end = leaderEnd(c, p)
+        if let t = targetPoint(c) { return [t] + cs + [end] }
+        let centre = point(c)
         let first = cs.first ?? end
         let r = layout.radius(of: c) * size.width
         let v = CGVector(dx: first.x - centre.x, dy: first.y - centre.y)
         let len = max((v.dx * v.dx + v.dy * v.dy).squareRoot(), 1)
         let start = CGPoint(x: centre.x + v.dx / len * r * 0.9, y: centre.y + v.dy / len * r * 0.9)
         return [start] + cs + [end]
+    }
+
+    /// Drag the point where the leader meets the label; stored relative to the pill so it survives resizes.
+    private func moveEnd(_ c: ControlLayout.Control, _ p: Placed, to pt: CGPoint) {
+        let rect = pillRect(c.id, p)
+        let dx = max(-0.5, min(0.5, (pt.x - rect.midX) / max(rect.width, 1)))
+        let dy = max(-0.5, min(0.5, (pt.y - rect.midY) / max(rect.height, 1)))
+        device.updateControl(c.id) { $0.leaderEndDx = dx; $0.leaderEndDy = dy }
+    }
+
+    /// Drag the point where the leader meets the control.
+    private func moveTarget(_ c: ControlLayout.Control, to pt: CGPoint) {
+        let (fx, fy) = toFraction(pt)
+        device.updateControl(c.id) { $0.leaderTargetDx = fx - c.x; $0.leaderTargetDy = fy - c.y }
     }
 
     private func color(_ c: ControlLayout.Control) -> Color {
@@ -626,6 +658,37 @@ private struct CalloutLayer: View {
 
     @ViewBuilder
     private func cornerHandles(_ c: ControlLayout.Control, _ pts: [CGPoint]) -> some View {
+        // Target handle (green) where the line meets the control, end handle (yellow square) at the label.
+        if let pl = placements[c.id] {
+            Circle()
+                .fill(Color.green)
+                .overlay(Circle().stroke(Color.white, lineWidth: 1))
+                .frame(width: 9, height: 9)
+                .position(pts[0])
+                .contextMenu { Button("Reset leader target") { device.updateControl(c.id) { $0.leaderTargetDx = nil; $0.leaderTargetDy = nil } } }
+                .gesture(DragGesture(minimumDistance: 2)
+                    .onChanged { v in
+                        let key = "\(c.id)#target"
+                        let o = editor.dragOrigin[key] ?? pts[0]
+                        editor.dragOrigin[key] = o
+                        moveTarget(c, to: CGPoint(x: o.x + v.translation.width, y: o.y + v.translation.height))
+                    }
+                    .onEnded { _ in editor.dragOrigin["\(c.id)#target"] = nil })
+            Rectangle()
+                .fill(Color.yellow)
+                .overlay(Rectangle().stroke(Color.black.opacity(0.6), lineWidth: 1))
+                .frame(width: 8, height: 8)
+                .position(pts[pts.count - 1])
+                .contextMenu { Button("Reset leader end") { device.updateControl(c.id) { $0.leaderEndDx = nil; $0.leaderEndDy = nil } } }
+                .gesture(DragGesture(minimumDistance: 2)
+                    .onChanged { v in
+                        let key = "\(c.id)#end"
+                        let o = editor.dragOrigin[key] ?? pts[pts.count - 1]
+                        editor.dragOrigin[key] = o
+                        moveEnd(c, pl, to: CGPoint(x: o.x + v.translation.width, y: o.y + v.translation.height))
+                    }
+                    .onEnded { _ in editor.dragOrigin["\(c.id)#end"] = nil })
+        }
         // pts = [start] + corners + [end]
         let n = max(pts.count - 2, 0)
         ForEach(0..<n, id: \.self) { i in
@@ -671,11 +734,16 @@ private struct CalloutLayer: View {
                         Button("Straight") { device.setLeaderPreset(nil, for: [c.id]) }
                         Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: [c.id]) }
                         Button("Z shape (two corners)") { device.setLeaderPreset("twoCorners", for: [c.id]) }
+                        Button("Flip corner direction") { device.flipLeaderOrientation(for: [c.id]) }
                         Divider()
                         Button("Leaves label: automatic") { device.setLeaderAttach(nil, for: [c.id]) }
                         Button("Leaves label: side") { device.setLeaderAttach("side", for: [c.id]) }
                         Button("Leaves label: below") { device.setLeaderAttach("below", for: [c.id]) }
                         Button("Leaves label: above") { device.setLeaderAttach("above", for: [c.id]) }
+                        Divider()
+                        Button("Reset leader end and target") {
+                            device.updateControl(c.id) { $0.leaderEndDx = nil; $0.leaderEndDy = nil; $0.leaderTargetDx = nil; $0.leaderTargetDy = nil }
+                        }
                     }
                     Button("Reset label position") {
                         device.updateControl(c.id) { $0.labelX = nil; $0.labelY = nil; $0.labelAnchor = nil }
@@ -811,6 +879,9 @@ private struct LayoutToolbar: View {
                     Button("Straight") { device.setLeaderPreset(nil, for: editor.selection) }
                     Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: editor.selection) }
                     Button("Z shape (two corners)") { device.setLeaderPreset("twoCorners", for: editor.selection) }
+                    Button("Horizontal first") { device.setLeaderOrientation("hFirst", for: editor.selection) }
+                    Button("Vertical first") { device.setLeaderOrientation("vFirst", for: editor.selection) }
+                    Button("Flip corner direction") { device.flipLeaderOrientation(for: editor.selection) }
                     Divider()
                     Button("Leaves label: automatic") { device.setLeaderAttach(nil, for: editor.selection) }
                     Button("Leaves label: side") { device.setLeaderAttach("side", for: editor.selection) }
@@ -834,7 +905,7 @@ private struct LayoutToolbar: View {
                 Slider(value: $editor.zoom, in: 1...4).frame(width: 120)
                 Text(String(format: "%.1fx", editor.zoom)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Spacer()
-                Text("Drag labels, or drag a box on empty space to select several (Shift adds); selected labels move together. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Leader menu sets the shape of the selected labels' lines; Orthogonal keeps segments straight while dragging corners. Mouse wheel zooms toward the pointer.")
+                Text("Drag labels, or drag a box on empty space to select several (Shift adds); selected labels move together. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Leader menu sets shape and corner direction; drag the yellow square to move where the line meets the label and the green dot to move where it meets the control. Mouse wheel zooms toward the pointer.")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else {
                 Button("Edit layout") { device.beginEditingLayout() }

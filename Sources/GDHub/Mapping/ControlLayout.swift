@@ -88,6 +88,16 @@ struct ControlLayout: Codable {
         var leaderPreset: String?
         /// Where the leader leaves the label: "side" (left/right edge), "below", "above", or nil = auto.
         var leaderAttach: String?
+        /// Preset orientation: "hFirst" (horizontal out of the label, then vertical) or "vFirst"; nil = by geometry.
+        var leaderOrientation: String?
+        /// Hand-adjusted point where the leader meets the label, relative to the pill centre in units of the
+        /// pill's width / height (-0.5...0.5). Overrides `leaderAttach` when set.
+        var leaderEndDx: Double?
+        var leaderEndDy: Double?
+        /// Hand-adjusted point where the leader meets the control, as an offset from the control centre
+        /// in image fractions. When set the line ends exactly there instead of at the hotspot edge.
+        var leaderTargetDx: Double?
+        var leaderTargetDy: Double?
 
         var isPill: Bool { shape == "pill" }
     }
