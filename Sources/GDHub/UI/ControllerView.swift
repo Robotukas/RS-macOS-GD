@@ -21,13 +21,25 @@ struct ControllerView: View {
     var body: some View {
         if let layout = device.layout {
             VStack(spacing: 12) {
-                HStack(alignment: .center, spacing: 16) {
-                    ControllerSideView(device: device, layout: layout, side: .sideLeft)
-                        .frame(maxWidth: 240)
-                    ControllerSideView(device: device, layout: layout, side: .front)
-                    ControllerSideView(device: device, layout: layout, side: .back)
-                    ControllerSideView(device: device, layout: layout, side: .sideRight)
-                        .frame(maxWidth: 240)
+                // One scale factor for all four views: each gets a width proportional to its image,
+                // so resizing the window grows or shrinks every view by the same amount.
+                GeometryReader { geo in
+                    let views: [ControlLayout.Side] = [.sideLeft, .front, .back, .sideRight]
+                    let spacing: CGFloat = 16
+                    let titleHeight: CGFloat = 18
+                    let totalWidth = views.reduce(0) { $0 + layout.images.info(for: $1).width }
+                    let maxHeight = views.map { layout.images.info(for: $0).height }.max() ?? 1
+                    let availWidth = max(geo.size.width - spacing * CGFloat(views.count - 1), 1)
+                    let availHeight = max(geo.size.height - titleHeight, 1)
+                    let scale = min(availWidth / totalWidth, availHeight / maxHeight)
+                    HStack(alignment: .bottom, spacing: spacing) {
+                        ForEach(views, id: \.self) { side in
+                            let info = layout.images.info(for: side)
+                            ControllerSideView(device: device, layout: layout, side: side)
+                                .frame(width: info.width * scale, height: info.height * scale + titleHeight)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .padding(.horizontal)
                 HStack(alignment: .top, spacing: 16) {
@@ -193,6 +205,7 @@ private struct HotspotView: View {
         }
         .frame(width: width, height: diameter)
         .overlay(alignment: .bottom) {
+            if diameter >= 14 {
             Text(control.label)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.white)
@@ -202,6 +215,7 @@ private struct HotspotView: View {
                 .fixedSize()
                 .offset(y: 13)
                 .allowsHitTesting(false)
+            }
         }
         .contentShape(shape)
         .onTapGesture(perform: onTap)
