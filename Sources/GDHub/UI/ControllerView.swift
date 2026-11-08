@@ -623,13 +623,22 @@ private struct CalloutLayer: View {
     }
 
     /// Write the dragged positions into the layout (one change, one autosave) and clear the live state.
+    /// A single dragged label is stored by its centre: an edge anchor keeps that edge fixed, so with a
+    /// fixed-size font the pill's centre (and a Below / Above leader) would drift as the view zooms.
+    /// Group drags keep their anchors so aligned edges stay aligned.
     private func commitDrag(_ placed: [String: Placed]) {
         let live = editor.liveAnchors
         editor.liveAnchors = [:]
         editor.dragOrigin = [:]
+        let single = live.count == 1
         for (id, anchor) in live {
             guard let kind = placed[id]?.kind else { continue }
-            setLabel(id, anchor: anchor, kind: kind)
+            if single && kind != .center {
+                let rect = pillRect(id, Placed(anchor: anchor, kind: kind))
+                setLabel(id, anchor: CGPoint(x: rect.midX, y: rect.midY), kind: .center)
+            } else {
+                setLabel(id, anchor: anchor, kind: kind)
+            }
         }
     }
 
