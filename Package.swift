@@ -10,5 +10,10 @@ let package = Package(
             path: "Sources/GDHub",
             resources: [.process("Resources")]
         ),
+        .testTarget(
+            name: "GDHubTests",
+            dependencies: ["GDHub"],
+            path: "Tests/GDHubTests"
+        ),
     ]
 )

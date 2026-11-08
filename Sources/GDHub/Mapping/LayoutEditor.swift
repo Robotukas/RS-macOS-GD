@@ -20,16 +20,17 @@ final class LayoutEditor: ObservableObject {
             }
         }
 
+        /// Cmd-Option-1 ... 8, in menu order (letters would collide with system shortcuts).
         var shortcutKey: KeyEquivalent {
             switch self {
-            case .leftEdges: return "l"
-            case .rightEdges: return "r"
-            case .centersHorizontal: return "c"
-            case .topEdges: return "t"
-            case .bottomEdges: return "b"
-            case .sameRow: return "m"
-            case .distributeVertically: return "v"
-            case .distributeHorizontally: return "h"
+            case .leftEdges: return "1"
+            case .rightEdges: return "2"
+            case .centersHorizontal: return "3"
+            case .topEdges: return "4"
+            case .bottomEdges: return "5"
+            case .sameRow: return "6"
+            case .distributeVertically: return "7"
+            case .distributeHorizontally: return "8"
             }
         }
 

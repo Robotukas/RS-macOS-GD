@@ -41,6 +41,8 @@ final class LearnSession: ObservableObject {
     /// Deflection (int16 units) that counts as "at the edge" for the circle capture.
     private let circleEdge = 14000
     private var baseInstruction = ""
+    /// Sector of the previous edge sample, so the arc between samples is marked too (fast rotations).
+    private var lastCircleSector: Int?
 
     var circlePercent: Int {
         guard !circleCovered.isEmpty else { return 0 }
@@ -281,6 +283,7 @@ final class LearnSession: ObservableObject {
         currentControl = step.control
         canGoBack = stepIndex > 0
         circleCovered = step.target == .stickCircle ? Array(repeating: false, count: Self.circleSectors) : []
+        lastCircleSector = nil
         progress = LearnProgress(current: step.controlIndex + 1, total: progress.total)
         baseInstruction = Self.instruction(for: step.control, target: step.target)
         instruction = baseInstruction
@@ -294,13 +297,27 @@ final class LearnSession: ObservableObject {
         let a = (dx: delta("x"), dy: delta("y")), b = (dx: delta("z"), dy: delta("rz"))
         let ma = (a.dx * a.dx + a.dy * a.dy).squareRoot(), mb = (b.dx * b.dx + b.dy * b.dy).squareRoot()
         let (dx, dy, m) = ma >= mb ? (a.dx, a.dy, ma) : (b.dx, b.dy, mb)
-        guard m >= Double(circleEdge) else { return }
+        guard m >= Double(circleEdge) else { lastCircleSector = nil; return }
         // Screen convention: x right, y down, so this angle runs clockwise from 9 o'clock at 0.
         let angle = atan2(dy, dx) + .pi
-        var sector = Int(angle / (2 * .pi) * Double(Self.circleSectors)) % Self.circleSectors
-        if sector < 0 { sector += Self.circleSectors }
-        guard !circleCovered[sector] else { return }
-        circleCovered[sector] = true
+        let n = Self.circleSectors
+        var sector = Int(angle / (2 * .pi) * Double(n)) % n
+        if sector < 0 { sector += n }
+        // Mark the sectors passed since the previous sample along the shorter way round, so a quick
+        // sweep with few samples still counts every sector it crossed.
+        var toMark = [sector]
+        if let last = lastCircleSector, last != sector {
+            let forward = (sector - last + n) % n, backward = (last - sector + n) % n
+            if min(forward, backward) < n / 2 {
+                let step = forward <= backward ? 1 : -1
+                var s = last
+                while s != sector { s = (s + step + n) % n; toMark.append(s) }
+            }
+        }
+        lastCircleSector = sector
+        let fresh = toMark.filter { !circleCovered[$0] }
+        guard !fresh.isEmpty else { return }
+        for s in fresh { circleCovered[s] = true }
         let pct = circlePercent
         if pct >= 100 {
             instruction = "Full circle captured (100%) - let go of the stick"
