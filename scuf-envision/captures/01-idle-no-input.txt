@@ -1,0 +1,36 @@
+manager open: ok; capturing for 5s
+  0.002 matched if page=0x000C usage=1 open=ok
+        usage pairs: (
+        {
+        DeviceUsage = 1;
+        DeviceUsagePage = 12;
+    },
+        {
+        DeviceUsage = 1;
+        DeviceUsagePage = 65346;
+    },
+        {
+        DeviceUsage = 2;
+        DeviceUsagePage = 65346;
+    }
+)
+  0.003 matched if page=0xFF58 usage=1 open=ok
+        usage pairs: (
+        {
+        DeviceUsage = 1;
+        DeviceUsagePage = 65368;
+    },
+        {
+        DeviceUsage = 5;
+        DeviceUsagePage = 1;
+    },
+        {
+        DeviceUsage = 48;
+        DeviceUsagePage = 1;
+    }
+)
+  0.004 [if page=0xFF58] id=0x06 len=16: 06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00
+[if page=0x000C] total reports received: 0
+[if page=0xFF58] total reports received: 4787
+[if page=0xFF58] id=0x06 ended with 4786 further identical reports
+done

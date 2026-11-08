@@ -1,0 +1,137 @@
+import Foundation
+import IOKit.hid
+
+struct HIDDeviceInfo {
+    let vendorId: Int
+    let productId: Int
+    let usagePage: Int
+}
+
+/// Per-device state kept alive for the IOKit callbacks.
+private final class HIDDeviceContext {
+    let buffer: UnsafeMutablePointer<UInt8>
+    let bufferSize = 4096
+    let info: HIDDeviceInfo
+    weak var monitor: HIDMonitor?
+
+    init(info: HIDDeviceInfo, monitor: HIDMonitor) {
+        self.info = info
+        self.monitor = monitor
+        buffer = .allocate(capacity: bufferSize)
+        buffer.initialize(repeating: 0, count: bufferSize)
+    }
+
+    deinit { buffer.deallocate() }
+}
+
+/// Thin IOHIDManager wrapper. Callbacks are scheduled on the main run loop
+/// (common modes, so they keep flowing while the UI is tracking mouse events)
+/// and delivered on the main actor.
+@MainActor
+final class HIDMonitor {
+    let matchList: [(vendorId: Int, productId: Int)]
+
+    var onDeviceMatched: ((IOHIDDevice, Int) -> Void)?
+    var onDeviceRemoved: ((IOHIDDevice) -> Void)?
+    var onInputReport: ((IOHIDDevice, UInt32, [UInt8]) -> Void)?
+    var onLog: ((String) -> Void)?
+
+    private var manager: IOHIDManager?
+    private var contexts: [ObjectIdentifier: HIDDeviceContext] = [:]
+    private let runLoopMode = CFRunLoopMode.commonModes.rawValue
+
+    init(matchList: [(vendorId: Int, productId: Int)]) {
+        self.matchList = matchList
+    }
+
+    /// Cached vendor/product/usage page for a device that has been matched.
+    func info(for device: IOHIDDevice) -> HIDDeviceInfo? {
+        contexts[ObjectIdentifier(device)]?.info
+    }
+
+    func start() {
+        guard manager == nil else { return }
+        let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        let dicts: [[String: Any]] = matchList.map {
+            [kIOHIDVendorIDKey: $0.vendorId, kIOHIDProductIDKey: $0.productId]
+        }
+        IOHIDManagerSetDeviceMatchingMultiple(mgr, dicts as CFArray)
+
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        IOHIDManagerRegisterDeviceMatchingCallback(mgr, { ctx, _, _, device in
+            guard let ctx = ctx else { return }
+            let monitor = Unmanaged<HIDMonitor>.fromOpaque(ctx).takeUnretainedValue()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { monitor.handleMatched(device) }
+            }
+        }, context)
+        IOHIDManagerRegisterDeviceRemovalCallback(mgr, { ctx, _, _, device in
+            guard let ctx = ctx else { return }
+            let monitor = Unmanaged<HIDMonitor>.fromOpaque(ctx).takeUnretainedValue()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { monitor.handleRemoved(device) }
+            }
+        }, context)
+
+        IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), runLoopMode)
+        let r = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        if r != kIOReturnSuccess {
+            onLog?("IOHIDManagerOpen failed: " + String(format: "0x%08x", r))
+        }
+        manager = mgr
+    }
+
+    func stop() {
+        guard let mgr = manager else { return }
+        IOHIDManagerUnscheduleFromRunLoop(mgr, CFRunLoopGetMain(), runLoopMode)
+        IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        manager = nil
+    }
+
+    private func intProperty(_ device: IOHIDDevice, _ key: String) -> Int {
+        (IOHIDDeviceGetProperty(device, key as CFString) as? NSNumber)?.intValue ?? -1
+    }
+
+    private func handleMatched(_ device: IOHIDDevice) {
+        let key = ObjectIdentifier(device)
+        guard contexts[key] == nil else { return }
+        let info = HIDDeviceInfo(
+            vendorId: intProperty(device, kIOHIDVendorIDKey),
+            productId: intProperty(device, kIOHIDProductIDKey),
+            usagePage: intProperty(device, kIOHIDPrimaryUsagePageKey)
+        )
+        let ctx = HIDDeviceContext(info: info, monitor: self)
+        contexts[key] = ctx
+
+        let r = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        if r != kIOReturnSuccess {
+            onLog?("IOHIDDeviceOpen page 0x" + String(info.usagePage, radix: 16) + " failed: " + String(format: "0x%08x", r))
+        }
+        IOHIDDeviceRegisterInputReportCallback(device, ctx.buffer, ctx.bufferSize, { context, _, sender, _, reportID, report, length in
+            guard let context = context, let sender = sender else { return }
+            let ctx = Unmanaged<HIDDeviceContext>.fromOpaque(context).takeUnretainedValue()
+            let bytes = Array(UnsafeBufferPointer(start: report, count: length))
+            let device = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
+            guard let monitor = ctx.monitor else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { monitor.onInputReport?(device, reportID, bytes) }
+            }
+        }, Unmanaged.passUnretained(ctx).toOpaque())
+        IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), runLoopMode)
+
+        onDeviceMatched?(device, info.usagePage)
+    }
+
+    private func handleRemoved(_ device: IOHIDDevice) {
+        let key = ObjectIdentifier(device)
+        guard let ctx = contexts[key] else { return }
+        onDeviceRemoved?(device)
+        IOHIDDeviceUnscheduleFromRunLoop(device, CFRunLoopGetMain(), runLoopMode)
+        contexts[key] = nil
+        // Keep the context (and its report buffer) alive: IOKit may still reference
+        // it until the device object is released. It is tiny.
+        retiredContexts.append(ctx)
+    }
+
+    private var retiredContexts: [HIDDeviceContext] = []
+}

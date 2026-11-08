@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+.DS_Store
+# compiled one-off tools from the first session
+scuf-envision/tools/hidcap
+scuf-envision/tools/mapwalk
+scuf-envision/tools/annotate
+scuf-envision/tools/probe
+scuf-envision/tools/sdlmatch
+scuf-envision/tools/gcprobe

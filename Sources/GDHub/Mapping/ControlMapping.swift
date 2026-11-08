@@ -1,0 +1,142 @@
+import Foundation
+import CoreGraphics
+
+enum Binding: Codable, Equatable, Hashable {
+    /// 1-based button index into `GamepadFrame.buttons`.
+    case button(Int)
+    /// Hat value 0...7.
+    case hat(UInt8)
+    /// "lt" or "rt".
+    case trigger(String)
+    /// "x", "y", "z" or "rz"; `sign` is +1 or -1 so that sign * value grows in the learned direction
+    /// (right for horizontal, down for vertical).
+    case axis(String, sign: Int)
+
+    var summary: String {
+        switch self {
+        case .button(let n): return "button \(n)"
+        case .hat(let h): return "hat \(h)"
+        case .trigger(let f): return "trigger \(f)"
+        case .axis(let f, let s): return "axis \(s < 0 ? "-" : "+")\(f)"
+        }
+    }
+}
+
+struct StickBinding: Codable, Equatable {
+    var horizontal: Binding?
+    var vertical: Binding?
+
+    var isEmpty: Bool { horizontal == nil && vertical == nil }
+}
+
+/// Which part of a control a learned binding applies to.
+enum LearnTarget: Equatable {
+    case whole
+    case stickHorizontal
+    case stickVertical
+}
+
+/// Result of one learn step.
+struct LearnAssignment {
+    var controlId: String
+    var target: LearnTarget
+    var binding: Binding?
+    var physicalBits: UInt16
+}
+
+struct ControlMapping: Codable, Equatable {
+    var buttons: [String: Binding] = [:]
+    var sticks: [String: StickBinding] = [:]
+    /// Diagnostic: "extra" bits (13-bit field) seen rising while the control was pressed.
+    var physicalBits: [String: UInt16] = [:]
+
+    static var `default`: ControlMapping {
+        var m = ControlMapping()
+        m.buttons["menu"] = .button(7)
+        m.buttons["start"] = .button(11)
+        return m
+    }
+
+    // MARK: Queries
+
+    func isMapped(_ controlId: String) -> Bool {
+        if buttons[controlId] != nil { return true }
+        if let s = sticks[controlId], !s.isEmpty { return true }
+        if let p = physicalBits[controlId], p != 0 { return true }
+        return false
+    }
+
+    func isActive(_ controlId: String, _ frame: GamepadFrame) -> Bool {
+        if let b = buttons[controlId] {
+            switch b {
+            case .button(let n):
+                return frame.isButtonDown(n)
+            case .hat(let d):
+                let h = Int(frame.hat)
+                guard h < 8 else { return false }
+                if h == Int(d) { return true }
+                // A cardinal direction is also active on the two adjacent diagonals.
+                if d % 2 == 0 { return (h + 1) % 8 == Int(d) || (h + 7) % 8 == Int(d) }
+                return false
+            case .trigger(let f):
+                return (frame.trigger(f) ?? 0) > 100
+            case .axis(let f, let sign):
+                return sign * (frame.axis(f) ?? 0) > 16000
+            }
+        }
+        if let s = sticks[controlId] {
+            if let p = stickPosition(controlId, frame, binding: s) { return abs(p.x) > 0.5 || abs(p.y) > 0.5 }
+            return false
+        }
+        // Only the physical (extra) bits are known for this control.
+        if let bits = physicalBits[controlId], bits != 0 {
+            return frame.extra & bits == bits
+        }
+        return false
+    }
+
+    /// Stick position in -1...1; x grows to the right, y grows downward. Nil if the stick has no axis bound.
+    func stickPosition(_ controlId: String, _ frame: GamepadFrame) -> CGPoint? {
+        guard let s = sticks[controlId] else { return nil }
+        return stickPosition(controlId, frame, binding: s)
+    }
+
+    private func stickPosition(_ controlId: String, _ frame: GamepadFrame, binding s: StickBinding) -> CGPoint? {
+        func norm(_ b: Binding?) -> Double? {
+            guard case .axis(let f, let sign)? = b, let v = frame.axis(f) else { return nil }
+            return max(-1, min(1, Double(sign * v) / 32767.0))
+        }
+        let h = norm(s.horizontal)
+        let v = norm(s.vertical)
+        if h == nil && v == nil { return nil }
+        return CGPoint(x: h ?? 0, y: v ?? 0)
+    }
+
+    /// Trigger fill in 0...1, or nil if the control is not bound to a trigger field.
+    func triggerValue(_ controlId: String, _ frame: GamepadFrame) -> Double? {
+        guard case .trigger(let f)? = buttons[controlId], let v = frame.trigger(f) else { return nil }
+        return max(0, min(1, Double(v) / 1023.0))
+    }
+
+    // MARK: Mutation
+
+    mutating func apply(_ a: LearnAssignment) {
+        if let binding = a.binding {
+            switch a.target {
+            case .whole:
+                buttons[a.controlId] = binding
+            case .stickHorizontal:
+                var s = sticks[a.controlId] ?? StickBinding()
+                s.horizontal = binding
+                sticks[a.controlId] = s
+            case .stickVertical:
+                var s = sticks[a.controlId] ?? StickBinding()
+                s.vertical = binding
+                sticks[a.controlId] = s
+            }
+        }
+        if a.physicalBits != 0 {
+            physicalBits[a.controlId, default: 0] |= a.physicalBits
+        }
+    }
+}
