@@ -97,6 +97,8 @@ private struct ControllerSideView: View {
                         )
                         .position(x: c.x * geo.size.width, y: c.y * geo.size.height)
                     }
+                    CalloutLayer(controls: controls, layout: layout, size: geo.size, device: device, learningId: learningId)
+                        .allowsHitTesting(false)
                 }
             }
             .aspectRatio(info.aspectRatio, contentMode: .fit)
@@ -171,18 +173,18 @@ private struct HotspotView: View {
     var body: some View {
         ZStack {
             if control.kind == .trigger, let t = trigger {
-                ZStack(alignment: .bottom) {
-                    Color.clear
-                    Rectangle().fill(Color.orange.opacity(0.85)).frame(height: diameter * t)
+                if t > 0.02 {
+                    ZStack(alignment: .bottom) {
+                        Color.clear
+                        Rectangle().fill(Color.orange.opacity(0.7)).frame(height: diameter * t)
+                    }
+                    .clipShape(shape)
+                    shape.stroke(Color.orange.opacity(0.8), lineWidth: 1)
                 }
-                .clipShape(shape)
-            } else if control.kind != .stick {
-                shape.fill(active ? Color.orange.opacity(0.85) : Color.clear)
             } else if active {
-                shape.fill(Color.orange.opacity(0.3))
+                shape.fill(Color.orange.opacity(control.kind == .stick ? 0.3 : 0.6))
+                shape.stroke(Color.orange, lineWidth: 1.5)
             }
-
-            outline
 
             if control.kind == .stick, let p = stick {
                 let travel = diameter / 2 * 0.65
@@ -204,33 +206,74 @@ private struct HotspotView: View {
             }
         }
         .frame(width: width, height: diameter)
-        .overlay(alignment: .bottom) {
-            if diameter >= 14 {
-            Text(control.label)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(Color.black.opacity(0.55), in: Capsule())
-                .fixedSize()
-                .offset(y: 13)
-                .allowsHitTesting(false)
-            }
-        }
         .contentShape(shape)
         .onTapGesture(perform: onTap)
         .help("Click to learn \(control.label)")
     }
 
-    @ViewBuilder private var outline: some View {
-        if active {
-            shape.stroke(Color.orange, lineWidth: 2)
-        } else if mapped {
-            shape.stroke(Color.white.opacity(0.9), lineWidth: 0.75)
-                .shadow(color: .black.opacity(0.7), radius: 0.5)
-        } else {
-            shape.stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .shadow(color: .black.opacity(0.7), radius: 0.5)
+}
+
+/// Callout labels beside each control with a thin leader line to it. Orange while the control is
+/// active, blue while it is being learned, dimmed when it has no mapping yet.
+private struct CalloutLayer: View {
+    let controls: [ControlLayout.Control]
+    let layout: ControlLayout
+    let size: CGSize
+    @ObservedObject var device: EnvisionProDevice
+    let learningId: String?
+
+    private func point(_ c: ControlLayout.Control) -> CGPoint {
+        CGPoint(x: c.x * size.width, y: c.y * size.height)
+    }
+
+    private func labelPoint(_ c: ControlLayout.Control) -> CGPoint {
+        let r = layout.radius(of: c)
+        let dx = c.labelDx ?? 0
+        let dy = c.labelDy ?? (r * size.width / size.height + 0.06)
+        return CGPoint(x: (c.x + dx) * size.width, y: (c.y + dy) * size.height)
+    }
+
+    private func color(_ c: ControlLayout.Control) -> Color {
+        if learningId == c.id { return .blue }
+        if device.mapping.isActive(c.id, device.frame) { return .orange }
+        return device.mapping.isMapped(c.id) ? .white : .gray
+    }
+
+    var body: some View {
+        // Hide the callouts entirely when the view is too small for 10pt text to be useful.
+        if size.width >= 220 {
+            ZStack(alignment: .topLeading) {
+                Canvas { ctx, _ in
+                    for c in controls {
+                        let p = point(c), l = labelPoint(c)
+                        let r = layout.radius(of: c) * size.width
+                        let v = CGVector(dx: l.x - p.x, dy: l.y - p.y)
+                        let len = max((v.dx * v.dx + v.dy * v.dy).squareRoot(), 1)
+                        // Leader starts just outside the control and ends under the label pill.
+                        let start = CGPoint(x: p.x + v.dx / len * r * 0.9, y: p.y + v.dy / len * r * 0.9)
+                        var path = Path()
+                        path.move(to: start)
+                        path.addLine(to: l)
+                        let col = color(c)
+                        ctx.stroke(path, with: .color(col.opacity(0.75)), lineWidth: 0.75)
+                        ctx.fill(Path(ellipseIn: CGRect(x: start.x - 1.5, y: start.y - 1.5, width: 3, height: 3)),
+                                 with: .color(col.opacity(0.95)))
+                    }
+                }
+                ForEach(controls) { c in
+                    let col = color(c)
+                    Text(c.label)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(col)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.black.opacity(0.6), in: Capsule())
+                        .overlay(Capsule().stroke(col.opacity(0.5), lineWidth: 0.5))
+                        .fixedSize()
+                        .position(labelPoint(c))
+                }
+            }
+            .frame(width: size.width, height: size.height)
         }
     }
 }

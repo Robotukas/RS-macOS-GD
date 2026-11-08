@@ -37,7 +37,9 @@
    "view": "sideLeft",
    "x": 0.3125,
    "y": 0.1083,
-   "radius": 0.1
+   "radius": 0.1,
+   "labelDx": -0.25,
+   "labelDy": -0.04
   },
   {
    "id": "lb",
@@ -47,7 +49,9 @@
    "view": "sideLeft",
    "x": 0.5156,
    "y": 0.0583,
-   "radius": 0.09
+   "radius": 0.09,
+   "labelDx": 0.3,
+   "labelDy": 0.04
   },
   {
    "id": "sax_left",
@@ -57,7 +61,9 @@
    "view": "sideLeft",
    "x": 0.4844,
    "y": 0.2396,
-   "radius": 0.11
+   "radius": 0.11,
+   "labelDx": -0.3,
+   "labelDy": 0.12
   },
   {
    "id": "dpad_up",
@@ -67,7 +73,9 @@
    "view": "front",
    "x": 0.2313,
    "y": 0.225,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": -0.1,
+   "labelDy": -0.07
   },
   {
    "id": "dpad_right",
@@ -77,7 +85,9 @@
    "view": "front",
    "x": 0.2776,
    "y": 0.2917,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": 0.07,
+   "labelDy": -0.08
   },
   {
    "id": "dpad_down",
@@ -87,7 +97,9 @@
    "view": "front",
    "x": 0.2313,
    "y": 0.3583,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": -0.1,
+   "labelDy": 0.08
   },
   {
    "id": "dpad_left",
@@ -97,7 +109,9 @@
    "view": "front",
    "x": 0.1851,
    "y": 0.2917,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": -0.12,
+   "labelDy": 0.0
   },
   {
    "id": "left_stick",
@@ -107,7 +121,9 @@
    "view": "front",
    "x": 0.3582,
    "y": 0.4375,
-   "radius": 0.075
+   "radius": 0.075,
+   "labelDx": -0.17,
+   "labelDy": 0.05
   },
   {
    "id": "l3",
@@ -117,7 +133,9 @@
    "view": "front",
    "x": 0.3582,
    "y": 0.4375,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": -0.17,
+   "labelDy": 0.13
   },
   {
    "id": "view",
@@ -127,7 +145,9 @@
    "view": "front",
    "x": 0.3313,
    "y": 0.1875,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": -0.07,
+   "labelDy": -0.08
   },
   {
    "id": "start",
@@ -137,7 +157,9 @@
    "view": "front",
    "x": 0.5,
    "y": 0.4479,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": 0.0,
+   "labelDy": -0.1
   },
   {
    "id": "profile",
@@ -148,7 +170,9 @@
    "x": 0.5,
    "y": 0.5521,
    "shape": "pill",
-   "radius": 0.025
+   "radius": 0.025,
+   "labelDx": 0.11,
+   "labelDy": 0.0
   },
   {
    "id": "g1",
@@ -158,7 +182,9 @@
    "view": "front",
    "x": 0.3313,
    "y": 0.6458,
-   "radius": 0.028
+   "radius": 0.028,
+   "labelDx": -0.06,
+   "labelDy": 0.09
   },
   {
    "id": "g2",
@@ -168,7 +194,9 @@
    "view": "front",
    "x": 0.4149,
    "y": 0.6458,
-   "radius": 0.028
+   "radius": 0.028,
+   "labelDx": -0.03,
+   "labelDy": 0.09
   },
   {
    "id": "g3",
@@ -178,7 +206,9 @@
    "view": "front",
    "x": 0.5,
    "y": 0.6458,
-   "radius": 0.028
+   "radius": 0.028,
+   "labelDx": 0.0,
+   "labelDy": 0.09
   },
   {
    "id": "g4",
@@ -188,7 +218,9 @@
    "view": "front",
    "x": 0.5851,
    "y": 0.6458,
-   "radius": 0.028
+   "radius": 0.028,
+   "labelDx": 0.03,
+   "labelDy": 0.09
   },
   {
    "id": "g5",
@@ -198,7 +230,9 @@
    "view": "front",
    "x": 0.6687,
    "y": 0.6458,
-   "radius": 0.028
+   "radius": 0.028,
+   "labelDx": 0.06,
+   "labelDy": 0.09
   },
   {
    "id": "menu",
@@ -208,7 +242,9 @@
    "view": "front",
    "x": 0.6746,
    "y": 0.1875,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": 0.07,
+   "labelDy": -0.08
   },
   {
    "id": "a",
@@ -218,7 +254,9 @@
    "view": "front",
    "x": 0.7687,
    "y": 0.3583,
-   "radius": 0.033
+   "radius": 0.033,
+   "labelDx": 0.09,
+   "labelDy": 0.07
   },
   {
    "id": "b",
@@ -228,7 +266,9 @@
    "view": "front",
    "x": 0.8284,
    "y": 0.2771,
-   "radius": 0.033
+   "radius": 0.033,
+   "labelDx": 0.1,
+   "labelDy": 0.0
   },
   {
    "id": "x",
@@ -238,7 +278,9 @@
    "view": "front",
    "x": 0.709,
    "y": 0.2771,
-   "radius": 0.033
+   "radius": 0.033,
+   "labelDx": -0.08,
+   "labelDy": -0.09
   },
   {
    "id": "y",
@@ -248,7 +290,9 @@
    "view": "front",
    "x": 0.7687,
    "y": 0.2,
-   "radius": 0.033
+   "radius": 0.033,
+   "labelDx": 0.09,
+   "labelDy": -0.05
   },
   {
    "id": "right_stick",
@@ -258,7 +302,9 @@
    "view": "front",
    "x": 0.6418,
    "y": 0.4375,
-   "radius": 0.075
+   "radius": 0.075,
+   "labelDx": 0.17,
+   "labelDy": 0.05
   },
   {
    "id": "r3",
@@ -268,7 +314,9 @@
    "view": "front",
    "x": 0.6418,
    "y": 0.4375,
-   "radius": 0.03
+   "radius": 0.03,
+   "labelDx": 0.17,
+   "labelDy": 0.13
   },
   {
    "id": "sax_right",
@@ -278,7 +326,9 @@
    "view": "sideRight",
    "x": 0.5156,
    "y": 0.2396,
-   "radius": 0.11
+   "radius": 0.11,
+   "labelDx": 0.3,
+   "labelDy": 0.12
   },
   {
    "id": "rb",
@@ -288,7 +338,9 @@
    "view": "sideRight",
    "x": 0.4844,
    "y": 0.0583,
-   "radius": 0.09
+   "radius": 0.09,
+   "labelDx": -0.3,
+   "labelDy": 0.04
   },
   {
    "id": "rt",
@@ -298,47 +350,57 @@
    "view": "sideRight",
    "x": 0.6875,
    "y": 0.1083,
-   "radius": 0.1
+   "radius": 0.1,
+   "labelDx": 0.25,
+   "labelDy": -0.04
   },
   {
    "id": "paddle_outer_left",
-   "label": "Paddle outer left (from back)",
+   "label": "Paddle outer left",
    "kind": "button",
    "order": 28,
    "view": "back",
    "x": 0.3104,
    "y": 0.5312,
-   "radius": 0.045
+   "radius": 0.045,
+   "labelDx": -0.15,
+   "labelDy": -0.06
   },
   {
    "id": "paddle_inner_left",
-   "label": "Paddle inner left (from back)",
+   "label": "Paddle inner left",
    "kind": "button",
    "order": 29,
    "view": "back",
    "x": 0.3761,
    "y": 0.5625,
-   "radius": 0.045
+   "radius": 0.045,
+   "labelDx": -0.13,
+   "labelDy": 0.09
   },
   {
    "id": "paddle_inner_right",
-   "label": "Paddle inner right (from back)",
+   "label": "Paddle inner right",
    "kind": "button",
    "order": 30,
    "view": "back",
    "x": 0.6239,
    "y": 0.5625,
-   "radius": 0.045
+   "radius": 0.045,
+   "labelDx": 0.13,
+   "labelDy": 0.09
   },
   {
    "id": "paddle_outer_right",
-   "label": "Paddle outer right (from back)",
+   "label": "Paddle outer right",
    "kind": "button",
    "order": 31,
    "view": "back",
    "x": 0.6896,
    "y": 0.5312,
-   "radius": 0.045
+   "radius": 0.045,
+   "labelDx": 0.15,
+   "labelDy": -0.06
   }
  ]
 }

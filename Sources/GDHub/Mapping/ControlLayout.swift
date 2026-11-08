@@ -58,6 +58,9 @@ struct ControlLayout: Codable {
         var y: Double
         var radius: Double?
         var shape: String?
+        /// Callout label position relative to the control, as fractions of the image width / height.
+        var labelDx: Double?
+        var labelDy: Double?
 
         var isPill: Bool { shape == "pill" }
     }
