@@ -226,11 +226,47 @@ private struct CalloutLayer: View {
         CGPoint(x: c.x * size.width, y: c.y * size.height)
     }
 
-    private func labelPoint(_ c: ControlLayout.Control) -> CGPoint {
+    private enum Placement { case free(CGPoint), left(CGFloat, CGFloat), right(CGFloat, CGFloat) } // column x, y
+
+    private func freePoint(_ c: ControlLayout.Control) -> CGPoint {
         let r = layout.radius(of: c)
         let dx = c.labelDx ?? 0
         let dy = c.labelDy ?? (r * size.width / size.height + 0.06)
         return CGPoint(x: (c.x + dx) * size.width, y: (c.y + dy) * size.height)
+    }
+
+    /// Column labels are stacked by their control's height and pushed apart so they never overlap.
+    private var placements: [String: Placement] {
+        var out: [String: Placement] = [:]
+        let gap: CGFloat = 20
+        let cols = layout.labelColumns?[controls.first?.view.rawValue ?? ""]
+        for side in ["left", "right"] {
+            let members = controls.filter { $0.labelSide == side }.sorted { $0.y < $1.y }
+            guard !members.isEmpty, let cols else { continue }
+            var ys = members.map { $0.y * size.height }
+            for i in 1..<ys.count where ys[i] < ys[i - 1] + gap { ys[i] = ys[i - 1] + gap }
+            let bottom = size.height - 10
+            if let last = ys.last, last > bottom {
+                ys[ys.count - 1] = bottom
+                for i in stride(from: ys.count - 2, through: 0, by: -1) where ys[i] > ys[i + 1] - gap { ys[i] = ys[i + 1] - gap }
+            }
+            for (i, c) in members.enumerated() {
+                let y = max(ys[i], 10)
+                let x = (side == "left" ? cols.left : cols.right) * size.width
+                out[c.id] = side == "left" ? .left(x, y) : .right(x, y)
+            }
+        }
+        for c in controls where out[c.id] == nil { out[c.id] = .free(freePoint(c)) }
+        return out
+    }
+
+    /// Where the leader line ends (label side).
+    private func leaderEnd(_ p: Placement) -> CGPoint {
+        switch p {
+        case .free(let pt): return pt
+        case .left(let x, let y): return CGPoint(x: x + 3, y: y)
+        case .right(let x, let y): return CGPoint(x: x - 3, y: y)
+        }
     }
 
     private func color(_ c: ControlLayout.Control) -> Color {
@@ -242,10 +278,12 @@ private struct CalloutLayer: View {
     var body: some View {
         // Hide the callouts entirely when the view is too small for 10pt text to be useful.
         if size.width >= 220 {
+            let placed = placements
             ZStack(alignment: .topLeading) {
                 Canvas { ctx, _ in
                     for c in controls {
-                        let p = point(c), l = labelPoint(c)
+                        guard let pl = placed[c.id] else { continue }
+                        let p = point(c), l = leaderEnd(pl)
                         let r = layout.radius(of: c) * size.width
                         let v = CGVector(dx: l.x - p.x, dy: l.y - p.y)
                         let len = max((v.dx * v.dx + v.dy * v.dy).squareRoot(), 1)
@@ -262,7 +300,7 @@ private struct CalloutLayer: View {
                 }
                 ForEach(controls) { c in
                     let col = color(c)
-                    Text(c.label)
+                    let pill = Text(c.label)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(col)
                         .padding(.horizontal, 5)
@@ -270,7 +308,15 @@ private struct CalloutLayer: View {
                         .background(Color.black.opacity(0.6), in: Capsule())
                         .overlay(Capsule().stroke(col.opacity(0.5), lineWidth: 0.5))
                         .fixedSize()
-                        .position(labelPoint(c))
+                    switch placed[c.id] ?? .free(freePoint(c)) {
+                    case .free(let pt):
+                        pill.position(pt)
+                    case .left(let x, let y):
+                        // Right-aligned so every label in the column ends on the same x.
+                        pill.frame(width: x, alignment: .trailing).position(x: x / 2, y: y)
+                    case .right(let x, let y):
+                        pill.frame(width: size.width - x, alignment: .leading).position(x: x + (size.width - x) / 2, y: y)
+                    }
                 }
             }
             .frame(width: size.width, height: size.height)

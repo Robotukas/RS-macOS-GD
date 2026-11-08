@@ -47,6 +47,11 @@ struct ControlLayout: Codable {
         }
     }
 
+    struct LabelColumns: Codable {
+        var left: Double
+        var right: Double
+    }
+
     struct Control: Codable, Identifiable, Hashable {
         var id: String
         var label: String
@@ -61,6 +66,8 @@ struct ControlLayout: Codable {
         /// Callout label position relative to the control, as fractions of the image width / height.
         var labelDx: Double?
         var labelDy: Double?
+        /// "left" or "right": put the label in that view's aligned label column instead of at labelDx/labelDy.
+        var labelSide: String?
 
         var isPill: Bool { shape == "pill" }
     }
@@ -69,6 +76,8 @@ struct ControlLayout: Codable {
     var usb: USB
     var images: Images
     var defaultHotspotRadius: Double
+    /// Per view (by Side raw value): x positions (fractions of width) of the left and right label columns.
+    var labelColumns: [String: LabelColumns]?
     var note: String?
     var controls: [Control]
 
