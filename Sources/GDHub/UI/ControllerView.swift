@@ -23,11 +23,11 @@ struct ControllerView: View {
             VStack(spacing: 12) {
                 HStack(alignment: .center, spacing: 16) {
                     ControllerSideView(device: device, layout: layout, side: .sideLeft)
-                        .frame(maxWidth: 170)
+                        .frame(maxWidth: 240)
                     ControllerSideView(device: device, layout: layout, side: .front)
                     ControllerSideView(device: device, layout: layout, side: .back)
                     ControllerSideView(device: device, layout: layout, side: .sideRight)
-                        .frame(maxWidth: 170)
+                        .frame(maxWidth: 240)
                 }
                 .padding(.horizontal)
                 HStack(alignment: .top, spacing: 16) {
