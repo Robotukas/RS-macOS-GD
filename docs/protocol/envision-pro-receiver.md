@@ -80,3 +80,6 @@ Extra bits (the 13 "vendor padding" bits) are the **physical** paddle / SAX stat
 | Paddle outer left | bit 3 | hat 6 (left) |
 | SAX left | bit 4 | button 1 (A) |
 | SAX right | bit 5 | button 2 (B) |
+
+## Wired identities (from the ShadowUSB daemon log, 2026-11-08)
+When the controller was plugged in by USB-C the Mac enumerated it as **1b1c:0x3a06 "SCUF Envision Pro Controller V2"** (one HID interface, serial `1c637ca3…`) and, in another moment, as **1b1c:0x3a05** (composite: audio control + streaming interfaces + two HID interfaces, the same shape as the linked receiver 0x3a08). Hypothesis: 0x3a06 is a charging / wireless-mode state, 0x3a05 the full wired controller. To be captured in the wired phase.
