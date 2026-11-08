@@ -97,36 +97,40 @@
    "label": "LB",
    "kind": "button",
    "order": 8,
-   "view": "back",
-   "x": 0.675,
-   "y": 0.1318
+   "view": "sideLeft",
+   "x": 0.52,
+   "y": 0.185,
+   "radius": 0.07
   },
   {
    "id": "rb",
    "label": "RB",
    "kind": "button",
    "order": 9,
-   "view": "back",
-   "x": 0.2467,
-   "y": 0.1318
+   "view": "sideRight",
+   "x": 0.48,
+   "y": 0.185,
+   "radius": 0.07
   },
   {
    "id": "lt",
    "label": "LT",
    "kind": "trigger",
    "order": 10,
-   "view": "back",
-   "x": 0.7417,
-   "y": 0.2318
+   "view": "sideLeft",
+   "x": 0.287,
+   "y": 0.226,
+   "radius": 0.08
   },
   {
    "id": "rt",
    "label": "RT",
    "kind": "trigger",
    "order": 11,
-   "view": "back",
-   "x": 0.1833,
-   "y": 0.2318
+   "view": "sideRight",
+   "x": 0.713,
+   "y": 0.226,
+   "radius": 0.08
   },
   {
    "id": "l3",
