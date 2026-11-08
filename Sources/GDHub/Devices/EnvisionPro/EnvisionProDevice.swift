@@ -171,7 +171,29 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
 
     func beginEditingLayout() {
         layoutBeforeEdit = layout
+        layout?.writePreEditSnapshot()
         editor.isEditing = true
+    }
+
+    /// If the app was quit (or relaunched) while editing, autosave has already written the
+    /// in-progress state. Offer the layout from before that session instead and keep the autosaved
+    /// one as a backup. Called once at startup.
+    func recoverInterruptedEditIfNeeded() {
+        guard let snapshot = ControlLayout.load(from: ControlLayout.preEditSnapshotURL) else { return }
+        layout?.saveAsUserLayout()          // keeps a backup of the autosaved in-progress state
+        layout = snapshot
+        snapshot.saveAsUserLayout()
+        ControlLayout.clearPreEditSnapshot()
+        log("recovered the layout from before an interrupted edit session (the in-progress one is in layout-backups)")
+    }
+
+    func restoreLayout(from url: URL) {
+        guard let l = ControlLayout.load(from: url) else { return }
+        editor.isEditing = false
+        editor.selection = []
+        layout = l
+        l.saveAsUserLayout()
+        log("layout restored from \(url.lastPathComponent)")
     }
 
     /// Leave edit mode and throw away everything changed since it was entered.
@@ -179,6 +201,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         editor.isEditing = false
         autosaveWork?.cancel()
         if let l = layoutBeforeEdit { layout = l; l.saveAsUserLayout() }
+        ControlLayout.clearPreEditSnapshot()
         editor.selection = []
         editor.zoom = 1
         log("layout edits discarded")
@@ -203,6 +226,10 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         }
     }
 
+    func selectAllLabels() {
+        editor.selection = Set((layout?.controls ?? []).map(\.id))
+    }
+
     func moveView(_ side: ControlLayout.Side, dx: Int, dy: Int) {
         guard var l = layout else { return }
         l.moveView(side, dx: dx, dy: dy)
@@ -222,6 +249,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         editor.selection = []
         editor.zoom = 1
         layout?.saveAsUserLayout()
+        ControlLayout.clearPreEditSnapshot()
         log("layout saved")
     }
 

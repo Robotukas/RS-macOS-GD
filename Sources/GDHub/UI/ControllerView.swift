@@ -49,6 +49,7 @@ struct ControllerView: View {
                             }
                         }
                     }
+                    .coordinateSpace(name: "grid")
                     if device.editor.isEditing {
                         // Editing: the grid lives in a scroll view that zooms toward the pointer on mouse wheel.
                         let padding: CGFloat = 8
@@ -492,52 +493,61 @@ private struct CalloutLayer: View {
         return out
     }
 
+    /// Align the selected labels. Targets are computed from every selected label's frame in the shared
+    /// grid space (so labels in different views line up); this layer then moves only its own members.
+    /// All views share one scale, so a grid-space offset equals a layer-space offset.
     private func align(_ action: LayoutEditor.AlignAction) {
         let placed = placements
-        let ids = controls.map(\.id).filter { editor.selection.contains($0) }
-        guard ids.count >= 2 else { return }
+        let frames = editor.pillFrames
+        let all = editor.selection.filter { frames[$0] != nil }
+        guard all.count >= action.minimumSelection else { return }
+        let mine = controls.map(\.id).filter { all.contains($0) }
+        guard !mine.isEmpty else { return }
+        func f(_ id: String) -> CGRect { frames[id]! }
+        func local(_ id: String) -> CGRect { pillRect(id, placed[id]!) }
+        func move(_ id: String, dx: CGFloat, dy: CGFloat, kind: ControlLayout.LabelAnchor? = nil) {
+            guard let p = placed[id] else { return }
+            let k = kind ?? p.kind
+            let r = local(id)
+            // Anchor x for the (possibly new) edge kind, shifted by dx.
+            let x: CGFloat
+            switch k { case .leading: x = r.minX + dx; case .trailing: x = r.maxX + dx; case .center: x = r.midX + dx }
+            setLabel(id, anchor: CGPoint(x: x, y: p.anchor.y + dy), kind: k, oldCenter: pillCenter(id, placed))
+        }
         switch action {
         case .leftEdges:
-            let target = ids.map { leftEdge($0, placed[$0]!) }.min()!
-            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .leading, oldCenter: pillCenter(id, placed)) }
+            let target = all.map { f($0).minX }.min()!
+            for id in mine { move(id, dx: target - f(id).minX, dy: 0, kind: .leading) }
         case .rightEdges:
-            let target = ids.map { rightEdge($0, placed[$0]!) }.max()!
-            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .trailing, oldCenter: pillCenter(id, placed)) }
-        case .sameRow:
-            let y = ids.map { placed[$0]!.anchor.y }.reduce(0, +) / CGFloat(ids.count)
-            for id in ids { setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: y), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed)) }
+            let target = all.map { f($0).maxX }.max()!
+            for id in mine { move(id, dx: target - f(id).maxX, dy: 0, kind: .trailing) }
         case .centersHorizontal:
-            // Same centre x: store every label by its centre so the line holds at any zoom.
-            let x = ids.map { pillRect($0, placed[$0]!).midX }.reduce(0, +) / CGFloat(ids.count)
-            for id in ids { setLabel(id, anchor: CGPoint(x: x, y: placed[id]!.anchor.y), kind: .center, oldCenter: pillCenter(id, placed)) }
+            let target = all.map { f($0).midX }.reduce(0, +) / CGFloat(all.count)
+            for id in mine { move(id, dx: target - f(id).midX, dy: 0, kind: .center) }
         case .topEdges:
-            let top = ids.map { pillRect($0, placed[$0]!).minY }.min()!
-            for id in ids {
-                let h = pillRect(id, placed[id]!).height
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + h / 2), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
-            }
+            let target = all.map { f($0).minY }.min()!
+            for id in mine { move(id, dx: 0, dy: target - f(id).minY) }
         case .bottomEdges:
-            let bottom = ids.map { pillRect($0, placed[$0]!).maxY }.max()!
-            for id in ids {
-                let h = pillRect(id, placed[id]!).height
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: bottom - h / 2), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
+            let target = all.map { f($0).maxY }.max()!
+            for id in mine { move(id, dx: 0, dy: target - f(id).maxY) }
+        case .sameRow:
+            let target = all.map { f($0).midY }.reduce(0, +) / CGFloat(all.count)
+            for id in mine { move(id, dx: 0, dy: target - f(id).midY) }
+        case .distributeVertically:
+            let sorted = all.sorted { f($0).midY < f($1).midY }
+            guard sorted.count > 2 else { return }
+            let top = f(sorted.first!).midY, bottom = f(sorted.last!).midY
+            let step = (bottom - top) / CGFloat(sorted.count - 1)
+            for (i, id) in sorted.enumerated() where mine.contains(id) {
+                move(id, dx: 0, dy: (top + step * CGFloat(i)) - f(id).midY)
             }
         case .distributeHorizontally:
-            let sorted = ids.sorted { pillRect($0, placed[$0]!).midX < pillRect($1, placed[$1]!).midX }
+            let sorted = all.sorted { f($0).midX < f($1).midX }
             guard sorted.count > 2 else { return }
-            let first = pillRect(sorted.first!, placed[sorted.first!]!).midX
-            let last = pillRect(sorted.last!, placed[sorted.last!]!).midX
-            let step = (last - first) / CGFloat(sorted.count - 1)
-            for (i, id) in sorted.enumerated() {
-                let shift = (first + step * CGFloat(i)) - pillRect(id, placed[id]!).midX
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x + shift, y: placed[id]!.anchor.y), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
-            }
-        case .distributeVertically:
-            let sorted = ids.sorted { placed[$0]!.anchor.y < placed[$1]!.anchor.y }
-            guard let top = placed[sorted.first!]?.anchor.y, let bottom = placed[sorted.last!]?.anchor.y, sorted.count > 2 else { return }
-            let step = (bottom - top) / CGFloat(sorted.count - 1)
-            for (i, id) in sorted.enumerated() {
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + step * CGFloat(i)), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
+            let left = f(sorted.first!).midX, right = f(sorted.last!).midX
+            let step = (right - left) / CGFloat(sorted.count - 1)
+            for (i, id) in sorted.enumerated() where mine.contains(id) {
+                move(id, dx: (left + step * CGFloat(i)) - f(id).midX, dy: 0)
             }
         }
     }
@@ -619,9 +629,10 @@ private struct CalloutLayer: View {
             .onContinuousHover { phase in
                 if case .active(let loc) = phase { editor.hoverPoint[viewKey] = loc }
             }
-            .onPreferenceChange(PillSizeKey.self) { sizes in
-                let changed = sizes.filter { editor.pillSizes[$0.key] != $0.value }
-                if !changed.isEmpty { editor.pillSizes.merge(changed) { $1 } }
+            .onPreferenceChange(PillSizeKey.self) { frames in
+                editor.pillFrames.merge(frames) { $1 }
+                let changed = frames.filter { editor.pillSizes[$0.key] != $0.value.size }
+                if !changed.isEmpty { editor.pillSizes.merge(changed.mapValues(\.size)) { $1 } }
             }
             .onChange(of: editor.alignRequest) { _, request in
                 if let request { align(request.action) }
@@ -796,7 +807,7 @@ private struct CalloutLayer: View {
             .overlay(Capsule().stroke(col.opacity(editor.isEditing ? 0.9 : 0.5),
                                       style: StrokeStyle(lineWidth: editor.isEditing ? 1 : 0.5, dash: editor.isEditing ? [3, 2] : [])))
             .fixedSize()
-            .background(GeometryReader { g in Color.clear.preference(key: PillSizeKey.self, value: [c.id: g.size]) })
+            .background(GeometryReader { g in Color.clear.preference(key: PillSizeKey.self, value: [c.id: g.frame(in: .named("grid"))]) })
             .onTapGesture {
                 guard editor.isEditing else { return }
                 editor.toggleSelection(c.id, extend: NSEvent.modifierFlags.contains(.shift))

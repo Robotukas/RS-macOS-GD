@@ -194,17 +194,57 @@ struct ControlLayout: Codable {
         return loadFromBundle()
     }
 
+    static var backupsDirectory: URL { userLayoutURL.deletingLastPathComponent().appendingPathComponent("layout-backups", isDirectory: true) }
+    /// Snapshot of the layout as it was when edit mode began; present on disk only while editing.
+    static var preEditSnapshotURL: URL { userLayoutURL.deletingLastPathComponent().appendingPathComponent("envision-pro-layout.before-edit.json") }
+
+    private static func encode(_ layout: ControlLayout) throws -> Data {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try enc.encode(layout)
+    }
+
+    /// Saves the layout, keeping a timestamped copy of the previous file (last 40 kept) unless the
+    /// content is unchanged.
     func saveAsUserLayout() {
         do {
+            let fm = FileManager.default
             let dir = Self.userLayoutURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let enc = JSONEncoder()
-            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try enc.encode(self).write(to: Self.userLayoutURL, options: .atomic)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try Self.encode(self)
+            if let existing = try? Data(contentsOf: Self.userLayoutURL) {
+                if existing == data { return }
+                try fm.createDirectory(at: Self.backupsDirectory, withIntermediateDirectories: true)
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH-mm-ss"
+                let backup = Self.backupsDirectory.appendingPathComponent("layout \(f.string(from: Date())).json")
+                if !fm.fileExists(atPath: backup.path) { try existing.write(to: backup, options: .atomic) }
+                Self.pruneBackups(keep: 40)
+            }
+            try data.write(to: Self.userLayoutURL, options: .atomic)
         } catch {
             print("ControlLayout: failed to save user layout: \(error)")
         }
     }
+
+    static func backups() -> [URL] {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: backupsDirectory, includingPropertiesForKeys: nil)) ?? []
+        return urls.filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    private static func pruneBackups(keep: Int) {
+        for url in backups().dropFirst(keep) { try? FileManager.default.removeItem(at: url) }
+    }
+
+    static func load(from url: URL) -> ControlLayout? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(ControlLayout.self, from: data)
+    }
+
+    func writePreEditSnapshot() {
+        try? Self.encode(self).write(to: Self.preEditSnapshotURL, options: .atomic)
+    }
+
+    static func clearPreEditSnapshot() { try? FileManager.default.removeItem(at: preEditSnapshotURL) }
 
     static func deleteUserLayout() {
         try? FileManager.default.removeItem(at: userLayoutURL)

@@ -20,6 +20,19 @@ final class LayoutEditor: ObservableObject {
             }
         }
 
+        var shortcutKey: KeyEquivalent {
+            switch self {
+            case .leftEdges: return "l"
+            case .rightEdges: return "r"
+            case .centersHorizontal: return "c"
+            case .topEdges: return "t"
+            case .bottomEdges: return "b"
+            case .sameRow: return "m"
+            case .distributeVertically: return "v"
+            case .distributeHorizontally: return "h"
+            }
+        }
+
         /// Minimum number of selected labels the action makes sense for.
         var minimumSelection: Int {
             switch self {
@@ -32,6 +45,8 @@ final class LayoutEditor: ObservableObject {
     @Published var isEditing = false
     @Published var selection: Set<String> = []
     @Published var pillSizes: [String: CGSize] = [:]
+    /// Every label pill's frame in the shared "grid" coordinate space (all views), for cross-view alignment.
+    var pillFrames: [String: CGRect] = [:]
     /// Magnification of the controller row while editing (1 = fit to window).
     @Published var zoom: Double = 1
     /// Keep leader segments horizontal / vertical while dragging corners.
@@ -72,10 +87,11 @@ final class LayoutEditor: ObservableObject {
     }
 }
 
-/// Collects the rendered size of every label pill so alignment can use real edges.
+/// Collects the rendered frame (in the shared "grid" space) of every label pill so alignment can
+/// use real edges, across views.
 struct PillSizeKey: PreferenceKey {
-    static var defaultValue: [String: CGSize] = [:]
-    static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue()) { $1 }
     }
 }

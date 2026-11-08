@@ -32,6 +32,7 @@ final class AppModel: ObservableObject {
             route.module.handle(reportID: reportID, bytes: bytes, usagePage: route.usagePage)
         }
         monitor.start()
+        envision.recoverInterruptedEditIfNeeded()
     }
 }
 
@@ -50,6 +51,9 @@ struct GDHubApp: App {
                 .onAppear { NSApp.activate(ignoringOtherApps: true) }
         }
         .defaultSize(width: 1200, height: 860)
+        .commands {
+            CommandMenu("Layout") { LayoutCommands(device: model.envision, editor: model.envision.editor) }
+        }
     }
 }
 
@@ -120,5 +124,41 @@ private struct EnvisionProScreen: View {
             }
         }
         .navigationTitle(device.displayName)
+    }
+}
+
+/// Menu-bar commands for the layout editor; a view so the items follow edit-mode state.
+struct LayoutCommands: View {
+    @ObservedObject var device: EnvisionProDevice
+    @ObservedObject var editor: LayoutEditor
+
+    var body: some View {
+        Button(editor.isEditing ? "Done (lock layout)" : "Edit layout") {
+            if editor.isEditing { device.lockLayout() } else { device.beginEditingLayout() }
+        }
+        .keyboardShortcut("e", modifiers: [.command, .shift])
+        Button("Cancel editing") { device.cancelEditingLayout() }
+            .keyboardShortcut(".", modifiers: [.command, .shift])
+            .disabled(!editor.isEditing)
+        Menu("Restore layout from backup") {
+            let backups = ControlLayout.backups().prefix(15)
+            if backups.isEmpty { Text("No backups yet") }
+            ForEach(Array(backups), id: \.self) { url in
+                Button(url.deletingPathExtension().lastPathComponent) { device.restoreLayout(from: url) }
+            }
+        }
+        Divider()
+        Button("Select all labels") { device.selectAllLabels() }
+            .keyboardShortcut("a", modifiers: [.command, .option])
+            .disabled(!editor.isEditing)
+        Button("Deselect all") { editor.selection = [] }
+            .keyboardShortcut("d", modifiers: [.command, .option])
+            .disabled(!editor.isEditing || editor.selection.isEmpty)
+        Divider()
+        ForEach(LayoutEditor.AlignAction.allCases, id: \.self) { action in
+            Button("Align: \(action.title)") { editor.perform(action) }
+                .keyboardShortcut(action.shortcutKey, modifiers: [.command, .option])
+                .disabled(!editor.isEditing || editor.selection.count < action.minimumSelection)
+        }
     }
 }
