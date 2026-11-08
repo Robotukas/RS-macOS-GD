@@ -29,6 +29,8 @@ final class LearnSession: ObservableObject {
     @Published private(set) var lastResult: String = ""
     @Published private(set) var isCollecting = false
     @Published private(set) var isFinished = false
+    /// True when there is a previous step to return to.
+    @Published private(set) var canGoBack = false
 
     let mode: Mode
     private let steps: [Step]
@@ -78,6 +80,15 @@ final class LearnSession: ObservableObject {
         guard !isFinished else { return }
         lastResult = "\(steps[stepIndex].control.label): skipped"
         advance()
+    }
+
+    /// Return to the previous step so it can be learned again; its new result replaces the old one.
+    func back() {
+        guard !isFinished, stepIndex > 0 else { return }
+        stepIndex -= 1
+        isCollecting = false
+        lastResult = "Back to \(steps[stepIndex].control.label)"
+        enterStep()
     }
 
     func cancel() {
@@ -193,6 +204,7 @@ final class LearnSession: ObservableObject {
         isCollecting = false
         if stepIndex >= steps.count {
             isFinished = true
+            canGoBack = false
             instruction = "Done"
             currentControl = nil
             onFinish()
@@ -205,6 +217,7 @@ final class LearnSession: ObservableObject {
         let step = steps[stepIndex]
         baseline = lastFrame
         currentControl = step.control
+        canGoBack = stepIndex > 0
         progress = LearnProgress(current: step.controlIndex + 1, total: progress.total)
         instruction = Self.instruction(for: step.control, target: step.target)
     }

@@ -132,6 +132,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     }
 
     func skipLearn() { learn?.skip() }
+    func backLearn() { learn?.back() }
 
     func cancelLearn() { learn?.cancel() }
 

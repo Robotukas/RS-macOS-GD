@@ -184,6 +184,7 @@ private struct LearnToolbar: View {
             HStack(spacing: 10) {
                 Button("Learn all (guided)") { device.startGuidedLearn() }
                     .disabled(learn != nil && learn?.mode == .guided)
+                Button("Back") { device.backLearn() }.disabled(learn?.canGoBack != true)
                 Button("Skip") { device.skipLearn() }.disabled(learn == nil)
                 Button("Cancel") { device.cancelLearn() }.disabled(learn == nil)
                 Spacer()
@@ -205,13 +206,20 @@ private struct LearnToolbar: View {
                 }
             }
             if device.status != .active {
-                Text(device.status == .asleep
-                     ? "Controller is asleep - press a button to wake it before learning."
-                     : "Receiver not found - plug it in.")
+                Text(statusHint)
                     .font(.callout).foregroundStyle(.orange)
             }
         }
         .padding(.horizontal)
         .padding(.bottom, 8)
+    }
+
+    private var statusHint: String {
+        switch device.status {
+        case .asleep: return "Controller is asleep - press a button to wake it before learning."
+        case .receiverIdle: return "Receiver is idle - turn the controller on (Start) to link it."
+        case .disconnected: return "Receiver not found - plug it in."
+        case .active: return ""
+        }
     }
 }
