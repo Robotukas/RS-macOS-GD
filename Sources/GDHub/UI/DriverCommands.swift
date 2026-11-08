@@ -34,9 +34,44 @@ struct DriverCommands: View {
         }
     }
 
+    var padText: String {
+        switch driver.padState {
+        case .off: return "Virtual pad: not published"
+        case .publishing(let id): return "Virtual pad: publishing \(id)…"
+        case .published(let id): return "Virtual pad: \(id) published"
+        case .error(let e): return "Virtual pad error: \(e)"
+        }
+    }
+
+    var isConnected: Bool { if case .connected = driver.connection { return true } else { return false } }
+    var isPublished: Bool { if case .published = driver.padState { return true } else { return false } }
+    var connectionNeedsRetry: Bool {
+        switch driver.connection {
+        case .rejected, .exclusive, .failed, .protocolMismatch: return true
+        default: return false
+        }
+    }
+
     var body: some View {
         Text(statusText)
         if let connectionText { Text(connectionText) }
+        Text(padText)
+        Divider()
+        Menu("Publish virtual pad") {
+            ForEach(PadIdentity.all, id: \.id) { identity in
+                Button(identity.id) { driver.publishPad(identity) }
+            }
+        }
+        .disabled(!isConnected)
+        Button("Unpublish virtual pad") { driver.unpublishPad() }
+            .disabled(driver.padState == .off)
+        Button(driver.testPatternRunning ? "Stop test pattern" : "Test pattern") {
+            if driver.testPatternRunning { driver.stopTestPattern() } else { driver.runTestPattern() }
+        }
+        .disabled(!isPublished)
+        if connectionNeedsRetry { Button("Retry connection") { driver.retryConnection() } }
+        Button("Restart driver (dev)") { driver.devTerminateDriver() }       // DEBUG-only experiment
+            .disabled(!isConnected)
         Divider()
         switch driver.state {
         case .wrongLocation:

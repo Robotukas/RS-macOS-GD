@@ -36,6 +36,7 @@ final class DextProtocolTests: XCTestCase {
             "GDHUB_SEL_HEARTBEAT": UInt64(P.Selector.heartbeat),
             "GDHUB_SEL_REGISTER_OUTPUT": UInt64(P.Selector.registerOutput),
             "GDHUB_SEL_GET_STATUS": UInt64(P.Selector.getStatus),
+            "GDHUB_SEL_DEV_TERMINATE": UInt64(P.Selector.devTerminate),
             "GDHUB_SEL_COUNT": UInt64(P.Selector.count),
             "GDHUB_SLOT_PAD": UInt64(P.Slot.pad.rawValue),
             "GDHUB_SLOT_KEYBOARD": UInt64(P.Slot.keyboard.rawValue),
@@ -125,5 +126,88 @@ final class DextProtocolTests: XCTestCase {
         XCTAssertEqual(DextError(DextProtocol.krNotPermitted).code, DextProtocol.krNotPermitted)
         XCTAssertEqual(DextError(5), .other(5))
         XCTAssertEqual(DextStatus(words: [3, 100, 2, 7, 1]).watchdogFires, 2)
+    }
+
+    // MARK: DeviceSpec encoding (design §7.1)
+
+    private func bt16Spec(_ identity: PadIdentity) throws -> [UInt8] { try identity.spec().encoded() }
+
+    func testDevTerminateIsTheNextSelector() {
+        XCTAssertEqual(DextProtocol.Selector.devTerminate, DextProtocol.Selector.getStatus + 1)
+        XCTAssertEqual(DextProtocol.Selector.count, DextProtocol.Selector.devTerminate + 1)
+    }
+
+    func testBT16SpecEncoding() throws {
+        typealias O = DextProtocol.Offset
+        let b = try bt16Spec(.xboxBT16)
+        XCTAssertEqual(b.count, 256 + 285 + 18)
+        XCTAssertEqual(Array(b[0..<4]), [0x47, 0x44, 0x48, 0x53])
+        XCTAssertEqual(Array(b[O.version..<O.version + 2]), [1, 0])
+        XCTAssertEqual(Array(b[O.headerSize..<O.headerSize + 2]), [0x00, 0x01])
+        XCTAssertEqual(b[O.slot], 0); XCTAssertEqual(b[O.flags], 0); XCTAssertEqual(b[O.inputCount], 2)
+        XCTAssertEqual(Array(b[O.vendor..<O.vendor + 4]), [0x5E, 0x04, 0x00, 0x00])
+        XCTAssertEqual(Array(b[O.product..<O.product + 4]), [0x13, 0x0B, 0x00, 0x00])
+        XCTAssertEqual(Array(b[O.versionNumber..<O.versionNumber + 4]), [0x13, 0x05, 0x00, 0x00])
+        XCTAssertEqual(Array(b[O.location..<O.location + 4]), [0x01, 0x48, 0x44, 0x47])
+        XCTAssertEqual(Array(b[O.intervalUs..<O.intervalUs + 4]), [0xA0, 0x0F, 0x00, 0x00])
+        XCTAssertEqual(Array(b[O.usagePage..<O.usagePage + 4]), [1, 0, 0, 0])
+        XCTAssertEqual(Array(b[O.usage..<O.usage + 4]), [5, 0, 0, 0])
+        XCTAssertEqual(Array(b[O.descLen..<O.descLen + 2]), [0x1D, 0x01])      // 285
+        XCTAssertEqual(Array(b[O.neutralLen..<O.neutralLen + 2]), [18, 0])
+        XCTAssertEqual(Array(b[O.inputTable..<O.inputTable + 8]), [0x01, 0x00, 0x10, 0x00, 0x02, 0x00, 0x02, 0x00])
+        XCTAssertEqual(Array(b[O.transport..<O.transport + 21]), Array("Bluetooth Low Energy".utf8) + [0])
+        XCTAssertEqual(Array(b[O.manufacturer..<O.manufacturer + 10]), Array("Microsoft".utf8) + [0])
+        XCTAssertEqual(Array(b[O.productName..<O.productName + 25]), Array("Xbox Wireless Controller".utf8) + [0])
+        XCTAssertEqual(Array(b[O.serial..<O.serial + 8]), Array("GDHub-1".utf8) + [0])
+        XCTAssertEqual(Array(b[224..<256]), [UInt8](repeating: 0, count: 32), "reserved bytes are zero")
+        XCTAssertEqual(Array(b[256..<256 + 285]), PadDescriptors.xboxBT16)
+        XCTAssertEqual(Array(b[(256 + 285)...]), [UInt8](hex: "01 00 80 00 80 00 80 00 80 00 00 00 00 00 00 00 02 00"))
+    }
+
+    func test02E0SpecDiffersOnlyInProductID() throws {
+        typealias O = DextProtocol.Offset
+        let a = try bt16Spec(.xboxBT16_02E0), b = try bt16Spec(.xboxBT16)
+        XCTAssertEqual(Array(a[O.product..<O.product + 4]), [0xE0, 0x02, 0x00, 0x00])
+        var patched = b
+        for i in 0..<4 { patched[O.product + i] = a[O.product + i] }
+        XCTAssertEqual(a, patched)
+    }
+
+    func testSendLengthSpec() throws {
+        // A 17-byte report 0x01 sent as 25 bytes (xbox-pr208 shape), built from a hand-made descriptor.
+        let desc = [UInt8](hex: "05 01 09 05 A1 01 85 01 75 08 95 10 81 02 85 20 95 18 81 02 C0")
+        func spec(send: Int, neutral0: Int? = nil) -> DeviceSpec {
+            DeviceSpec(slot: .pad, vendorID: 1, productID: 2, versionNumber: 3, transport: "Virtual", manufacturer: "m",
+                       product: "p", serialNumber: "s", descriptor: desc, sendLengths: [0x01: send],
+                       neutralReports: [[0x01] + [UInt8](repeating: 0, count: (neutral0 ?? send) - 1),
+                                        [0x20] + [UInt8](repeating: 0, count: 24)])
+        }
+        let b = try spec(send: 25).encoded()
+        XCTAssertEqual(Array(b[DextProtocol.Offset.inputTable..<DextProtocol.Offset.inputTable + 8]),
+                       [0x01, 0x19, 0x11, 0x00, 0x20, 0x00, 0x19, 0x00])
+        XCTAssertEqual(Array(b[DextProtocol.Offset.transport..<DextProtocol.Offset.transport + 8]),
+                       [0x56, 0x69, 0x72, 0x74, 0x75, 0x61, 0x6C, 0x00])
+        XCTAssertEqual(b.count, 256 + desc.count + 50)
+        XCTAssertThrowsError(try spec(send: 16).encoded(), "below the declared length")
+        XCTAssertThrowsError(try spec(send: 26).encoded(), "above the largest input report")
+        XCTAssertThrowsError(try spec(send: 25, neutral0: 24).encoded(), "neutral length is not its send length")
+    }
+
+    func testSpecValidationRules() throws {
+        var s = try PadIdentity.xboxBT16.spec()
+        s.product = String(repeating: "x", count: 64)
+        XCTAssertThrowsError(try s.encoded(), "overlong product string")
+        s.product = String(repeating: "x", count: 63)
+        XCTAssertNoThrow(try s.encoded())
+        s = try PadIdentity.xboxBT16.spec(); s.transport = ""
+        XCTAssertThrowsError(try s.encoded(), "empty transport")
+        s = try PadIdentity.xboxBT16.spec(); s.neutralReports[0][0] = 0x09
+        XCTAssertThrowsError(try s.encoded(), "neutral must start with its report ID")
+        s = try PadIdentity.xboxBT16.spec(); s.neutralReports.removeLast()
+        XCTAssertThrowsError(try s.encoded(), "one neutral report per input")
+        s = try PadIdentity.xboxBT16.spec(); s.sendLengths = [0x07: 16]
+        XCTAssertThrowsError(try s.encoded(), "send length for a non-input report")
+        s = try PadIdentity.xboxBT16.spec(); s.descriptor = []
+        XCTAssertThrowsError(try s.encoded())
     }
 }

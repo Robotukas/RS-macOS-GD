@@ -8,6 +8,9 @@
 #define GDHUB_APP_ID                GDHUB_TEAM_ID ".com.interlinked.gdhub"
 #define GDHUB_WATCHDOG_PERIOD_MS    250
 #define GDHUB_WATCHDOG_TIMEOUT_MS   2000
+#ifndef GDHUB_DEV_TERMINATE
+#define GDHUB_DEV_TERMINATE         1      // DEBUG-ONLY: enables selector devTerminate; set to 0 for a release build
+#endif
 #ifndef GDHUB_DEXT_BUILD
 #define GDHUB_DEXT_BUILD 0          // set by GCC_PREPROCESSOR_DEFINITIONS = GDHUB_DEXT_BUILD=$(CURRENT_PROJECT_VERSION)
 #endif

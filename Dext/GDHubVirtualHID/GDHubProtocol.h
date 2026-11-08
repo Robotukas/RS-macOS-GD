@@ -11,7 +11,8 @@
 #define GDHUB_SEL_HEARTBEAT             5
 #define GDHUB_SEL_REGISTER_OUTPUT       6
 #define GDHUB_SEL_GET_STATUS            7
-#define GDHUB_SEL_COUNT                 8
+#define GDHUB_SEL_DEV_TERMINATE         8      /* DEBUG-ONLY dev experiment (not in the design): Terminate(0) on the root so the dext process can exit */
+#define GDHUB_SEL_COUNT                 9
 #define GDHUB_SLOT_PAD                  0
 #define GDHUB_SLOT_KEYBOARD             1
 #define GDHUB_SLOT_POINTER              2

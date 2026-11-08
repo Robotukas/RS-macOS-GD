@@ -16,7 +16,9 @@ enum DextProtocol {
         static let heartbeat: UInt32 = 5
         static let registerOutput: UInt32 = 6
         static let getStatus: UInt32 = 7
-        static let count: UInt32 = 8
+        /// DEBUG-ONLY dev experiment (not in the design): the dext calls Terminate(0) on its root service.
+        static let devTerminate: UInt32 = 8
+        static let count: UInt32 = 9
     }
 
     enum Slot: UInt8 {
@@ -182,5 +184,119 @@ struct OutputReport: Equatable {
         for i in 0..<len { out.append(UInt8((w[1 + i / 8] >> UInt64(8 * (i % 8))) & 0xFF)) }
         bytes = out
         sequence = w[9]
+    }
+}
+
+// MARK: - DeviceSpec (design §5.3)
+
+enum DeviceSpecError: Error, Equatable, CustomStringConvertible {
+    case descriptorSize(Int)
+    case inputReports(Int)
+    case reportLength(id: UInt8, length: Int)
+    case sendLengthNotInput(UInt8)
+    case sendLengthOutOfRange(id: UInt8, send: Int)
+    case reportIDZeroWithMultipleInputs
+    case neutralCount(expected: Int, got: Int)
+    case neutralLength(id: UInt8, expected: Int, got: Int)
+    case neutralMissingID(UInt8)
+    case neutralTotal(Int)
+    case stringTooLong(field: String, max: Int)
+    case emptyTransport
+
+    var description: String {
+        switch self {
+        case .descriptorSize(let n): return "descriptor size \(n) not in 1...\(DextProtocol.Limit.maxDescriptor)"
+        case .inputReports(let n): return "\(n) input reports (need 1...\(DextProtocol.Limit.maxInputReports))"
+        case .reportLength(let id, let l): return "input report 0x\(String(id, radix: 16)) length \(l) not in 1...\(DextProtocol.Limit.maxReport)"
+        case .sendLengthNotInput(let id): return "send length for 0x\(String(id, radix: 16)), which is not an input report"
+        case .sendLengthOutOfRange(let id, let s): return "send length \(s) for 0x\(String(id, radix: 16)) outside its declared length...largest input"
+        case .reportIDZeroWithMultipleInputs: return "report ID 0 with more than one input report"
+        case .neutralCount(let e, let g): return "\(g) neutral reports, expected \(e)"
+        case .neutralLength(let id, let e, let g): return "neutral report 0x\(String(id, radix: 16)) is \(g) bytes, expected its send length \(e)"
+        case .neutralMissingID(let id): return "neutral report does not start with 0x\(String(id, radix: 16))"
+        case .neutralTotal(let n): return "neutral blob \(n) bytes exceeds \(DextProtocol.Limit.maxNeutral)"
+        case .stringTooLong(let f, let m): return "\(f) must be shorter than \(m) bytes"
+        case .emptyTransport: return "Transport must not be empty"
+        }
+    }
+}
+
+/// Everything the dext needs to publish one HID device. `encoded()` produces the createDevice blob and enforces
+/// the same rules as `GDHubSpecValidate` (design §3.6).
+struct DeviceSpec: Equatable {
+    var slot: DextProtocol.Slot
+    var flags: UInt8 = 0
+    var vendorID: UInt32, productID: UInt32, versionNumber: UInt32
+    var countryCode: UInt32 = 0, locationID: UInt32 = 0, reportIntervalUs: UInt32 = 4000
+    var primaryUsagePage: UInt32 = 1, primaryUsage: UInt32 = 5
+    var transport: String, manufacturer: String, product: String, serialNumber: String
+    var descriptor: [UInt8]
+    /// reportID → padded send length; only `xbox-pr208` ([0x01: 25]).
+    var sendLengths: [UInt8: Int] = [:]
+    /// One per `HIDReportSizer` input report, same order, each at its send length.
+    var neutralReports: [[UInt8]]
+
+    func encoded() throws -> [UInt8] {
+        typealias O = DextProtocol.Offset
+        typealias L = DextProtocol.Length
+        guard (1...DextProtocol.Limit.maxDescriptor).contains(descriptor.count) else {
+            throw DeviceSpecError.descriptorSize(descriptor.count)
+        }
+        let inputs = try HIDReportSizer.inputs(descriptor)
+        guard (1...DextProtocol.Limit.maxInputReports).contains(inputs.count) else {
+            throw DeviceSpecError.inputReports(inputs.count)
+        }
+        for r in inputs where !(1...DextProtocol.Limit.maxReport).contains(r.length) {
+            throw DeviceSpecError.reportLength(id: r.id, length: r.length)
+        }
+        if inputs.contains(where: { $0.id == 0 }) && inputs.count != 1 { throw DeviceSpecError.reportIDZeroWithMultipleInputs }
+        let maxLen = inputs.map(\.length).max() ?? 0
+        for (id, send) in sendLengths {
+            guard let r = inputs.first(where: { $0.id == id }) else { throw DeviceSpecError.sendLengthNotInput(id) }
+            guard send >= r.length, send <= maxLen, send <= 255 else { throw DeviceSpecError.sendLengthOutOfRange(id: id, send: send) }
+        }
+        func send(_ r: HIDReportSizer.ReportSize) -> Int { sendLengths[r.id] ?? r.length }
+        guard neutralReports.count == inputs.count else {
+            throw DeviceSpecError.neutralCount(expected: inputs.count, got: neutralReports.count)
+        }
+        var neutralBlob: [UInt8] = []
+        for (r, n) in zip(inputs, neutralReports) {
+            guard n.count == send(r) else { throw DeviceSpecError.neutralLength(id: r.id, expected: send(r), got: n.count) }
+            if r.id != 0 && n.first != r.id { throw DeviceSpecError.neutralMissingID(r.id) }
+            neutralBlob += n
+        }
+        guard neutralBlob.count <= DextProtocol.Limit.maxNeutral else { throw DeviceSpecError.neutralTotal(neutralBlob.count) }
+        guard !transport.isEmpty else { throw DeviceSpecError.emptyTransport }
+
+        var out = [UInt8](repeating: 0, count: DextProtocol.Spec.headerSize)
+        func put32(_ off: Int, _ v: UInt32) { for i in 0..<4 { out[off + i] = UInt8((v >> UInt32(8 * i)) & 0xFF) } }
+        func put16(_ off: Int, _ v: Int) { out[off] = UInt8(v & 0xFF); out[off + 1] = UInt8((v >> 8) & 0xFF) }
+        func putString(_ off: Int, _ len: Int, _ s: String, _ field: String) throws {
+            let u = Array(s.utf8)
+            guard u.count < len else { throw DeviceSpecError.stringTooLong(field: field, max: len) }
+            for (i, b) in u.enumerated() { out[off + i] = b }
+        }
+        put32(O.magic, DextProtocol.Spec.magic)
+        put16(O.version, DextProtocol.version)
+        put16(O.headerSize, DextProtocol.Spec.headerSize)
+        out[O.slot] = slot.rawValue
+        out[O.flags] = flags
+        out[O.inputCount] = UInt8(inputs.count)
+        put32(O.vendor, vendorID); put32(O.product, productID); put32(O.versionNumber, versionNumber)
+        put32(O.country, countryCode); put32(O.location, locationID); put32(O.intervalUs, reportIntervalUs)
+        put32(O.usagePage, primaryUsagePage); put32(O.usage, primaryUsage)
+        put16(O.descLen, descriptor.count)
+        put16(O.neutralLen, neutralBlob.count)
+        for (i, r) in inputs.enumerated() {
+            let base = O.inputTable + i * L.inputTableEntry
+            out[base] = r.id
+            out[base + 1] = UInt8(sendLengths[r.id] ?? 0)
+            put16(base + 2, r.length)
+        }
+        try putString(O.transport, L.transport, transport, "Transport")
+        try putString(O.manufacturer, L.manufacturer, manufacturer, "Manufacturer")
+        try putString(O.productName, L.productName, product, "Product")
+        try putString(O.serial, L.serial, serialNumber, "SerialNumber")
+        return out + descriptor + neutralBlob
     }
 }

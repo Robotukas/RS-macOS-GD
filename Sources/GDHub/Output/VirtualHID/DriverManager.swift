@@ -33,6 +33,16 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     /// Serial queue for every dext call and callback (design §5.2). Later phases share it with the pad sink.
     let vhidQueue = DispatchQueue(label: "com.interlinked.gdhub.vhid")
     let dext: DextClient
+    let sink: VirtualPadSink
+
+    /// Pad publication state (design §5.4) and whether the test pattern is running.
+    @Published private(set) var padState: PadPublishState = .off
+    @Published private(set) var testPatternRunning = false
+
+    // Dev aids from the command line (confined to vhidQueue once running).
+    private var pendingDevTerminate = CommandLine.arguments.contains("--dev-terminate-driver")
+    private var pendingTestPattern = CommandLine.arguments.contains("--test-pattern")
+    private var lastActiveBuild: String?
 
     let embeddedDextURL = Bundle.main.bundleURL
         .appendingPathComponent("Contents/Library/SystemExtensions/\(DriverManager.dextID).dext")
@@ -43,16 +53,60 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     override init() {
         embeddedBuild = Bundle(url: embeddedDextURL)?.infoDictionary?["CFBundleVersion"] as? String
-        dext = DextClient(queue: vhidQueue)
+        let client = DextClient(queue: vhidQueue)
+        dext = client
+        sink = VirtualPadSink(queue: vhidQueue, transport: client)
         super.init()
         dext.onState = { [weak self] new in
             // Called on vhidQueue.
+            guard let self else { return }
+            if case .connected = new { self.sink.transportConnected() } else { self.sink.transportLost() }
+            self.runDevAidsIfConnected(new)
             Task { @MainActor in
-                guard let self else { return }
                 if new != self.connection { Self.log.info("connection: \(String(describing: new), privacy: .public)") }
                 self.connection = new
             }
         }
+        sink.onPadState = { [weak self] new in
+            Task { @MainActor in
+                guard let self else { return }
+                if new != self.padState { Self.log.info("pad: \(String(describing: new), privacy: .public)") }
+                self.padState = new
+            }
+            self?.startPatternIfRequested(new)
+        }
+        sink.onTestPattern = { [weak self] on in Task { @MainActor in self?.testPatternRunning = on } }
+        // `--publish-pad <identity>` (dev aid): publish without persisting; it waits for the connection.
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--publish-pad"), i + 1 < args.count {
+            if let id = PadIdentity.named(args[i + 1]) { vhidQueue.async { [sink] in sink.publish(id, persist: false) } }
+            else { Self.log.error("--publish-pad: unknown identity \(args[i + 1], privacy: .public)") }
+        }
+        // Dev aids for scripted checks: `--unpublish-after <s>` and `--switch-pad-after <s> <identity>`.
+        if let i = args.firstIndex(of: "--unpublish-after"), i + 1 < args.count, let sec = Double(args[i + 1]) {
+            vhidQueue.asyncAfter(deadline: .now() + sec) { [sink] in sink.unpublish(persist: false) }
+        }
+        if let i = args.firstIndex(of: "--switch-pad-after"), i + 2 < args.count, let sec = Double(args[i + 1]),
+           let id = PadIdentity.named(args[i + 2]) {
+            vhidQueue.asyncAfter(deadline: .now() + sec) { [sink] in sink.publish(id, persist: false) }
+        }
+    }
+
+    /// vhidQueue. `--dev-terminate-driver`: once connected, ask the dext to terminate (DEBUG-only experiment).
+    private func runDevAidsIfConnected(_ s: DextClient.State) {
+        guard case .connected = s, pendingDevTerminate else { return }
+        pendingDevTerminate = false
+        vhidQueue.asyncAfter(deadline: .now() + 1) { [dext] in
+            Self.log.info("--dev-terminate-driver: calling devTerminate")
+            dext.devTerminate()
+        }
+    }
+
+    /// vhidQueue. `--test-pattern`: loop the pattern once the pad is published.
+    private func startPatternIfRequested(_ s: PadPublishState) {
+        guard case .published = s, pendingTestPattern else { return }
+        pendingTestPattern = false
+        vhidQueue.asyncAfter(deadline: .now() + 1) { [sink] in sink.runTestPattern(loop: true) }
     }
 
     // MARK: Launch
@@ -80,7 +134,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     func installOrUpdate() {
         guard embeddedBuild != nil else { return }
         // Close the connection first (D3+: destroy the devices too); it reconnects when the new dext matches.
-        vhidQueue.sync { dext.stop() }
+        vhidQueue.sync { sink.shutdown(); dext.stop() }
         let req = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: Self.dextID, queue: .main)
         req.delegate = self
         if case .updating = state {} else { state = .activating }
@@ -90,7 +144,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     func uninstall() {
         guard embeddedBuild != nil else { return }
-        vhidQueue.sync { dext.stop() }
+        vhidQueue.sync { sink.shutdown(); dext.stop() }
         let req = OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: Self.dextID, queue: .main)
         req.delegate = self
         state = .uninstalling
@@ -100,6 +154,20 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     func retry() {
         if case .failed = state { state = .checking; queryProperties() }
     }
+
+    // MARK: Pad actions (design §5.4; all hop to vhidQueue)
+
+    func publishPad(_ identity: PadIdentity) { vhidQueue.async { [sink] in sink.publish(identity) } }
+    func unpublishPad() { vhidQueue.async { [sink] in sink.unpublish() } }
+    func runTestPattern() { vhidQueue.async { [sink] in sink.runTestPattern() } }
+    func stopTestPattern() { vhidQueue.async { [sink] in sink.stopTestPattern() } }
+
+    /// Clears the connection back-off and the refusal latch (Retry in the Driver menu).
+    func retryConnection() { vhidQueue.async { [dext] in dext.retry() } }
+
+    /// DEBUG-ONLY dev experiment: the dext terminates its root service so the process exits and a staged build can
+    /// start without a reboot.
+    func devTerminateDriver() { vhidQueue.async { [dext] in dext.devTerminate() } }
 
     func openSystemSettings() {
         let urls = ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
@@ -187,6 +255,11 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         let enabled = infos.filter { $0.enabled && !$0.uninstalling }
         if let match = enabled.first(where: { $0.v == embeddedBuild }) {
             set(.active(match.v))
+            if lastActiveBuild != match.v {
+                // A new driver build may accept an app the old one refused: clear the refusal latch.
+                if lastActiveBuild != nil { retryConnection() }
+                lastActiveBuild = match.v
+            }
             vhidQueue.async { [dext] in dext.start() }       // no-op when already running
         } else if let old = enabled.map(\.v).max(by: { (Int($0) ?? 0) < (Int($1) ?? 0) }) {
             if case .updating = state { return }   // already replacing
