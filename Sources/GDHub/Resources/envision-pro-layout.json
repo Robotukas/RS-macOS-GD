@@ -30,133 +30,40 @@
  "note": "x,y are fractions of the view image. Stick hotspots learn two axes (push right, push down) plus a click button. Trigger hotspots learn one analogue field. Side views: the right-side photo is SCUF's quick-start image; the left side is its mirror.",
  "controls": [
   {
-   "id": "view",
-   "label": "View",
-   "kind": "button",
-   "order": 1,
-   "view": "front",
-   "x": 0.3443,
-   "y": 0.2841
-  },
-  {
-   "id": "menu",
-   "label": "Menu",
-   "kind": "button",
-   "order": 2,
-   "view": "front",
-   "x": 0.6922,
-   "y": 0.2784
-  },
-  {
-   "id": "start",
-   "label": "Start",
-   "kind": "button",
-   "order": 3,
-   "view": "front",
-   "x": 0.5217,
-   "y": 0.6108
-  },
-  {
-   "id": "a",
-   "label": "A",
-   "kind": "button",
-   "order": 4,
-   "view": "front",
-   "x": 0.7948,
-   "y": 0.5114
-  },
-  {
-   "id": "b",
-   "label": "B",
-   "kind": "button",
-   "order": 5,
-   "view": "front",
-   "x": 0.8609,
-   "y": 0.4119
-  },
-  {
-   "id": "x",
-   "label": "X",
-   "kind": "button",
-   "order": 6,
-   "view": "front",
-   "x": 0.7339,
-   "y": 0.4119
-  },
-  {
-   "id": "y",
-   "label": "Y",
-   "kind": "button",
-   "order": 7,
-   "view": "front",
-   "x": 0.7948,
-   "y": 0.2983
-  },
-  {
-   "id": "lb",
-   "label": "LB",
-   "kind": "button",
-   "order": 8,
-   "view": "sideLeft",
-   "x": 0.52,
-   "y": 0.185,
-   "radius": 0.07
-  },
-  {
-   "id": "rb",
-   "label": "RB",
-   "kind": "button",
-   "order": 9,
-   "view": "sideRight",
-   "x": 0.48,
-   "y": 0.185,
-   "radius": 0.07
-  },
-  {
    "id": "lt",
    "label": "LT",
    "kind": "trigger",
-   "order": 10,
+   "order": 1,
    "view": "sideLeft",
    "x": 0.287,
    "y": 0.226,
    "radius": 0.08
   },
   {
-   "id": "rt",
-   "label": "RT",
-   "kind": "trigger",
-   "order": 11,
-   "view": "sideRight",
-   "x": 0.713,
-   "y": 0.226,
-   "radius": 0.08
+   "id": "lb",
+   "label": "LB",
+   "kind": "button",
+   "order": 2,
+   "view": "sideLeft",
+   "x": 0.52,
+   "y": 0.185,
+   "radius": 0.07
   },
   {
-   "id": "l3",
-   "label": "L3",
+   "id": "sax_left",
+   "label": "SAX left",
    "kind": "button",
-   "order": 12,
-   "view": "front",
-   "x": 0.3965,
-   "y": 0.6023,
-   "radius": 0.03
-  },
-  {
-   "id": "r3",
-   "label": "R3",
-   "kind": "button",
-   "order": 13,
-   "view": "front",
-   "x": 0.6609,
-   "y": 0.6023,
-   "radius": 0.03
+   "order": 3,
+   "view": "sideLeft",
+   "x": 0.515,
+   "y": 0.454,
+   "radius": 0.09
   },
   {
    "id": "dpad_up",
    "label": "D-pad up",
    "kind": "button",
-   "order": 14,
+   "order": 4,
    "view": "front",
    "x": 0.2435,
    "y": 0.3182
@@ -165,7 +72,7 @@
    "id": "dpad_right",
    "label": "D-pad right",
    "kind": "button",
-   "order": 15,
+   "order": 5,
    "view": "front",
    "x": 0.3009,
    "y": 0.4119
@@ -174,7 +81,7 @@
    "id": "dpad_down",
    "label": "D-pad down",
    "kind": "button",
-   "order": 16,
+   "order": 6,
    "view": "front",
    "x": 0.2435,
    "y": 0.5057
@@ -183,7 +90,7 @@
    "id": "dpad_left",
    "label": "D-pad left",
    "kind": "button",
-   "order": 17,
+   "order": 7,
    "view": "front",
    "x": 0.1861,
    "y": 0.4119
@@ -192,47 +99,55 @@
    "id": "left_stick",
    "label": "Left stick",
    "kind": "stick",
-   "order": 18,
+   "order": 8,
    "view": "front",
    "x": 0.3965,
    "y": 0.6023,
    "radius": 0.075
   },
   {
-   "id": "right_stick",
-   "label": "Right stick",
-   "kind": "stick",
-   "order": 20,
+   "id": "l3",
+   "label": "L3",
+   "kind": "button",
+   "order": 9,
    "view": "front",
-   "x": 0.6609,
+   "x": 0.3965,
    "y": 0.6023,
-   "radius": 0.075
+   "radius": 0.03
   },
   {
-   "id": "sax_left",
-   "label": "SAX left",
+   "id": "view",
+   "label": "View",
    "kind": "button",
-   "order": 22,
-   "view": "sideLeft",
-   "x": 0.515,
-   "y": 0.454,
-   "radius": 0.09
+   "order": 10,
+   "view": "front",
+   "x": 0.3443,
+   "y": 0.2841
   },
   {
-   "id": "sax_right",
-   "label": "SAX right",
+   "id": "start",
+   "label": "Start",
    "kind": "button",
-   "order": 23,
-   "view": "sideRight",
-   "x": 0.485,
-   "y": 0.454,
-   "radius": 0.09
+   "order": 11,
+   "view": "front",
+   "x": 0.5217,
+   "y": 0.6108
+  },
+  {
+   "id": "profile",
+   "label": "Profile",
+   "kind": "button",
+   "order": 12,
+   "view": "front",
+   "x": 0.5217,
+   "y": 0.733,
+   "shape": "pill"
   },
   {
    "id": "g1",
    "label": "G1",
    "kind": "button",
-   "order": 24,
+   "order": 13,
    "view": "front",
    "x": 0.3426,
    "y": 0.8239,
@@ -242,7 +157,7 @@
    "id": "g2",
    "label": "G2",
    "kind": "button",
-   "order": 25,
+   "order": 14,
    "view": "front",
    "x": 0.4278,
    "y": 0.8239,
@@ -252,7 +167,7 @@
    "id": "g3",
    "label": "G3",
    "kind": "button",
-   "order": 26,
+   "order": 15,
    "view": "front",
    "x": 0.5148,
    "y": 0.8239,
@@ -262,7 +177,7 @@
    "id": "g4",
    "label": "G4",
    "kind": "button",
-   "order": 27,
+   "order": 16,
    "view": "front",
    "x": 0.6017,
    "y": 0.8239,
@@ -272,27 +187,112 @@
    "id": "g5",
    "label": "G5",
    "kind": "button",
-   "order": 28,
+   "order": 17,
    "view": "front",
    "x": 0.6887,
    "y": 0.8239,
    "radius": 0.035
   },
   {
-   "id": "profile",
-   "label": "Profile",
+   "id": "menu",
+   "label": "Menu",
    "kind": "button",
-   "order": 29,
+   "order": 18,
    "view": "front",
-   "x": 0.5217,
-   "y": 0.733,
-   "shape": "pill"
+   "x": 0.6922,
+   "y": 0.2784
+  },
+  {
+   "id": "a",
+   "label": "A",
+   "kind": "button",
+   "order": 19,
+   "view": "front",
+   "x": 0.7948,
+   "y": 0.5114
+  },
+  {
+   "id": "b",
+   "label": "B",
+   "kind": "button",
+   "order": 20,
+   "view": "front",
+   "x": 0.8609,
+   "y": 0.4119
+  },
+  {
+   "id": "x",
+   "label": "X",
+   "kind": "button",
+   "order": 21,
+   "view": "front",
+   "x": 0.7339,
+   "y": 0.4119
+  },
+  {
+   "id": "y",
+   "label": "Y",
+   "kind": "button",
+   "order": 22,
+   "view": "front",
+   "x": 0.7948,
+   "y": 0.2983
+  },
+  {
+   "id": "right_stick",
+   "label": "Right stick",
+   "kind": "stick",
+   "order": 23,
+   "view": "front",
+   "x": 0.6609,
+   "y": 0.6023,
+   "radius": 0.075
+  },
+  {
+   "id": "r3",
+   "label": "R3",
+   "kind": "button",
+   "order": 24,
+   "view": "front",
+   "x": 0.6609,
+   "y": 0.6023,
+   "radius": 0.03
+  },
+  {
+   "id": "sax_right",
+   "label": "SAX right",
+   "kind": "button",
+   "order": 25,
+   "view": "sideRight",
+   "x": 0.485,
+   "y": 0.454,
+   "radius": 0.09
+  },
+  {
+   "id": "rb",
+   "label": "RB",
+   "kind": "button",
+   "order": 26,
+   "view": "sideRight",
+   "x": 0.48,
+   "y": 0.185,
+   "radius": 0.07
+  },
+  {
+   "id": "rt",
+   "label": "RT",
+   "kind": "trigger",
+   "order": 27,
+   "view": "sideRight",
+   "x": 0.713,
+   "y": 0.226,
+   "radius": 0.08
   },
   {
    "id": "paddle_outer_left",
    "label": "Paddle outer left (from back)",
    "kind": "button",
-   "order": 30,
+   "order": 28,
    "view": "back",
    "x": 0.2467,
    "y": 0.5182
@@ -301,7 +301,7 @@
    "id": "paddle_inner_left",
    "label": "Paddle inner left (from back)",
    "kind": "button",
-   "order": 31,
+   "order": 29,
    "view": "back",
    "x": 0.32,
    "y": 0.5955
@@ -310,7 +310,7 @@
    "id": "paddle_inner_right",
    "label": "Paddle inner right (from back)",
    "kind": "button",
-   "order": 32,
+   "order": 30,
    "view": "back",
    "x": 0.5867,
    "y": 0.5955
@@ -319,7 +319,7 @@
    "id": "paddle_outer_right",
    "label": "Paddle outer right (from back)",
    "kind": "button",
-   "order": 33,
+   "order": 31,
    "view": "back",
    "x": 0.6667,
    "y": 0.5182
