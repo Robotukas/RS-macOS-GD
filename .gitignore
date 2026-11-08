@@ -10,3 +10,6 @@ scuf-envision/tools/annotate
 scuf-envision/tools/probe
 scuf-envision/tools/sdlmatch
 scuf-envision/tools/gcprobe
+# Xcode/DriverKit build (scripts/build-xcode.sh)
+.xcodebuild/
+Xcode/build-number

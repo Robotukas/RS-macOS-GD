@@ -1,0 +1,60 @@
+name: GDHub
+options: {bundleIdPrefix: com.interlinked, deploymentTarget: {macOS: "14.0"}, createIntermediateGroups: true}
+settings:
+  base: {DEVELOPMENT_TEAM: 79XF6HYX8A, CODE_SIGN_STYLE: Automatic, MARKETING_VERSION: "0.1.0", CURRENT_PROJECT_VERSION: "1"}
+targets:
+  GDHub:
+    type: application
+    platform: macOS
+    scheme: {}
+    sources: [Sources/GDHub, Xcode/App/BundleModule+Xcode.swift]
+    dependencies: [{target: GDHubVirtualHID}]          # embedded in Contents/Library/SystemExtensions
+    info:
+      path: Xcode/App/Info.plist
+      properties: {CFBundleDisplayName: GDHub, CFBundleShortVersionString: $(MARKETING_VERSION),
+                   CFBundleVersion: $(CURRENT_PROJECT_VERSION), LSMinimumSystemVersion: "14.0",
+                   NSPrincipalClass: NSApplication, NSHighResolutionCapable: true,
+                   NSSystemExtensionUsageDescription: "GDHub installs a driver that publishes its virtual controller, keyboard and pointer."}
+    entitlements: {path: Xcode/App/GDHub.entitlements, properties: {com.apple.developer.system-extension.install: true}}
+    settings:
+      base: {PRODUCT_BUNDLE_IDENTIFIER: com.interlinked.gdhub, PRODUCT_NAME: GDHub, SWIFT_VERSION: "5.0",
+             ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development"}
+  GDHubVirtualHID:
+    type: driver-extension
+    platform: macOS                                      # xcodegen has no DriverKit platform; SDKROOT does it
+    sources: [Dext/GDHubVirtualHID]
+    dependencies: [{sdk: DriverKit.framework}, {sdk: HIDDriverKit.framework}]
+    info:
+      path: Dext/GDHubVirtualHID/Info.plist
+      properties:
+        CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)   # = DEXT; xcodegen omits it for driver-extension
+        CFBundleDisplayName: GDHub Virtual HID
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        OSBundleUsageDescription: Publishes GDHub's virtual game controller, keyboard and pointer.
+        IOKitPersonalities:
+          GDHubVirtualHID:
+            CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleIdentifierKernel: com.apple.kpi.iokit
+            IOClass: IOUserService
+            IOMatchCategory: $(PRODUCT_BUNDLE_IDENTIFIER)
+            IOProviderClass: IOUserResources
+            IOResourceMatch: IOKit
+            IOUserClass: GDHubVirtualHID
+            IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            UserClientProperties:
+              IOClass: IOUserUserClient
+              IOUserClass: GDHubVirtualHIDUserClient
+              GDHubPadProperties: {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualPad}
+              # D8: GDHubKeyboardProperties: {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualKeyboard}
+              # D8: GDHubPointerProperties:  {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualPointer}
+    entitlements:
+      path: Dext/GDHubVirtualHID/GDHubVirtualHID.entitlements
+      properties: {com.apple.developer.driverkit: true, com.apple.developer.driverkit.family.hid.device: true,
+                   com.apple.developer.driverkit.allow-any-userclient-access: true}
+    settings:
+      base: {PRODUCT_BUNDLE_IDENTIFIER: com.interlinked.gdhub.VirtualHID, PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER),
+             SDKROOT: driverkit, SUPPORTED_PLATFORMS: driverkit, DRIVERKIT_DEPLOYMENT_TARGET: "23.0",
+             CLANG_CXX_LANGUAGE_STANDARD: gnu++20,
+             GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GDHUB_DEXT_BUILD=$(CURRENT_PROJECT_VERSION)"],
+             ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development"}
