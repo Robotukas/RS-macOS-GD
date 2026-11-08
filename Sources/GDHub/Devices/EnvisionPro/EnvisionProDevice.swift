@@ -87,10 +87,11 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
-        // Views observe the device; re-publish when edit-mode state changes.
-        editorForward = editor.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.objectWillChange.send() } }
-        }
+        // Views observe the device for the row layout; re-publish only for the editor state that
+        // changes it (edit mode and zoom), not for every selection or drag update.
+        editorForward = editor.$isEditing.map { _ in () }.merge(with: editor.$zoom.map { _ in () })
+            .dropFirst()
+            .sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     deinit { timer?.invalidate() }
@@ -181,6 +182,11 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         editor.selection = []
         editor.zoom = 1
         log("layout edits discarded")
+    }
+
+    /// Where leaders leave the selected labels: "side", "below", "above" or nil for automatic.
+    func setLeaderAttach(_ attach: String?, for ids: Set<String>) {
+        for id in ids { updateControl(id) { $0.leaderAttach = attach } }
     }
 
     /// Lock the layout: leave edit mode and persist it.

@@ -86,6 +86,8 @@ struct ControlLayout: Codable {
         var leader: [[Double]]?
         /// "oneCorner" or "twoCorners": orthogonal leader shape recomputed as the label moves.
         var leaderPreset: String?
+        /// Where the leader leaves the label: "side" (left/right edge), "below", "above", or nil = auto.
+        var leaderAttach: String?
 
         var isPill: Bool { shape == "pill" }
     }

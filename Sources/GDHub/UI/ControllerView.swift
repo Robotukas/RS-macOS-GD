@@ -310,14 +310,24 @@ private struct CalloutLayer: View {
             }
         }
         for c in controls where out[c.id] == nil { out[c.id] = Placed(anchor: freePoint(c), kind: .center) }
+        for (id, live) in editor.liveAnchors where out[id] != nil { out[id]!.anchor = live }
         return out
     }
 
-    private func leaderEnd(_ p: Placed) -> CGPoint {
-        switch p.kind {
-        case .center: return p.anchor
-        case .trailing: return CGPoint(x: p.anchor.x + 3, y: p.anchor.y)
-        case .leading: return CGPoint(x: p.anchor.x - 3, y: p.anchor.y)
+    /// Where the leader meets the label: a side edge, or the bottom / top centre of the pill.
+    private func leaderEnd(_ c: ControlLayout.Control, _ p: Placed) -> CGPoint {
+        let rect = pillRect(c.id, p)
+        let ctr = point(c)
+        var attach = c.leaderAttach ?? "auto"
+        if attach == "auto" {
+            let dx = ctr.x - rect.midX, dy = ctr.y - rect.midY
+            attach = abs(dy) > abs(dx) ? (dy > 0 ? "below" : "above") : "side"
+        }
+        switch attach {
+        case "below": return CGPoint(x: rect.midX, y: rect.maxY + 2)
+        case "above": return CGPoint(x: rect.midX, y: rect.minY - 2)
+        default:
+            return ctr.x < rect.midX ? CGPoint(x: rect.minX - 2, y: rect.midY) : CGPoint(x: rect.maxX + 2, y: rect.midY)
         }
     }
 
@@ -330,7 +340,7 @@ private struct CalloutLayer: View {
     /// when the label is mostly above / below the control). Two corners put a vertical middle segment in.
     private func presetCorners(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
         guard let preset = c.leaderPreset else { return [] }
-        let e = leaderEnd(p), ctr = point(c)
+        let e = leaderEnd(c, p), ctr = point(c)
         let horizontal = abs(e.x - ctr.x) >= abs(e.y - ctr.y)
         switch preset {
         case "oneCorner":
@@ -359,7 +369,7 @@ private struct CalloutLayer: View {
     private func leaderPoints(_ c: ControlLayout.Control, _ p: Placed) -> [CGPoint] {
         let centre = point(c)
         let cs = corners(c, p)
-        let end = leaderEnd(p)
+        let end = leaderEnd(c, p)
         let first = cs.first ?? end
         let r = layout.radius(of: c) * size.width
         let v = CGVector(dx: first.x - centre.x, dy: first.y - centre.y)
@@ -512,7 +522,8 @@ private struct CalloutLayer: View {
                 if case .active(let loc) = phase { editor.hoverPoint[viewKey] = loc }
             }
             .onPreferenceChange(PillSizeKey.self) { sizes in
-                editor.pillSizes.merge(sizes) { $1 }
+                let changed = sizes.filter { editor.pillSizes[$0.key] != $0.value }
+                if !changed.isEmpty { editor.pillSizes.merge(changed) { $1 } }
             }
             .onAppear { editor.aligners[viewKey] = { action in align(action) } }
         }
@@ -549,14 +560,28 @@ private struct CalloutLayer: View {
         let raw = CGPoint(x: origin.x + translation.width, y: origin.y + translation.height)
         let group = editor.selection.contains(c.id) && editor.selection.count > 1
         let snappedPoint = snapped(raw, kind: pl.kind, excluding: c.id, in: group ? placed.filter { !editor.selection.contains($0.key) } : placed)
-        setLabel(c.id, anchor: snappedPoint, kind: pl.kind)
-        guard group else { return }
-        let delta = CGSize(width: snappedPoint.x - origin.x, height: snappedPoint.y - origin.y)
-        for other in controls where other.id != c.id && editor.selection.contains(other.id) {
-            guard let op = placed[other.id] else { continue }
-            let o = editor.dragOrigin[other.id] ?? op.anchor
-            editor.dragOrigin[other.id] = o
-            setLabel(other.id, anchor: CGPoint(x: o.x + delta.width, y: o.y + delta.height), kind: op.kind)
+        var live = editor.liveAnchors
+        live[c.id] = snappedPoint
+        if group {
+            let delta = CGSize(width: snappedPoint.x - origin.x, height: snappedPoint.y - origin.y)
+            for other in controls where other.id != c.id && editor.selection.contains(other.id) {
+                guard let op = placed[other.id] else { continue }
+                let o = editor.dragOrigin[other.id] ?? op.anchor
+                editor.dragOrigin[other.id] = o
+                live[other.id] = CGPoint(x: o.x + delta.width, y: o.y + delta.height)
+            }
+        }
+        editor.liveAnchors = live
+    }
+
+    /// Write the dragged positions into the layout (one change, one autosave) and clear the live state.
+    private func commitDrag(_ placed: [String: Placed]) {
+        let live = editor.liveAnchors
+        editor.liveAnchors = [:]
+        editor.dragOrigin = [:]
+        for (id, anchor) in live {
+            guard let kind = placed[id]?.kind else { continue }
+            setLabel(id, anchor: anchor, kind: kind)
         }
     }
 
@@ -630,6 +655,11 @@ private struct CalloutLayer: View {
                         Button("Straight") { device.setLeaderPreset(nil, for: [c.id]) }
                         Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: [c.id]) }
                         Button("Z shape (two corners)") { device.setLeaderPreset("twoCorners", for: [c.id]) }
+                        Divider()
+                        Button("Leaves label: automatic") { device.setLeaderAttach(nil, for: [c.id]) }
+                        Button("Leaves label: side") { device.setLeaderAttach("side", for: [c.id]) }
+                        Button("Leaves label: below") { device.setLeaderAttach("below", for: [c.id]) }
+                        Button("Leaves label: above") { device.setLeaderAttach("above", for: [c.id]) }
                     }
                     Button("Reset label position") {
                         device.updateControl(c.id) { $0.labelX = nil; $0.labelY = nil; $0.labelAnchor = nil }
@@ -641,10 +671,10 @@ private struct CalloutLayer: View {
                     guard editor.isEditing else { return }
                     dragLabels(c, pl, placed, translation: v.translation)
                 }
-                .onEnded { _ in editor.dragOrigin = [:] })
+                .onEnded { _ in commitDrag(placed) })
         switch pl.kind {
         case .center:
-            pill.position(pl.anchor)
+            pill.position(pl.anchor).transaction { $0.animation = nil }
         case .trailing:
             // Right-aligned: the pill ends on the anchor x.
             let w = max(pl.anchor.x, 1)
@@ -765,6 +795,11 @@ private struct LayoutToolbar: View {
                     Button("Straight") { device.setLeaderPreset(nil, for: editor.selection) }
                     Button("L shape (one corner)") { device.setLeaderPreset("oneCorner", for: editor.selection) }
                     Button("Z shape (two corners)") { device.setLeaderPreset("twoCorners", for: editor.selection) }
+                    Divider()
+                    Button("Leaves label: automatic") { device.setLeaderAttach(nil, for: editor.selection) }
+                    Button("Leaves label: side") { device.setLeaderAttach("side", for: editor.selection) }
+                    Button("Leaves label: below") { device.setLeaderAttach("below", for: editor.selection) }
+                    Button("Leaves label: above") { device.setLeaderAttach("above", for: editor.selection) }
                 }
                 .fixedSize()
                 .disabled(editor.selection.isEmpty)

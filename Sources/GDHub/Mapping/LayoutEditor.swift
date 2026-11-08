@@ -17,6 +17,8 @@ final class LayoutEditor: ObservableObject {
     var hoverPoint: [String: CGPoint] = [:]
 
     var dragOrigin: [String: CGPoint] = [:]
+    /// Label anchors while a drag is in progress (frame coordinates); committed to the layout on release.
+    @Published var liveAnchors: [String: CGPoint] = [:]
     /// Rubber-band selection in progress: which view it belongs to and its rectangle (frame coordinates).
     @Published var marquee: (view: String, rect: CGRect)?
     var marqueeStart: CGPoint?
