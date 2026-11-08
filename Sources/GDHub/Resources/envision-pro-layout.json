@@ -14,10 +14,20 @@
    "file": "envision-pro-back.png",
    "width": 600,
    "height": 440
+  },
+  "sideLeft": {
+   "file": "envision-pro-side-left.png",
+   "width": 540,
+   "height": 540
+  },
+  "sideRight": {
+   "file": "envision-pro-side-right.png",
+   "width": 540,
+   "height": 540
   }
  },
  "defaultHotspotRadius": 0.045,
- "note": "x,y are fractions of the view image. Stick hotspots learn two axes (push right, push down) plus a click button. Trigger hotspots learn one analogue field.",
+ "note": "x,y are fractions of the view image. Stick hotspots learn two axes (push right, push down) plus a click button. Trigger hotspots learn one analogue field. Side views: the right-side photo is SCUF's quick-start image; the left side is its mirror.",
  "controls": [
   {
    "id": "view",
@@ -199,18 +209,20 @@
    "label": "SAX left",
    "kind": "button",
    "order": 22,
-   "view": "front",
-   "x": 0.0904,
-   "y": 0.2983
+   "view": "sideLeft",
+   "x": 0.515,
+   "y": 0.454,
+   "radius": 0.09
   },
   {
    "id": "sax_right",
    "label": "SAX right",
    "kind": "button",
    "order": 23,
-   "view": "front",
-   "x": 0.9565,
-   "y": 0.2983
+   "view": "sideRight",
+   "x": 0.485,
+   "y": 0.454,
+   "radius": 0.09
   },
   {
    "id": "g1",

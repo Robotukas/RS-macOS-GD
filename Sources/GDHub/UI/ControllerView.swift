@@ -22,8 +22,12 @@ struct ControllerView: View {
         if let layout = device.layout {
             VStack(spacing: 12) {
                 HStack(alignment: .center, spacing: 16) {
+                    ControllerSideView(device: device, layout: layout, side: .sideLeft)
+                        .frame(maxWidth: 170)
                     ControllerSideView(device: device, layout: layout, side: .front)
                     ControllerSideView(device: device, layout: layout, side: .back)
+                    ControllerSideView(device: device, layout: layout, side: .sideRight)
+                        .frame(maxWidth: 170)
                 }
                 .padding(.horizontal)
                 LearnToolbar(device: device)
@@ -52,7 +56,7 @@ private struct ControllerSideView: View {
             .sorted { layout.radius(of: $0) > layout.radius(of: $1) }
         let learningId = device.learn?.currentControl?.id
         VStack(spacing: 4) {
-            Text(side == .front ? "Front" : "Back").font(.caption).foregroundStyle(.secondary)
+            Text(side.title).font(.caption).foregroundStyle(.secondary)
             ZStack {
                 if let img = ControllerImages.image(file: info.file) {
                     Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)

@@ -17,16 +17,34 @@ struct ControlLayout: Codable {
     struct Images: Codable {
         var front: ImageInfo
         var back: ImageInfo
+        var sideLeft: ImageInfo
+        var sideRight: ImageInfo
 
-        func info(for side: Side) -> ImageInfo { side == .front ? front : back }
+        func info(for side: Side) -> ImageInfo {
+            switch side {
+            case .front: return front
+            case .back: return back
+            case .sideLeft: return sideLeft
+            case .sideRight: return sideRight
+            }
+        }
     }
 
     enum Kind: String, Codable {
         case button, stick, trigger
     }
 
-    enum Side: String, Codable {
-        case front, back
+    enum Side: String, Codable, CaseIterable {
+        case front, back, sideLeft, sideRight
+
+        var title: String {
+            switch self {
+            case .front: return "Front"
+            case .back: return "Back"
+            case .sideLeft: return "Left side"
+            case .sideRight: return "Right side"
+            }
+        }
     }
 
     struct Control: Codable, Identifiable, Hashable {
