@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
 @main
 struct GDHubApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var driver = DriverManager()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -48,11 +49,15 @@ struct GDHubApp: App {
         WindowGroup("GDHub") {
             RootView(model: model)
                 .frame(minWidth: 900, minHeight: 640)
-                .onAppear { NSApp.activate(ignoringOtherApps: true) }
+                .onAppear {
+                    NSApp.activate(ignoringOtherApps: true)
+                    driver.start()
+                }
         }
         .defaultSize(width: 1200, height: 860)
         .commands {
             CommandMenu("Layout") { LayoutCommands(device: model.envision, editor: model.envision.editor) }
+            CommandMenu("Driver") { DriverCommands(driver: driver) }
         }
     }
 }

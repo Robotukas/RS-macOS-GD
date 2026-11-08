@@ -19,10 +19,11 @@ APP=.xcodebuild/Build/Products/Debug/GDHub.app
 DEXT=$APP/Contents/Library/SystemExtensions/$DEXT_ID.dext
 [[ -d $DEXT ]] || { echo "dext not embedded at $DEXT"; exit 1; }
 codesign --verify --strict --deep "$APP"
-# need <bundle> <profile path> <keys…>: key in signature AND profile; this Mac in profile.
-# Xcode's "DriverKit Team Provisioning Profile" lists devices as a 40-hex id (not the 0000xxxx-… UDID), so for
-# a dext (DEXT_PROFILE=1) the device check only requires a non-empty ProvisionedDevices list; the app profile
-# must contain this Mac's UDID verbatim. Real proof for the dext is activation (phase D1).
+# need <bundle> <profile path> <keys…>: key in signature AND profile; this Mac's UDID in the profile.
+# If the dext profile lacks this Mac, amfid rejects the dext at launch with -413 "No matching profile found"
+# (kernelmanagerd: "Exec format error"). That happens when Xcode generated the DriverKit team profile before it
+# registered this Mac. Fix: delete the cached DriverKit profile and rebuild so Xcode regenerates it:
+#   rm ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/<DriverKit profile uuid>.provisionprofile
 need() {
   local b=$1 p=$2; shift 2
   local sig=$(codesign -d --entitlements :- "$b" 2>/dev/null) prof=$(security cms -D -i "$p" 2>/dev/null)
@@ -30,15 +31,9 @@ need() {
     [[ $sig == *"<key>$k</key>"* ]]  || { echo "MISSING in signature of $b: $k"; exit 1; }
     [[ $prof == *"<key>$k</key>"* ]] || { echo "MISSING in profile of $b: $k"; exit 1; }
   done
-  if [[ ${DEXT_PROFILE:-0} == 1 ]]; then
-    local n=$(print -r -- "$prof" | plutil -extract ProvisionedDevices raw -o - - 2>/dev/null)
-    [[ ${n:-0} -ge 1 ]] || { echo "profile of $b has no ProvisionedDevices"; exit 1; }
-    [[ $prof == *$UDID* ]] || echo "note: $b profile lists devices by hashed id, UDID $UDID not verbatim (verified at activation)"
-  else
-    [[ $prof == *$UDID* ]] || { echo "this Mac is not in the profile of $b"; exit 1; }
-  fi
+  [[ $prof == *$UDID* ]] || { echo "this Mac ($UDID) is not in the profile of $b: $(print -r -- "$prof" | plutil -extract Name raw -o - - 2>/dev/null). Delete the cached copy under ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles and rebuild."; exit 1; }
 }
-DEXT_PROFILE=1 need "$DEXT" "$DEXT/embedded.provisionprofile" com.apple.developer.driverkit \
+need "$DEXT" "$DEXT/embedded.provisionprofile" com.apple.developer.driverkit \
      com.apple.developer.driverkit.family.hid.device com.apple.developer.driverkit.allow-any-userclient-access
 need "$APP" "$APP/Contents/embedded.provisionprofile" com.apple.developer.system-extension.install \
      com.apple.developer.team-identifier
