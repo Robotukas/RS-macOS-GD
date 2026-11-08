@@ -47,3 +47,10 @@ Idle frame: `06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00`.
 | 0x03 | in | 63 bytes | vendor 0xFF42 usage 2 |
 
 Raw descriptors: `scuf-envision/captures/desc_if3_ff58.hex`, `desc_if4_consumer.hex`. Decoder: `scuf-envision/tools/hiddesc.py`.
+
+## Two USB identities (added after the prior-art research, 2026-11-08)
+- **0x1b1c:0x3a08** — composite identity seen while a controller is linked over Slipstream: 3 audio interfaces + HID if3 (0xFF58 vendor + Gamepad collection) + HID if4 (Consumer + 0xFF42).
+- **0x1b1c:0x3a09** — HID-only identity observed on this Mac at another moment: a single interface whose descriptor is just the 0xFF58 vendor collection plus the two 0xFF42 collections, with **no Gamepad and no Consumer collection**. OpenLinkHub's maintainer notes the receiver's product ID "will change once controller is connected via Slipstream", so 0x3a09 is most likely the unlinked / controller-off state. Not yet confirmed by watching the transition here.
+- GDHub matches both and shows "Receiver idle (controller off)" for 0x3a09.
+- Related prior art, ranked in `docs/research/slipstream-prior-art-brief.md`: OpenLinkHub (Go) has a driver for this exact receiver including rumble on if3 output report 0x09; ZeroCue (C#, Windows) implements the Corsair Bragi control protocol on the 0xFF42 channel; Scuf2Switch documents the V1 dongle.
+- This Mac also has iCUE 5 for Mac installed with its DriverKit extension `com.corsair.cue.main.VirtualHIDDeviceDriver` active, plus OpenJoystickDriver and Razer's virtual HID dext. Any of these can interfere with or explain device behaviour.
