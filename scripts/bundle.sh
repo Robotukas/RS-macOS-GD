@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Build GDHub and assemble a runnable .app bundle at .build/GDHub.app, then launch it.
-set -e
+set -e -o pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 CONFIG="${1:-debug}"

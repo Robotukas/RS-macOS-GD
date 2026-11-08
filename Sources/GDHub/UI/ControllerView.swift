@@ -615,6 +615,7 @@ private struct CalloutLayer: View {
                 }
             }
             .frame(width: frameSize.width, height: frameSize.height)
+            .coordinateSpace(name: "callouts")
             .onContinuousHover { phase in
                 if case .active(let loc) = phase { editor.hoverPoint[viewKey] = loc }
             }
@@ -633,7 +634,7 @@ private struct CalloutLayer: View {
         Color.clear
             .contentShape(Rectangle())
             .onTapGesture { if !NSEvent.modifierFlags.contains(.shift) { editor.selection = [] } }
-            .gesture(DragGesture(minimumDistance: 4)
+            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("callouts"))
                 .onChanged { v in
                     let start = editor.marqueeStart ?? v.startLocation
                     editor.marqueeStart = start
@@ -656,13 +657,13 @@ private struct CalloutLayer: View {
     private func dragLabels(_ c: ControlLayout.Control, _ pl: Placed, _ placed: [String: Placed], translation: CGSize) {
         let origin = editor.dragOrigin[c.id] ?? pl.anchor
         editor.dragOrigin[c.id] = origin
+        // No snapping while the pointer moves (it reads as jitter); the release snaps instead.
         let raw = CGPoint(x: origin.x + translation.width, y: origin.y + translation.height)
         let group = editor.selection.contains(c.id) && editor.selection.count > 1
-        let snappedPoint = snapped(raw, kind: pl.kind, excluding: c.id, in: group ? placed.filter { !editor.selection.contains($0.key) } : placed)
         var live = editor.liveAnchors
-        live[c.id] = snappedPoint
+        live[c.id] = raw
         if group {
-            let delta = CGSize(width: snappedPoint.x - origin.x, height: snappedPoint.y - origin.y)
+            let delta = CGSize(width: raw.x - origin.x, height: raw.y - origin.y)
             for other in controls where other.id != c.id && editor.selection.contains(other.id) {
                 guard let op = placed[other.id] else { continue }
                 let o = editor.dragOrigin[other.id] ?? op.anchor
@@ -678,11 +679,20 @@ private struct CalloutLayer: View {
     /// fixed-size font the pill's centre (and a Below / Above leader) would drift as the view zooms.
     /// Group drags keep their anchors so aligned edges stay aligned.
     private func commitDrag(_ placed: [String: Placed]) {
-        let live = editor.liveAnchors
+        var live = editor.liveAnchors
+        let origins = editor.dragOrigin
         editor.liveAnchors = [:]
         editor.dragOrigin = [:]
         let single = live.count == 1
         let before = basePlacements
+        // Snap once on release: the primary dragged label snaps to neighbours, the rest follow its shift.
+        if let primary = live.keys.sorted().first(where: { origins[$0] != nil }) ?? live.keys.first,
+           let p = live[primary], let kind = placed[primary]?.kind {
+            let others = placed.filter { !live.keys.contains($0.key) }
+            let snappedPoint = snapped(p, kind: kind, excluding: primary, in: others)
+            let shift = CGSize(width: snappedPoint.x - p.x, height: snappedPoint.y - p.y)
+            for (id, a) in live { live[id] = CGPoint(x: a.x + shift.width, y: a.y + shift.height) }
+        }
         for (id, anchor) in live {
             guard let kind = placed[id]?.kind else { continue }
             let old = pillCenter(id, before)
@@ -728,7 +738,7 @@ private struct CalloutLayer: View {
                 .frame(width: 9, height: 9)
                 .position(pts[0])
                 .contextMenu { Button("Reset leader target") { device.updateControl(c.id) { $0.leaderTargetDx = nil; $0.leaderTargetDy = nil } } }
-                .gesture(DragGesture(minimumDistance: 2)
+                .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named("callouts"))
                     .onChanged { v in
                         let key = "\(c.id)#target"
                         let o = editor.dragOrigin[key] ?? pts[0]
@@ -742,7 +752,7 @@ private struct CalloutLayer: View {
                 .frame(width: 8, height: 8)
                 .position(pts[pts.count - 1])
                 .contextMenu { Button("Reset leader end") { device.updateControl(c.id) { $0.leaderEndDx = nil; $0.leaderEndDy = nil } } }
-                .gesture(DragGesture(minimumDistance: 2)
+                .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named("callouts"))
                     .onChanged { v in
                         let key = "\(c.id)#end"
                         let o = editor.dragOrigin[key] ?? pts[pts.count - 1]
@@ -762,7 +772,7 @@ private struct CalloutLayer: View {
                 .position(pts[i + 1])
                 .onTapGesture(count: 2) { removeCorner(c, index: i) }
                 .contextMenu { Button("Remove corner") { removeCorner(c, index: i) } }
-                .gesture(DragGesture(minimumDistance: 2)
+                .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named("callouts"))
                     .onChanged { v in
                         let o = editor.dragOrigin[key] ?? pts[i + 1]
                         editor.dragOrigin[key] = o
@@ -818,7 +828,7 @@ private struct CalloutLayer: View {
                     }
                 }
             }
-            .gesture(DragGesture(minimumDistance: 3)
+            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named("callouts"))
                 .onChanged { v in
                     guard editor.isEditing else { return }
                     dragLabels(c, pl, placed, translation: v.translation)
