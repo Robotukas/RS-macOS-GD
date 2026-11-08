@@ -300,8 +300,13 @@ private struct CalloutLayer: View {
         return toFrame(c.x + dx, c.y + dy)
     }
 
+    /// Placements as stored in the layout, ignoring an in-progress drag.
+    private var basePlacements: [String: Placed] { computePlacements(includeLive: false) }
+
     /// User positions win; then column labels (stacked and pushed apart); then per-control offsets.
-    private var placements: [String: Placed] {
+    private var placements: [String: Placed] { computePlacements(includeLive: true) }
+
+    private func computePlacements(includeLive: Bool) -> [String: Placed] {
         var out: [String: Placed] = [:]
         for c in controls {
             if let lx = c.labelX, let ly = c.labelY {
@@ -326,7 +331,9 @@ private struct CalloutLayer: View {
             }
         }
         for c in controls where out[c.id] == nil { out[c.id] = Placed(anchor: freePoint(c), kind: .center) }
-        for (id, live) in editor.liveAnchors where out[id] != nil { out[id]!.anchor = live }
+        if includeLive {
+            for (id, live) in editor.liveAnchors where out[id] != nil { out[id]!.anchor = live }
+        }
         return out
     }
 
@@ -453,9 +460,25 @@ private struct CalloutLayer: View {
         switch p.kind { case .center: return p.anchor.x + w / 2; case .leading: return p.anchor.x + w; case .trailing: return p.anchor.x }
     }
 
-    private func setLabel(_ id: String, anchor: CGPoint, kind: ControlLayout.LabelAnchor) {
+    /// Store a label position. When `oldCenter` (the pill centre before the move) is given, hand-placed
+    /// leader corners are carried along by the same offset so the leader keeps its shape.
+    private func setLabel(_ id: String, anchor: CGPoint, kind: ControlLayout.LabelAnchor, oldCenter: CGPoint? = nil) {
         let (fx, fy) = toFraction(anchor)
-        device.updateControl(id) { $0.labelX = fx; $0.labelY = fy; $0.labelAnchor = kind }
+        var shift: (Double, Double)? = nil
+        if let old = oldCenter {
+            let newRect = pillRect(id, Placed(anchor: anchor, kind: kind))
+            shift = (Double(newRect.midX - old.x) / Double(size.width), Double(newRect.midY - old.y) / Double(size.height))
+        }
+        device.updateControl(id) {
+            $0.labelX = fx; $0.labelY = fy; $0.labelAnchor = kind
+            if let (dx, dy) = shift, let l = $0.leader {
+                $0.leader = l.map { $0.count == 2 ? [$0[0] + dx, $0[1] + dy] : $0 }
+            }
+        }
+    }
+
+    private func pillCenter(_ id: String, _ placed: [String: Placed]) -> CGPoint? {
+        placed[id].map { let r = pillRect(id, $0); return CGPoint(x: r.midX, y: r.midY) }
     }
 
     /// Snap to other labels' anchor x (same edge kind) or y when within a few points.
@@ -476,28 +499,28 @@ private struct CalloutLayer: View {
         switch action {
         case .leftEdges:
             let target = ids.map { leftEdge($0, placed[$0]!) }.min()!
-            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .leading) }
+            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .leading, oldCenter: pillCenter(id, placed)) }
         case .rightEdges:
             let target = ids.map { rightEdge($0, placed[$0]!) }.max()!
-            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .trailing) }
+            for id in ids { setLabel(id, anchor: CGPoint(x: target, y: placed[id]!.anchor.y), kind: .trailing, oldCenter: pillCenter(id, placed)) }
         case .sameRow:
             let y = ids.map { placed[$0]!.anchor.y }.reduce(0, +) / CGFloat(ids.count)
-            for id in ids { setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: y), kind: placed[id]!.kind) }
+            for id in ids { setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: y), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed)) }
         case .centersHorizontal:
             // Same centre x: store every label by its centre so the line holds at any zoom.
             let x = ids.map { pillRect($0, placed[$0]!).midX }.reduce(0, +) / CGFloat(ids.count)
-            for id in ids { setLabel(id, anchor: CGPoint(x: x, y: placed[id]!.anchor.y), kind: .center) }
+            for id in ids { setLabel(id, anchor: CGPoint(x: x, y: placed[id]!.anchor.y), kind: .center, oldCenter: pillCenter(id, placed)) }
         case .topEdges:
             let top = ids.map { pillRect($0, placed[$0]!).minY }.min()!
             for id in ids {
                 let h = pillRect(id, placed[id]!).height
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + h / 2), kind: placed[id]!.kind)
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + h / 2), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
             }
         case .bottomEdges:
             let bottom = ids.map { pillRect($0, placed[$0]!).maxY }.max()!
             for id in ids {
                 let h = pillRect(id, placed[id]!).height
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: bottom - h / 2), kind: placed[id]!.kind)
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: bottom - h / 2), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
             }
         case .distributeHorizontally:
             let sorted = ids.sorted { pillRect($0, placed[$0]!).midX < pillRect($1, placed[$1]!).midX }
@@ -507,14 +530,14 @@ private struct CalloutLayer: View {
             let step = (last - first) / CGFloat(sorted.count - 1)
             for (i, id) in sorted.enumerated() {
                 let shift = (first + step * CGFloat(i)) - pillRect(id, placed[id]!).midX
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x + shift, y: placed[id]!.anchor.y), kind: placed[id]!.kind)
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x + shift, y: placed[id]!.anchor.y), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
             }
         case .distributeVertically:
             let sorted = ids.sorted { placed[$0]!.anchor.y < placed[$1]!.anchor.y }
             guard let top = placed[sorted.first!]?.anchor.y, let bottom = placed[sorted.last!]?.anchor.y, sorted.count > 2 else { return }
             let step = (bottom - top) / CGFloat(sorted.count - 1)
             for (i, id) in sorted.enumerated() {
-                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + step * CGFloat(i)), kind: placed[id]!.kind)
+                setLabel(id, anchor: CGPoint(x: placed[id]!.anchor.x, y: top + step * CGFloat(i)), kind: placed[id]!.kind, oldCenter: pillCenter(id, placed))
             }
         }
     }
@@ -659,13 +682,15 @@ private struct CalloutLayer: View {
         editor.liveAnchors = [:]
         editor.dragOrigin = [:]
         let single = live.count == 1
+        let before = basePlacements
         for (id, anchor) in live {
             guard let kind = placed[id]?.kind else { continue }
+            let old = pillCenter(id, before)
             if single && kind != .center {
                 let rect = pillRect(id, Placed(anchor: anchor, kind: kind))
-                setLabel(id, anchor: CGPoint(x: rect.midX, y: rect.midY), kind: .center)
+                setLabel(id, anchor: CGPoint(x: rect.midX, y: rect.midY), kind: .center, oldCenter: old)
             } else {
-                setLabel(id, anchor: anchor, kind: kind)
+                setLabel(id, anchor: anchor, kind: kind, oldCenter: old)
             }
         }
     }
