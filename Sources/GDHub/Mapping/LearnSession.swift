@@ -22,6 +22,9 @@ final class LearnSession: ObservableObject {
     private let triggerActivity = 80
     private let settleTime: TimeInterval = 0.5
     private let maxStepTime: TimeInterval = 8
+    private let maxStickStepTime: TimeInterval = 15
+    /// An axis must travel at least this far from its baseline to count as part of the stick.
+    private let stickAxisTravel = 8000
 
     @Published private(set) var currentControl: ControlLayout.Control?
     @Published private(set) var instruction: String = ""
@@ -31,6 +34,18 @@ final class LearnSession: ObservableObject {
     @Published private(set) var isFinished = false
     /// True when there is a previous step to return to.
     @Published private(set) var canGoBack = false
+    /// Circle capture: one flag per 10-degree sector, true once the stick has been there at the edge.
+    /// Empty when the current step is not a stick rotation.
+    @Published private(set) var circleCovered: [Bool] = []
+    static let circleSectors = 36
+    /// Deflection (int16 units) that counts as "at the edge" for the circle capture.
+    private let circleEdge = 14000
+    private var baseInstruction = ""
+
+    var circlePercent: Int {
+        guard !circleCovered.isEmpty else { return 0 }
+        return circleCovered.filter { $0 }.count * 100 / circleCovered.count
+    }
 
     let mode: Mode
     private let steps: [Step]
@@ -48,6 +63,8 @@ final class LearnSession: ObservableObject {
     private var risenExtra: UInt16 = 0
     private var hatCounts: [UInt8: Int] = [:]
     private var peakDelta: [String: Int] = [:] // field -> signed delta with largest magnitude
+    private var axisMin: [String: Int] = [:]   // raw extremes seen during a circle capture
+    private var axisMax: [String: Int] = [:]
 
     init(controls: [ControlLayout.Control], mode: Mode, baseline: GamepadFrame,
          onAssign: @escaping (LearnAssignment) -> Void, onFinish: @escaping () -> Void) {
@@ -59,8 +76,7 @@ final class LearnSession: ObservableObject {
         var steps: [Step] = []
         for (i, c) in controls.enumerated() {
             if c.kind == .stick {
-                steps.append(Step(control: c, target: .stickHorizontal, controlIndex: i))
-                steps.append(Step(control: c, target: .stickVertical, controlIndex: i))
+                steps.append(Step(control: c, target: .stickCircle, controlIndex: i))
             } else {
                 steps.append(Step(control: c, target: .whole, controlIndex: i))
             }
@@ -113,21 +129,30 @@ final class LearnSession: ObservableObject {
             risenExtra = 0
             hatCounts = [:]
             peakDelta = [:]
-            instruction = "Got it - now release"
+            axisMin = [:]
+            axisMax = [:]
+            instruction = steps[stepIndex].target == .stickCircle
+                ? "Keep going round the full circle, then let go"
+                : "Got it - now release"
         }
         accumulate(frame)
+        if steps[stepIndex].target == .stickCircle { trackCircle(frame) }
         if quiet {
             if now.timeIntervalSince(lastActive) >= settleTime { finishStep() }
         } else {
             lastActive = now
         }
-        if isCollecting && now.timeIntervalSince(startedAt) >= maxStepTime { finishStep() }
+        if isCollecting && now.timeIntervalSince(startedAt) >= stepLimit { finishStep() }
     }
 
-    /// Call periodically so the 8 s limit also applies when frames stop arriving.
+    /// Call periodically so the time limit also applies when frames stop arriving.
     func tick(now: Date = Date()) {
         guard !isFinished, isCollecting else { return }
-        if now.timeIntervalSince(startedAt) >= maxStepTime { finishStep() }
+        if now.timeIntervalSince(startedAt) >= stepLimit { finishStep() }
+    }
+
+    private var stepLimit: TimeInterval {
+        steps[stepIndex].target == .stickCircle ? maxStickStepTime : maxStepTime
     }
 
     // MARK: Internals
@@ -153,7 +178,11 @@ final class LearnSession: ObservableObject {
         }
         if f.hat != 8 && f.hat != baseline.hat { hatCounts[f.hat, default: 0] += 1 }
         for name in GamepadFrame.axisNames {
-            if let v = f.axis(name), let b = baseline.axis(name) { recordPeak(name, v - b) }
+            if let v = f.axis(name), let b = baseline.axis(name) {
+                recordPeak(name, v - b)
+                axisMin[name] = Swift.min(axisMin[name] ?? v, v)
+                axisMax[name] = Swift.max(axisMax[name] ?? v, v)
+            }
         }
         for name in ["lt", "rt"] {
             if let v = f.trigger(name), let b = baseline.trigger(name) { recordPeak(name, v - b) }
@@ -182,25 +211,54 @@ final class LearnSession: ObservableObject {
                 .max { abs($0.1) < abs($1.1) }
             if let (name, delta) = best, delta > triggerActivity { assignment.binding = .trigger(name) }
         case .stick:
-            let best = GamepadFrame.axisNames.compactMap { n in peakDelta[n].map { (n, $0) } }
-                .max { abs($0.1) < abs($1.1) }
-            if let (name, delta) = best, abs(delta) > axisActivity {
-                assignment.binding = .axis(name, sign: delta < 0 ? -1 : 1)
+            if step.target == .stickCircle {
+                assignment.stick = circleBinding()
+            } else {
+                let best = GamepadFrame.axisNames.compactMap { n in peakDelta[n].map { (n, $0) } }
+                    .max { abs($0.1) < abs($1.1) }
+                if let (name, delta) = best, abs(delta) > axisActivity {
+                    assignment.binding = .axis(name, sign: delta < 0 ? -1 : 1)
+                }
             }
         }
 
         let label = step.control.label
-        if let b = assignment.binding {
+        if let s = assignment.stick {
+            let desc = (s.ranges ?? [:]).sorted { $0.key < $1.key }
+                .map { "\($0.key) \($0.value.min)...\($0.value.max)" }.joined(separator: ", ")
+            lastResult = "\(label): \(desc)"
+            if s.horizontal == nil || s.vertical == nil { lastResult += " (only one axis moved; rotate the full circle)" }
+        } else if let b = assignment.binding {
             lastResult = "\(label): \(b.summary)" + (risenExtra != 0 ? " (+ extra bits)" : "")
         } else if risenExtra != 0 {
             lastResult = "\(label): only extra bits seen (stored as physical bits)"
         } else {
             lastResult = "\(label): nothing usable detected"
         }
-        if assignment.binding != nil || assignment.physicalBits != 0 {
+        if assignment.binding != nil || assignment.physicalBits != 0 || assignment.stick != nil {
             onAssign(assignment)
         }
         advance()
+    }
+
+    /// From a full rotation: the two axes that travelled furthest are the stick. By HID convention
+    /// X / Z are horizontal and Y / Rz vertical, with right and down positive, so the sign is +1.
+    private func circleBinding() -> StickBinding? {
+        let travelled = GamepadFrame.axisNames.compactMap { name -> (String, Int)? in
+            guard let lo = axisMin[name], let hi = axisMax[name], hi - lo >= stickAxisTravel else { return nil }
+            return (name, hi - lo)
+        }
+        .sorted { $0.1 > $1.1 }
+        .prefix(2)
+        .map { $0.0 }
+        guard !travelled.isEmpty else { return nil }
+        var s = StickBinding()
+        let horizontalNames = ["x", "z"]
+        if let h = travelled.first(where: { horizontalNames.contains($0) }) { s.horizontal = .axis(h, sign: 1) }
+        if let v = travelled.first(where: { !horizontalNames.contains($0) }) { s.vertical = .axis(v, sign: 1) }
+        if s.horizontal == nil, travelled.count == 1 { s.horizontal = .axis(travelled[0], sign: 1) }
+        s.ranges = Dictionary(uniqueKeysWithValues: travelled.map { ($0, AxisRange(min: axisMin[$0] ?? 0, max: axisMax[$0] ?? 0)) })
+        return s
     }
 
     private func advance() {
@@ -222,8 +280,45 @@ final class LearnSession: ObservableObject {
         baseline = lastFrame
         currentControl = step.control
         canGoBack = stepIndex > 0
+        circleCovered = step.target == .stickCircle ? Array(repeating: false, count: Self.circleSectors) : []
         progress = LearnProgress(current: step.controlIndex + 1, total: progress.total)
-        instruction = Self.instruction(for: step.control, target: step.target)
+        baseInstruction = Self.instruction(for: step.control, target: step.target)
+        instruction = baseInstruction
+    }
+
+    /// Marks the sector the stick is currently in. Uses whichever axis pair (x,y) or (z,rz) is
+    /// deflected further, so it works before the stick's axes are known.
+    private func trackCircle(_ f: GamepadFrame) {
+        guard !circleCovered.isEmpty else { return }
+        func delta(_ n: String) -> Double { Double((f.axis(n) ?? 0) - (baseline.axis(n) ?? 0)) }
+        let a = (dx: delta("x"), dy: delta("y")), b = (dx: delta("z"), dy: delta("rz"))
+        let ma = (a.dx * a.dx + a.dy * a.dy).squareRoot(), mb = (b.dx * b.dx + b.dy * b.dy).squareRoot()
+        let (dx, dy, m) = ma >= mb ? (a.dx, a.dy, ma) : (b.dx, b.dy, mb)
+        guard m >= Double(circleEdge) else { return }
+        // Screen convention: x right, y down, so this angle runs clockwise from 9 o'clock at 0.
+        let angle = atan2(dy, dx) + .pi
+        var sector = Int(angle / (2 * .pi) * Double(Self.circleSectors)) % Self.circleSectors
+        if sector < 0 { sector += Self.circleSectors }
+        guard !circleCovered[sector] else { return }
+        circleCovered[sector] = true
+        let pct = circlePercent
+        if pct >= 100 {
+            instruction = "Full circle captured (100%) - let go of the stick"
+        } else {
+            instruction = "\(baseInstruction) - \(pct)% covered, missing: \(missingDescription())"
+        }
+    }
+
+    /// Compass description of the sectors not yet visited, e.g. "left, down-left".
+    private func missingDescription() -> String {
+        let names = ["left", "up-left", "up", "up-right", "right", "down-right", "down", "down-left"]
+        var missing: [String] = []
+        let per = Self.circleSectors / 8
+        for (i, name) in names.enumerated() {
+            let slice = circleCovered[(i * per)..<((i + 1) * per)]
+            if slice.contains(false) { missing.append(name) }
+        }
+        return missing.isEmpty ? "nothing" : missing.joined(separator: ", ")
     }
 
     private static func instruction(for c: ControlLayout.Control, target: LearnTarget) -> String {
@@ -238,9 +333,11 @@ final class LearnSession: ObservableObject {
             return "Pull \(c.label) fully and hold"
         case .stick:
             let side = c.id.hasPrefix("left") ? "LEFT" : "RIGHT"
-            return target == .stickVertical
-                ? "Push the \(side) stick fully DOWN and hold"
-                : "Push the \(side) stick fully RIGHT and hold"
+            switch target {
+            case .stickVertical: return "Push the \(side) stick fully DOWN and hold"
+            case .stickHorizontal: return "Push the \(side) stick fully RIGHT and hold"
+            default: return "Rotate the \(side) stick slowly through a full circle at the edge, then let go"
+            }
         }
     }
 }

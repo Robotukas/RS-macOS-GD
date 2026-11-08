@@ -74,6 +74,7 @@ private struct ControllerSideView: View {
                             learning: learningId == c.id,
                             stick: c.kind == .stick ? device.mapping.stickPosition(c.id, device.frame) : nil,
                             trigger: c.kind == .trigger ? device.mapping.triggerValue(c.id, device.frame) : nil,
+                            coverage: learningId == c.id ? device.learn?.circleCovered : nil,
                             onTap: { device.startLearn(controlId: c.id) }
                         )
                         .position(x: c.x * geo.size.width, y: c.y * geo.size.height)
@@ -93,6 +94,8 @@ private struct HotspotView: View {
     let learning: Bool
     let stick: CGPoint?
     let trigger: Double?
+    /// Circle-capture sectors while this stick is being learned (nil otherwise).
+    let coverage: [Bool]?
     let onTap: () -> Void
 
     private var width: CGFloat { control.isPill ? diameter * 2 : diameter }
@@ -126,6 +129,12 @@ private struct HotspotView: View {
             if learning {
                 LearningPulse(shape: shape)
             }
+
+            if let cov = coverage, !cov.isEmpty {
+                CoverageRing(covered: cov)
+                    .frame(width: diameter * 1.25, height: diameter * 1.25)
+                    .allowsHitTesting(false)
+            }
         }
         .frame(width: width, height: diameter)
         .overlay(alignment: .bottom) {
@@ -153,6 +162,25 @@ private struct HotspotView: View {
         } else {
             shape.stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 .shadow(color: .black.opacity(0.7), radius: 0.5)
+        }
+    }
+}
+
+/// Ring of sectors around a stick: green where the circle capture has been, red where it is still missing.
+/// Sector 0 starts at 9 o'clock and sectors run clockwise, matching LearnSession.trackCircle.
+private struct CoverageRing: View {
+    let covered: [Bool]
+
+    var body: some View {
+        let n = covered.count
+        ZStack {
+            ForEach(0..<n, id: \.self) { i in
+                let start = (Double(i) / Double(n) + 0.5).truncatingRemainder(dividingBy: 1)
+                Circle()
+                    .trim(from: start, to: start + 1 / Double(n) - 0.004)
+                    .stroke(covered[i] ? Color.green : Color.red.opacity(0.8),
+                            style: StrokeStyle(lineWidth: 4, lineCap: .butt))
+            }
         }
     }
 }

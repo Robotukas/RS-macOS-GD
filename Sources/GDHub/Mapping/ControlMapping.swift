@@ -22,9 +22,17 @@ enum Binding: Codable, Equatable, Hashable {
     }
 }
 
+/// Observed extremes of one axis while the stick was rotated through a full circle.
+struct AxisRange: Codable, Equatable {
+    var min: Int
+    var max: Int
+}
+
 struct StickBinding: Codable, Equatable {
     var horizontal: Binding?
     var vertical: Binding?
+    /// Per-axis extremes ("x", "y", ...) from the circle capture; used to scale the position to -1...1.
+    var ranges: [String: AxisRange]?
 
     var isEmpty: Bool { horizontal == nil && vertical == nil }
 }
@@ -34,6 +42,8 @@ enum LearnTarget: Equatable {
     case whole
     case stickHorizontal
     case stickVertical
+    /// One full rotation of a stick: both axes and their extremes in one step.
+    case stickCircle
 }
 
 /// Result of one learn step.
@@ -42,6 +52,8 @@ struct LearnAssignment {
     var target: LearnTarget
     var binding: Binding?
     var physicalBits: UInt16
+    /// Set for `.stickCircle`: the complete stick binding including axis ranges.
+    var stick: StickBinding? = nil
 }
 
 struct ControlMapping: Codable, Equatable {
@@ -129,7 +141,16 @@ struct ControlMapping: Codable, Equatable {
     private func stickPosition(_ controlId: String, _ frame: GamepadFrame, binding s: StickBinding) -> CGPoint? {
         func norm(_ b: Binding?) -> Double? {
             guard case .axis(let f, let sign)? = b, let v = frame.axis(f) else { return nil }
-            return max(-1, min(1, Double(sign * v) / 32767.0))
+            // Scale by the learned extremes when we have them, so the dot reaches the ring edge
+            // exactly where the stick physically stops; otherwise assume the full int16 range.
+            var scaled: Double
+            if let r = s.ranges?[f] {
+                scaled = v >= 0 ? Double(v) / Double(Swift.max(r.max, 1)) : Double(v) / Double(Swift.max(-r.min, 1))
+            } else {
+                scaled = Double(v) / 32767.0
+            }
+            scaled *= Double(sign)
+            return Swift.max(-1, Swift.min(1, scaled))
         }
         let h = norm(s.horizontal)
         let v = norm(s.vertical)
@@ -146,10 +167,16 @@ struct ControlMapping: Codable, Equatable {
     // MARK: Mutation
 
     mutating func apply(_ a: LearnAssignment) {
+        if a.target == .stickCircle {
+            if let s = a.stick { sticks[a.controlId] = s }
+            return
+        }
         if let binding = a.binding {
             switch a.target {
             case .whole:
                 buttons[a.controlId] = binding
+            case .stickCircle:
+                break
             case .stickHorizontal:
                 var s = sticks[a.controlId] ?? StickBinding()
                 s.horizontal = binding
