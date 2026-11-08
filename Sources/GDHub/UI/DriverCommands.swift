@@ -20,8 +20,23 @@ struct DriverCommands: View {
         }
     }
 
+    var connectionText: String? {
+        switch driver.connection {
+        case .stopped: return nil
+        case .waitingForService: return "Waiting for driver"
+        case .connected(let build): return "Connected (driver build \(build))"
+        case .rejected: return "Driver refused this app: not signed by team 79XF6HYX8A"
+        case .exclusive: return "Another GDHub is connected"
+        case .protocolMismatch(let dext): return "Driver protocol v\(dext), app v\(DextProtocol.version): update the driver"
+        case .failed(let kr) where kr == DextProtocol.krUnsupported:
+            return "An older driver build is still running: restart the Mac to finish the update"
+        case .failed(let kr): return "Driver connection failed (0x\(String(UInt32(bitPattern: kr), radix: 16, uppercase: true)))"
+        }
+    }
+
     var body: some View {
         Text(statusText)
+        if let connectionText { Text(connectionText) }
         Divider()
         switch driver.state {
         case .wrongLocation:

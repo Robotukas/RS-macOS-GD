@@ -27,6 +27,13 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         didSet { if state != oldValue { Self.log.info("driver state: \(String(describing: self.state), privacy: .public)") } }
     }
 
+    /// Connection to the running dext (design §5.2). Shown in the Driver menu.
+    @Published private(set) var connection: DextClient.State = .stopped
+
+    /// Serial queue for every dext call and callback (design §5.2). Later phases share it with the pad sink.
+    let vhidQueue = DispatchQueue(label: "com.interlinked.gdhub.vhid")
+    let dext: DextClient
+
     let embeddedDextURL = Bundle.main.bundleURL
         .appendingPathComponent("Contents/Library/SystemExtensions/\(DriverManager.dextID).dext")
     let embeddedBuild: String?
@@ -36,7 +43,16 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     override init() {
         embeddedBuild = Bundle(url: embeddedDextURL)?.infoDictionary?["CFBundleVersion"] as? String
+        dext = DextClient(queue: vhidQueue)
         super.init()
+        dext.onState = { [weak self] new in
+            // Called on vhidQueue.
+            Task { @MainActor in
+                guard let self else { return }
+                if new != self.connection { Self.log.info("connection: \(String(describing: new), privacy: .public)") }
+                self.connection = new
+            }
+        }
     }
 
     // MARK: Launch
@@ -44,6 +60,9 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     func start() {
         guard !started else { return }
         started = true
+        // Always start the client: it waits for the service, which also lets a SwiftPM build be refused by the
+        // dext's Team ID check (design §5.1 step 4).
+        vhidQueue.async { [dext] in dext.start() }
         guard embeddedBuild != nil else { state = .notBundled; return }
         let path = Bundle.main.bundlePath
         guard path.hasPrefix("/Applications/") else { state = .wrongLocation(path); return }
@@ -60,7 +79,8 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     func installOrUpdate() {
         guard embeddedBuild != nil else { return }
-        // D2+: close the DextClient / sink here before replacing the dext.
+        // Close the connection first (D3+: destroy the devices too); it reconnects when the new dext matches.
+        vhidQueue.sync { dext.stop() }
         let req = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: Self.dextID, queue: .main)
         req.delegate = self
         if case .updating = state {} else { state = .activating }
@@ -70,6 +90,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     func uninstall() {
         guard embeddedBuild != nil else { return }
+        vhidQueue.sync { dext.stop() }
         let req = OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: Self.dextID, queue: .main)
         req.delegate = self
         state = .uninstalling
@@ -166,6 +187,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         let enabled = infos.filter { $0.enabled && !$0.uninstalling }
         if let match = enabled.first(where: { $0.v == embeddedBuild }) {
             set(.active(match.v))
+            vhidQueue.async { [dext] in dext.start() }       // no-op when already running
         } else if let old = enabled.map(\.v).max(by: { (Int($0) ?? 0) < (Int($1) ?? 0) }) {
             if case .updating = state { return }   // already replacing
             set(.updating(from: old, to: embeddedBuild ?? "?"))

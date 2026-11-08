@@ -1,7 +1,8 @@
 // Root IOService of the GDHub virtual HID dext (design §3.4).
-// D0: only the root service exists; NewUserClient returns kIOReturnUnsupported until D2.
+// D2: NewUserClient creates GDHubVirtualHIDUserClient; the root tracks the single authorized owner (§3.11).
 #include "GDHubInternal.h"
 #include "GDHubVirtualHID.h"
+#include "GDHubVirtualHIDUserClient.h"
 
 struct GDHubVirtualHID_IVars {
     IOLock * lock;
@@ -41,18 +42,35 @@ kern_return_t IMPL(GDHubVirtualHID, Stop)
 
 kern_return_t IMPL(GDHubVirtualHID, NewUserClient)
 {
-    (void)type; (void)userClient;
-    GDLog("NewUserClient: not implemented in D0");
-    return kIOReturnUnsupported;
+    if (type != GDHUB_USERCLIENT_TYPE) return kIOReturnBadArgument;
+    IOService * c = nullptr;
+    kern_return_t kr = Create(this, "UserClientProperties", &c);
+    if (kr != kIOReturnSuccess) {
+        GDLog("NewUserClient: Create failed 0x%x", (unsigned)kr);
+        return kr;
+    }
+    *userClient = OSDynamicCast(IOUserClient, c);
+    if (!*userClient) {
+        c->release();
+        return kIOReturnError;
+    }
+    return kIOReturnSuccess;
 }
 
 bool GDHubRootClaim(GDHubVirtualHID * root, GDHubVirtualHIDUserClient * uc)
 {
-    (void)root; (void)uc;   // D2
-    return false;
+    if (!root || !root->ivars || !root->ivars->lock) return false;
+    IOLockLock(root->ivars->lock);
+    bool ok = (root->ivars->owner == nullptr || root->ivars->owner == uc);
+    if (ok) root->ivars->owner = uc;
+    IOLockUnlock(root->ivars->lock);
+    return ok;
 }
 
 void GDHubRootRelease(GDHubVirtualHID * root, GDHubVirtualHIDUserClient * uc)
 {
-    (void)root; (void)uc;   // D2
+    if (!root || !root->ivars || !root->ivars->lock) return;
+    IOLockLock(root->ivars->lock);
+    if (root->ivars->owner == uc) root->ivars->owner = nullptr;
+    IOLockUnlock(root->ivars->lock);
 }
