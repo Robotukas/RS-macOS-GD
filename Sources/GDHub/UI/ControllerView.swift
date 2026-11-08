@@ -659,6 +659,7 @@ private struct CalloutLayer: View {
         editor.dragOrigin[c.id] = origin
         // No snapping while the pointer moves (it reads as jitter); the release snaps instead.
         let raw = CGPoint(x: origin.x + translation.width, y: origin.y + translation.height)
+        DragLog.record("drag \(c.id) origin=\(Int(origin.x)),\(Int(origin.y)) t=\(Int(translation.width)),\(Int(translation.height)) -> \(Int(raw.x)),\(Int(raw.y)) plAnchor=\(Int(pl.anchor.x)),\(Int(pl.anchor.y))")
         let group = editor.selection.contains(c.id) && editor.selection.count > 1
         var live = editor.liveAnchors
         live[c.id] = raw
@@ -1066,5 +1067,29 @@ private struct GutterSliders: View {
                 .frame(maxWidth: 110)
         }
         .controlSize(.mini)
+    }
+}
+
+
+/// Debug aid: set GDHUB_DRAG_LOG=1 in the environment (or create ~/Library/Application Support/GDHub/drag.log)
+/// to append one line per drag update.
+enum DragLog {
+    private static let url: URL? = {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("GDHub", isDirectory: true)
+        let u = dir.appendingPathComponent("drag.log")
+        let enabled = ProcessInfo.processInfo.environment["GDHUB_DRAG_LOG"] != nil || FileManager.default.fileExists(atPath: u.path)
+        return enabled ? u : nil
+    }()
+
+    static func record(_ line: String) {
+        guard let url else { return }
+        let stamp = String(format: "%.3f", Date().timeIntervalSinceReferenceDate)
+        let data = (stamp + " " + line + "\n").data(using: .utf8)!
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
     }
 }
