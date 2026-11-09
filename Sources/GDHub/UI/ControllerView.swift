@@ -17,6 +17,7 @@ private enum ControllerImages {
 
 struct ControllerView: View {
     @ObservedObject var device: EnvisionProDevice
+    @ObservedObject var control: EnvisionProControl
 
     var body: some View {
         if let layout = device.layout {
@@ -64,6 +65,9 @@ struct ControllerView: View {
                     }
                 }
                 .padding(.horizontal)
+                if !device.editor.isEditing && device.learn == nil {
+                    ControllerStatusStrip(device: device, control: control)
+                }
                 LayoutToolbar(device: device, editor: device.editor)
                 HStack(alignment: .top, spacing: 16) {
                     LearnToolbar(device: device)
@@ -1102,5 +1106,56 @@ enum DragLog {
         } else {
             try? data.write(to: url)
         }
+    }
+}
+
+
+/// Battery and sleep-timer strip under the controller views.
+private struct ControllerStatusStrip: View {
+    @ObservedObject var device: EnvisionProDevice
+    @ObservedObject var control: EnvisionProControl
+
+    private var active: Bool { device.status == .active }
+
+    private var batteryIcon: String {
+        guard let p = control.batteryPercent else { return "battery.0percent" }
+        switch p {
+        case ..<13: return "battery.0percent"
+        case ..<38: return "battery.25percent"
+        case ..<63: return "battery.50percent"
+        case ..<88: return "battery.75percent"
+        default: return "battery.100percent"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Label(control.batteryPercent.map { "\(Int($0.rounded()))%" } ?? "--", systemImage: batteryIcon)
+                .monospacedDigit()
+                .help("Controller battery")
+            Divider().frame(height: 18)
+            Text("Sleep after")
+            Picker("Sleep after", selection: SwiftUI.Binding<SleepSetting?>(
+                get: { control.sleepSetting.flatMap { $0.isPreset ? $0 : nil } },
+                set: { if let v = $0 { control.apply(v) } })) {
+                ForEach(SleepSetting.presets, id: \.self) { Text($0.presetLabel).tag(Optional($0)) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 380)
+            .disabled(!active || control.sleepSetting == nil || control.isBusy)
+            if control.isBusy { ProgressView().controlSize(.small) }
+            if let s = control.sleepSetting, !s.isPreset {
+                Text(s.displayText).foregroundStyle(.secondary)
+            }
+            if !active {
+                Text("Turn the controller on to change this").font(.callout).foregroundStyle(.secondary)
+            } else if let e = control.lastError {
+                Text(e).font(.callout).foregroundStyle(.red)
+            }
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 2)
     }
 }

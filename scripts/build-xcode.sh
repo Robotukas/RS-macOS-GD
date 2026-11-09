@@ -1,13 +1,18 @@
 #!/bin/zsh
 # Build GDHub.app + embedded dext (signed, development), verify, install to /Applications, launch.
-# Usage: scripts/build-xcode.sh [--no-install | --no-open]
+# Usage: scripts/build-xcode.sh [--no-install | --no-open] [--same-build]
+#   --same-build: reuse the current number in Xcode/build-number (app-only change; the embedded dext keeps
+#   its version, so no driver replacement is triggered). Combine as e.g. `--same-build --no-open`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 DEXT_ID=com.interlinked.gdhub.VirtualHID; UDID=00006031-001851E126E1001C; NUMFILE=Xcode/build-number
 installed=$(systemextensionsctl list 2>/dev/null | sed -nE "s/.*${DEXT_ID//./\\.} \([^/]*\/([0-9]+)\).*/\1/p" | sort -n | tail -1)
 last=$(cat "$NUMFILE" 2>/dev/null || echo 1); installed=${installed:-0}
-BUILD=$(( (installed > last ? installed : last) + 1 ))
+SAME=0; ARGS=()
+for a in "$@"; do [[ $a == --same-build ]] && SAME=1 || ARGS+=("$a"); done
+set -- "${ARGS[@]}"
+if (( SAME )); then BUILD=$(( installed > last ? installed : last )); else BUILD=$(( (installed > last ? installed : last) + 1 )); fi
 (( BUILD <= 9999 )) || { echo "build number $BUILD > 9999 is not a valid dext CFBundleVersion"; exit 1; }
 print -r -- $BUILD > "$NUMFILE"
 mkdir -p .xcodebuild

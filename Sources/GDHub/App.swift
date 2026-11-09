@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import IOKit.hid
+import Combine
 
 /// Owns the HID monitor and device modules and routes reports to them.
 @MainActor
@@ -10,6 +11,9 @@ final class AppModel: ObservableObject {
     let monitor: HIDMonitor
     /// Driver install state, dext connection and the virtual pad sink (design §5.6).
     let driver = DriverManager()
+    /// Corsair "Bragi" control channel: battery readout and sleep timer.
+    let control = EnvisionProControl()
+    private var controlStatusSub: AnyCancellable?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var routes: [ObjectIdentifier: (module: DeviceModule, usagePage: Int)] = [:]
 
@@ -31,8 +35,19 @@ final class AppModel: ObservableObject {
             route.module.interfaceDisconnected(usagePage: route.usagePage)
         }
         monitor.onInputReport = { [weak self] device, reportID, bytes in
-            guard let route = self?.routes[ObjectIdentifier(device)] else { return }
+            guard let self, let route = self.routes[ObjectIdentifier(device)] else { return }
+            if reportID == UInt32(BragiPacket.inputReportID),
+               self.monitor.info(for: device)?.hasControlChannel == true,
+               self.control.handleInputReport(bytes) { return }
             route.module.handle(reportID: reportID, bytes: bytes, usagePage: route.usagePage)
+        }
+        control.send = { [weak self] packet in
+            guard let self, let dev = self.monitor.controlDevice() else { return false }
+            return self.monitor.sendOutputReport(device: dev, reportID: BragiPacket.outputReportID, bytes: packet) == kIOReturnSuccess
+        }
+        controlStatusSub = envision.$status.sink { [weak self] status in
+            // $status emits before the property changes; hop so the control sees settled state.
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.control.statusChanged(status) } }
         }
         monitor.start()
         envision.recoverInterruptedEditIfNeeded()
@@ -83,6 +98,7 @@ struct GDHubApp: App {
         .defaultSize(width: 1200, height: 860)
         .commands {
             CommandMenu("Layout") { LayoutCommands(device: model.envision, editor: model.envision.editor) }
+            CommandMenu("Controller") { ControllerCommands(control: model.control) }
             CommandMenu("Driver") { DriverCommands(driver: model.driver) }
         }
     }
@@ -100,7 +116,7 @@ struct RootView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         } detail: {
-            EnvisionProScreen(device: model.envision)
+            EnvisionProScreen(device: model.envision, control: model.control)
         }
     }
 }
@@ -130,11 +146,12 @@ private struct DeviceRow: View {
 
 private struct EnvisionProScreen: View {
     @ObservedObject var device: EnvisionProDevice
+    @ObservedObject var control: EnvisionProControl
     @AppStorage("showInputMonitor") private var showMonitor = true
 
     var body: some View {
         VStack(spacing: 0) {
-            ControllerView(device: device)
+            ControllerView(device: device, control: control)
                 .frame(maxHeight: .infinity)
             Divider()
             HStack {
@@ -191,5 +208,23 @@ struct LayoutCommands: View {
                 .keyboardShortcut(action.shortcutKey, modifiers: [.command, .option])
                 .disabled(!editor.isEditing || editor.selection.count < action.minimumSelection)
         }
+    }
+}
+
+/// Controller menu: battery readout and the sleep-timer presets (checkmark on the current one).
+struct ControllerCommands: View {
+    @ObservedObject var control: EnvisionProControl
+
+    var body: some View {
+        Text(control.batteryPercent.map { "Battery: \(Int($0.rounded()))%" } ?? "Battery: unknown")
+        Divider()
+        Text("Sleep after").font(.caption)
+        ForEach(SleepSetting.presets, id: \.self) { preset in
+            Toggle(preset.presetLabel, isOn: SwiftUI.Binding(
+                get: { control.sleepSetting == preset },
+                set: { _ in control.apply(preset) }))
+                .disabled(control.sleepSetting == nil || control.isBusy)
+        }
+        if let s = control.sleepSetting, !s.isPreset { Text(s.displayText) }
     }
 }

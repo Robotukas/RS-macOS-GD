@@ -5,6 +5,8 @@ struct HIDDeviceInfo {
     let vendorId: Int
     let productId: Int
     let usagePage: Int
+    /// True when the interface's usage pairs include the vendor control page 0xFF42 (Corsair "Bragi").
+    var hasControlChannel = false
 }
 
 /// Per-device state kept alive for the IOKit callbacks.
@@ -13,9 +15,11 @@ private final class HIDDeviceContext {
     let bufferSize = 4096
     let info: HIDDeviceInfo
     weak var monitor: HIDMonitor?
+    let device: IOHIDDevice
 
-    init(info: HIDDeviceInfo, monitor: HIDMonitor) {
+    init(info: HIDDeviceInfo, device: IOHIDDevice, monitor: HIDMonitor) {
         self.info = info
+        self.device = device
         self.monitor = monitor
         buffer = .allocate(capacity: bufferSize)
         buffer.initialize(repeating: 0, count: bufferSize)
@@ -88,6 +92,23 @@ final class HIDMonitor {
         manager = nil
     }
 
+    private static func hasUsagePage(_ device: IOHIDDevice, _ page: Int) -> Bool {
+        let pairs = IOHIDDeviceGetProperty(device, kIOHIDDeviceUsagePairsKey as CFString) as? [[String: Any]] ?? []
+        return pairs.contains { ($0[kIOHIDDeviceUsagePageKey] as? Int) == page }
+    }
+
+    /// The matched interface that carries the vendor control collection (page 0xFF42), if present.
+    func controlDevice() -> IOHIDDevice? {
+        for (_, ctx) in contexts where ctx.info.hasControlChannel { return ctx.device }
+        return nil
+    }
+
+    /// Sends an output report. `bytes` includes the report ID as byte 0 (the on-wire form).
+    @discardableResult
+    func sendOutputReport(device: IOHIDDevice, reportID: UInt8, bytes: [UInt8]) -> IOReturn {
+        IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, CFIndex(reportID), bytes, bytes.count)
+    }
+
     private func intProperty(_ device: IOHIDDevice, _ key: String) -> Int {
         (IOHIDDeviceGetProperty(device, key as CFString) as? NSNumber)?.intValue ?? -1
     }
@@ -98,9 +119,10 @@ final class HIDMonitor {
         let info = HIDDeviceInfo(
             vendorId: intProperty(device, kIOHIDVendorIDKey),
             productId: intProperty(device, kIOHIDProductIDKey),
-            usagePage: intProperty(device, kIOHIDPrimaryUsagePageKey)
+            usagePage: intProperty(device, kIOHIDPrimaryUsagePageKey),
+            hasControlChannel: Self.hasUsagePage(device, 0xFF42)
         )
-        let ctx = HIDDeviceContext(info: info, monitor: self)
+        let ctx = HIDDeviceContext(info: info, device: device, monitor: self)
         contexts[key] = ctx
 
         let r = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
