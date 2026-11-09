@@ -1,0 +1,399 @@
+import Foundation
+
+/// Turns what the virtual pad sent during one step into a verdict and numbers. Pure: no clock, no IOKit, no UI, so
+/// every rule has a unit test with a synthetic report stream.
+///
+/// The judge works on the held state, not on report presence. The sink posts on change only, so a stick that has
+/// returned to centre sends nothing more; "the stick was at rest for the last 300 ms" therefore means "the state in
+/// force during those 300 ms (the last report at or before each instant, across report 0x01 and 0x02) was inside the
+/// tolerance". The state is seeded with `entryState`, the last thing the reader saw before the step.
+///
+/// Tolerances (all in `Rules`): buttons, hat and Guide are exact; sticks count as still inside the 12 % dead zone,
+/// triggers below 5 %. The sink's own dead band is 0.2 %, so jitter alone must not fail a step; the exact number of
+/// changes is kept as `padChanged`.
+///
+/// Fixed keys in `DevMetrics.values`, by kind (p is `ls` or `rs`, t is `lt` or `rt`):
+/// - rest: `rest.offReports`, `rest.maxStick`, `rest.maxTrigger`
+/// - stick: `p.reportsOutside`, `p.xMin`, `p.xMax`, `p.yMin`, `p.yMax`, `p.otherOutside`, `p.settledMs`
+/// - trigger: `t.peak`, `t.settledMs`
+/// - digital: `bit.rises`, `bit.falls` (the fewest over the expected items; the totals when nothing is expected),
+///   `hat.visited` (bit mask of the hat values seen, bit n = value n), `neutrals`, `unexpected`, `entrySet`
+enum DevJudge {
+    struct Rules: Equatable {
+        var deadZone = 0.12
+        var triggerRelease = 0.05
+        var triggerPeak = 0.90
+        var stickExtent = 0.40
+        var stickMinReports = 100
+        var holdMs = 300.0
+        var digitalTimes = 2
+        var otherStickStill = true
+        var requireReturn = true
+
+        /// The rules with a step's own overrides applied.
+        func applying(_ e: DevExpect?) -> Rules {
+            guard let e else { return self }
+            var r = self
+            if let v = e.deadZone { r.deadZone = v }
+            if let v = e.release { r.triggerRelease = v }
+            if let v = e.peak { r.triggerPeak = v }
+            if let v = e.extent { r.stickExtent = v }
+            if let v = e.minReports { r.stickMinReports = v }
+            if let v = e.times { r.digitalTimes = v }
+            if let v = e.otherStickStill { r.otherStickStill = v }
+            if let v = e.requireReturn { r.requireReturn = v }
+            return r
+        }
+    }
+
+    /// One input report of the pad with its kernel timestamp (`LatencyMeter.nanos(fromMach:)`).
+    struct TimedReport: Equatable {
+        var tNs: UInt64
+        var id: UInt8
+        var bytes: [UInt8]
+    }
+
+    /// What the GUI's own receiver frames say should have happened (frames → `PassthroughPadMapper` → the sink's
+    /// `snapped` / `unchanged`), so two runs compare on what the path lost and not on how long the hands moved.
+    struct Reference: Equatable {
+        var expectedChanges: Int
+        var firstFrameChangeNs: UInt64?
+        var framesSeen = 0
+        var framesPerSecond = 0.0
+        var movingMs = 0.0
+    }
+
+    struct Input {
+        var step: DevStep
+        var expected: DevExpectedItems
+        /// The pad state before the step; nil = the reader has seen no report since it opened.
+        var entryState: PadDecodedState?
+        /// Everything read from the ready phase to the end of the release tail. Reports before `windowStartNs` only
+        /// move the held state; the ones after `endNs` are ignored.
+        var reports: [TimedReport]
+        var windowStartNs: UInt64
+        var windowEndNs: UInt64
+        /// End of the release tail (equal to `windowEndNs` when the step has none).
+        var endNs: UInt64
+        /// How many virtual pads the reader matched at window start.
+        var matchedCount: Int
+        var reference: Reference?
+
+        init(step: DevStep, expected: DevExpectedItems = DevExpectedItems(), entryState: PadDecodedState?,
+             reports: [TimedReport], windowStartNs: UInt64, windowEndNs: UInt64, endNs: UInt64? = nil,
+             matchedCount: Int = 1, reference: Reference? = nil) {
+            self.step = step
+            self.expected = expected
+            self.entryState = entryState
+            self.reports = reports
+            self.windowStartNs = windowStartNs
+            self.windowEndNs = windowEndNs
+            self.endNs = endNs ?? windowEndNs
+            self.matchedCount = matchedCount
+            self.reference = reference
+        }
+
+        /// The reports as stored in the run report: milliseconds from the window start, with their phase.
+        func rawReports() -> [DevRawReport] {
+            reports.sorted { $0.tNs < $1.tNs }.map { r in
+                let phase: DevRawReport.Phase = r.tNs < windowStartNs ? .ready : (r.tNs < windowEndNs ? .window : .release)
+                let ms = r.tNs >= windowStartNs ? Double(r.tNs - windowStartNs) / 1e6 : -Double(windowStartNs - r.tNs) / 1e6
+                return DevRawReport(tMs: ms, id: r.id, bytes: r.bytes, phase: phase)
+            }
+        }
+    }
+
+    struct Outcome: Equatable {
+        var verdict: DevVerdict
+        var metrics: DevMetrics
+    }
+
+    static func judge(_ input: Input, rules base: Rules = Rules(), decoder: PadReportDecoder = .xboxBT16) -> Outcome {
+        let step = input.step
+        var metrics = DevMetrics()
+        func done(_ v: DevVerdict, _ detail: String) -> Outcome {
+            metrics.detail = detail
+            return Outcome(verdict: v, metrics: metrics)
+        }
+
+        guard let kind = step.devKind else { return done(.inconclusive("unknown kind \"\(step.kind)\""), "The step has a kind this build cannot judge.") }
+        if input.matchedCount != 1 {
+            return done(.inconclusive("reader matched \(input.matchedCount) pads"),
+                        "The pad reader must see exactly one GDHub pad to judge a step; it saw \(input.matchedCount).")
+        }
+        if kind == .held { return done(.inconclusive("held steps arrive in step 2"), "Held-state steps are not judged by this build.") }
+        guard let entry = input.entryState else {
+            return done(.inconclusive("pad state unknown"), "The reader had seen no report from the pad before this step, so there is nothing to compare with.")
+        }
+
+        let rules = base.applying(step.expect)
+        let tl = Timeline(input: input, entry: entry, decoder: decoder)
+        tl.fill(&metrics, reference: input.reference)
+
+        switch kind {
+        case .rest: return tl.judgeRest(input, entry: entry, rules: rules, metrics: &metrics)
+        case .stick: return tl.judgeStick(input, rules: rules, metrics: &metrics)
+        case .trigger: return tl.judgeTrigger(input, rules: rules, metrics: &metrics)
+        case .digital: return tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
+        case .held: preconditionFailure("handled above")
+        }
+    }
+
+    // MARK: Held-state timeline
+
+    /// The held state over time from the window start to the end of the release tail: segment i holds `states[i]`
+    /// from `times[i]` until `times[i + 1]` (the last one until `endNs`). Segment 0 is the state in force at the window
+    /// start (entry state plus the ready-phase reports); every later segment starts at a report.
+    private struct Timeline {
+        var times: [UInt64] = []
+        var states: [PadDecodedState] = []
+        /// Whether the report that opened segment i changed the state (segment 0: false).
+        var changed: [Bool] = []
+        let endNs: UInt64
+
+        init(input: Input, entry: PadDecodedState, decoder: PadReportDecoder) {
+            endNs = max(input.endNs, input.windowStartNs)
+            var held = entry
+            let ordered = input.reports.enumerated().sorted { ($0.element.tNs, $0.offset) < ($1.element.tNs, $1.offset) }.map(\.element)
+            for r in ordered where r.tNs < input.windowStartNs { decoder.apply(reportID: r.id, bytes: r.bytes, to: &held) }
+            times = [input.windowStartNs]; states = [held]; changed = [false]
+            for r in ordered where r.tNs >= input.windowStartNs && r.tNs <= endNs {
+                let did = decoder.apply(reportID: r.id, bytes: r.bytes, to: &held)
+                times.append(r.tNs); states.append(held); changed.append(did)
+            }
+        }
+
+        var count: Int { times.count }
+        var reportCount: Int { count - 1 }
+        var last: PadDecodedState { states[count - 1] }
+
+        /// When the state last became (and stayed) acceptable up to the end, or nil if the final state is not.
+        func settledSince(_ ok: (PadDecodedState) -> Bool) -> UInt64? {
+            guard ok(last) else { return nil }
+            var since = times[0]
+            var i = count - 1
+            while i >= 0 {
+                if !ok(states[i]) { break }
+                since = times[i]
+                i -= 1
+            }
+            return since
+        }
+
+        func settledMs(_ ok: (PadDecodedState) -> Bool) -> Double? {
+            settledSince(ok).map { Double(endNs &- $0) / 1e6 }
+        }
+
+        func fill(_ m: inout DevMetrics, reference: Reference?) {
+            m.padReports = reportCount
+            m.padChanged = changed.filter { $0 }.count
+            var movingFirst: UInt64?, movingLast: UInt64?
+            for i in 1..<max(count, 1) where changed[i] {
+                if movingFirst == nil { movingFirst = times[i] }
+                movingLast = times[i]
+            }
+            m.movingMs = movingFirst.flatMap { f in movingLast.map { Double($0 - f) / 1e6 } } ?? 0
+            guard let reference else { return }
+            m.expectedChanges = reference.expectedChanges
+            m.framesSeen = reference.framesSeen
+            m.framesPerSecond = reference.framesPerSecond
+            if reference.movingMs > 0 { m.movingMs = reference.movingMs }
+            if reference.expectedChanges > 0 { m.lossRatio = Double(m.padChanged) / Double(reference.expectedChanges) }
+            if let first = movingFirst, let ref = reference.firstFrameChangeNs {
+                m.onsetMs = (Double(first) - Double(ref)) / 1e6
+            }
+        }
+
+        // MARK: rest
+
+        func judgeRest(_ input: Input, entry: PadDecodedState, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
+            let ok: (PadDecodedState) -> Bool = { $0.isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease) }
+            var maxStick = 0.0, maxTrigger = 0.0, off = 0
+            var firstOffence: String?
+            for (i, s) in states.enumerated() {
+                for stick in [PadStick.left, .right] {
+                    let p = s.position(of: stick)
+                    maxStick = max(maxStick, (p.x * p.x + p.y * p.y).squareRoot())
+                }
+                maxTrigger = max(maxTrigger, s.lt, s.rt)
+                if !ok(s) {
+                    if i > 0 { off += 1 }
+                    if firstOffence == nil { firstOffence = DevJudge.describeOffences(s, rules: rules) }
+                }
+            }
+            m.values = ["rest.offReports": Double(off), "rest.maxStick": maxStick, "rest.maxTrigger": maxTrigger]
+            var fails: [String] = []
+            if !ok(entry) { fails.append("the pad was not at rest at step start (\(DevJudge.describeOffences(entry, rules: rules)))") }
+            else if let o = firstOffence { fails.append("the pad left rest during the step (\(o))") }
+            let summary = "\(m.padReports) pad reports, \(m.padChanged) changed; largest stick deflection \(DevJudge.fmt(maxStick)), largest trigger \(DevJudge.fmt(maxTrigger))."
+            if fails.isEmpty { return Outcome(verdict: .pass, metrics: with(&m, "The pad stayed at rest. " + summary)) }
+            return Outcome(verdict: .fail(fails.joined(separator: "; ")), metrics: with(&m, fails.joined(separator: "; ") + ". " + summary))
+        }
+
+        // MARK: stick
+
+        func judgeStick(_ input: Input, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
+            let cid = input.step.controls.first
+            guard let stick: PadStick = cid == "left_stick" ? .left : (cid == "right_stick" ? .right : nil) else {
+                return Outcome(verdict: .inconclusive("the step names no stick"), metrics: with(&m, "A stick step needs left_stick or right_stick as its control."))
+            }
+            let other: PadStick = stick == .left ? .right : .left
+            let p = stick == .left ? "ls" : "rs"
+            let name = stick == .left ? "left" : "right"
+            var outside = 0, otherOutside = 0
+            var xMin = 0.0, xMax = 0.0, yMin = 0.0, yMax = 0.0
+            for (i, s) in states.enumerated() {
+                let pos = s.position(of: stick)
+                xMin = min(xMin, pos.x); xMax = max(xMax, pos.x); yMin = min(yMin, pos.y); yMax = max(yMax, pos.y)
+                if i > 0 && !s.isInside(stick, deadZone: rules.deadZone) { outside += 1 }
+                if i > 0 && !s.isInside(other, deadZone: rules.deadZone) { otherOutside += 1 }
+            }
+            let inside: (PadDecodedState) -> Bool = { $0.isInside(stick, deadZone: rules.deadZone) }
+            let settled = settledMs(inside)
+            m.values = ["\(p).reportsOutside": Double(outside), "\(p).xMin": xMin, "\(p).xMax": xMax,
+                        "\(p).yMin": yMin, "\(p).yMax": yMax, "\(p).otherOutside": Double(otherOutside),
+                        "\(p).settledMs": settled ?? 0]
+            var fails: [String] = []
+            if outside < rules.stickMinReports {
+                fails.append("only \(outside) reports with the \(name) stick outside the dead zone (needs \(rules.stickMinReports))")
+            }
+            var missing: [String] = []
+            let e = rules.stickExtent
+            if xMax < e { missing.append("x +\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(xMax)))") }
+            if xMin > -e { missing.append("x -\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(xMin)))") }
+            if yMax < e { missing.append("y +\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(yMax)))") }
+            if yMin > -e { missing.append("y -\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(yMin)))") }
+            if !missing.isEmpty { fails.append("the \(name) stick never reached " + missing.joined(separator: ", ")) }
+            if rules.otherStickStill && otherOutside > 0 {
+                fails.append("the \(other == .left ? "left" : "right") stick moved too (\(otherOutside) reports outside the dead zone)")
+            }
+            if rules.requireReturn {
+                if settled == nil {
+                    fails.append("the \(name) stick was still outside the dead zone at the end")
+                } else if let s = settled, s < rules.holdMs {
+                    fails.append("the \(name) stick had only been at rest for \(Int(s)) ms at the end (needs \(Int(rules.holdMs)))")
+                }
+            }
+            let summary = "\(name.capitalized) stick: \(outside) reports outside the dead zone, x \(DevJudge.fmt(xMin))…\(DevJudge.fmt(xMax)), y \(DevJudge.fmt(yMin))…\(DevJudge.fmt(yMax)); \(m.padReports) pad reports, \(m.padChanged) changed."
+            return finish(fails, passText: summary, summary: summary, &m)
+        }
+
+        // MARK: trigger
+
+        func judgeTrigger(_ input: Input, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
+            let cid = input.step.controls.first
+            guard let trig: PadTrigger = cid == "lt" ? .left : (cid == "rt" ? .right : nil) else {
+                return Outcome(verdict: .inconclusive("the step names no trigger"), metrics: with(&m, "A trigger step needs lt or rt as its control."))
+            }
+            let t = trig == .left ? "lt" : "rt"
+            let peak = states.map { $0.value(of: trig) }.max() ?? 0
+            let low: (PadDecodedState) -> Bool = { $0.value(of: trig) <= rules.triggerRelease }
+            let settled = settledMs(low)
+            m.values = ["\(t).peak": peak, "\(t).settledMs": settled ?? 0]
+            var fails: [String] = []
+            if peak < rules.triggerPeak {
+                fails.append("\(t.uppercased()) only reached \(DevJudge.fmt(peak)) (needs \(DevJudge.fmt(rules.triggerPeak)))")
+            }
+            if settled == nil {
+                fails.append("\(t.uppercased()) was still above \(DevJudge.fmt(rules.triggerRelease)) at the end")
+            } else if let s = settled, s < rules.holdMs {
+                fails.append("\(t.uppercased()) had only been released for \(Int(s)) ms at the end (needs \(Int(rules.holdMs)))")
+            }
+            let summary = "\(t.uppercased()) peak \(DevJudge.fmt(peak)); \(m.padReports) pad reports, \(m.padChanged) changed."
+            return finish(fails, passText: summary, summary: summary, &m)
+        }
+
+        // MARK: digital
+
+        func judgeDigital(_ input: Input, entry: PadDecodedState, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
+            let expected = input.expected.items
+            var rises: [PadItem: Int] = [:], falls: [PadItem: Int] = [:]
+            var prev = states[0].items
+            var visited = 1 << Int(states[0].hat)
+            var neutrals = 0
+            var wasNeutral = states[0].isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease)
+            for i in 1..<max(count, 1) {
+                let s = states[i]
+                visited |= 1 << Int(s.hat)
+                let cur = s.items
+                for item in cur.subtracting(prev) { rises[item, default: 0] += 1 }
+                for item in prev.subtracting(cur) { falls[item, default: 0] += 1 }
+                prev = cur
+                let n = s.isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease)
+                if n && !wasNeutral { neutrals += 1 }
+                wasNeutral = n
+            }
+            let touched = Set(rises.keys).union(falls.keys)
+            let unexpected = touched.subtracting(expected)
+            let entryHeld = expected.intersection(entry.items)
+            let minRises = expected.isEmpty ? rises.values.reduce(0, +) : (expected.map { rises[$0] ?? 0 }.min() ?? 0)
+            let minFalls = expected.isEmpty ? falls.values.reduce(0, +) : (expected.map { falls[$0] ?? 0 }.min() ?? 0)
+            m.values = ["bit.rises": Double(minRises), "bit.falls": Double(minFalls), "hat.visited": Double(visited),
+                        "neutrals": Double(neutrals), "unexpected": Double(unexpected.count),
+                        "entrySet": entryHeld.isEmpty ? 0 : 1]
+
+            var fails: [String] = []
+            let times = rules.digitalTimes
+            for item in expected.sorted() {
+                let r = rises[item] ?? 0, f = falls[item] ?? 0
+                if r < times || f < times {
+                    var why = "\(item.name) went down \(r) and up \(f) times (needs \(times))"
+                    if entryHeld.contains(item) { why += ", bit already set at step start" }
+                    fails.append(why)
+                } else if last.items.contains(item) {
+                    fails.append("\(item.name) was still down at the end")
+                }
+            }
+            if !unexpected.isEmpty {
+                fails.append("unexpected change on " + unexpected.sorted().map(\.name).joined(separator: ", "))
+            }
+            if expected.isEmpty {
+                let quiet: (PadDecodedState) -> Bool = { $0.sticksInside(deadZone: rules.deadZone) && $0.triggersBelow(rules.triggerRelease) }
+                if let bad = states.first(where: { !quiet($0) }) {
+                    fails.append("an axis moved although nothing was expected (\(DevJudge.describeOffences(bad, rules: rules)))")
+                }
+            }
+            var summary: String
+            if expected.isEmpty {
+                summary = "Nothing was expected on the pad; \(m.padReports) pad reports, \(m.padChanged) changed."
+            } else {
+                summary = "\(input.expected.summary): down \(minRises) and up \(minFalls) times (needs \(times)); \(m.padReports) pad reports, \(m.padChanged) changed."
+            }
+            if !entryHeld.isEmpty { summary += " Bit already set at step start." }
+            return finish(fails, passText: summary, summary: summary, &m)
+        }
+
+        // MARK: shared
+
+        private func finish(_ fails: [String], passText: String, summary: String, _ m: inout DevMetrics) -> Outcome {
+            var detail = fails.isEmpty ? passText : fails.joined(separator: "; ") + ". " + summary
+            if let expectedChanges = m.expectedChanges, expectedChanges > 0, m.padChanged == 0 {
+                detail += " The receiver changed \(expectedChanges) times and the pad never did."
+            }
+            if fails.isEmpty { return Outcome(verdict: .pass, metrics: with(&m, detail)) }
+            return Outcome(verdict: .fail(fails.joined(separator: "; ")), metrics: with(&m, detail))
+        }
+
+        private func with(_ m: inout DevMetrics, _ detail: String) -> DevMetrics {
+            m.detail = detail
+            return m
+        }
+    }
+
+    // MARK: Words
+
+    static func fmt(_ v: Double) -> String { String(format: "%.2f", v) }
+
+    /// What is out of tolerance in one state, in words ("A down, left stick at 0.31").
+    static func describeOffences(_ s: PadDecodedState, rules: Rules) -> String {
+        var parts: [String] = s.items.sorted().map { "\($0.name) down" }
+        for stick in [PadStick.left, .right] where !s.isInside(stick, deadZone: rules.deadZone) {
+            let p = s.position(of: stick)
+            parts.append("\(stick.rawValue) stick at \(fmt((p.x * p.x + p.y * p.y).squareRoot()))")
+        }
+        for trig in [PadTrigger.left, .right] where s.value(of: trig) > rules.triggerRelease {
+            parts.append("\(trig == .left ? "LT" : "RT") at \(fmt(s.value(of: trig)))")
+        }
+        return parts.isEmpty ? "nothing" : parts.joined(separator: ", ")
+    }
+}

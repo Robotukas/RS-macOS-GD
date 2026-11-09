@@ -1,0 +1,333 @@
+{
+  "id" : "full",
+  "notes" : "Every control, in layout order: one hands-off check, both sticks, both triggers, then every button including the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start. About three minutes. Run it on the Engine path first and on Driver LIVE after that, then compare the two reports.",
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+
+      ],
+      "detail" : "Put the controller down and let go of every stick, trigger and button. The pad has to stay completely still.",
+      "id" : "rest",
+      "kind" : "rest",
+      "seconds" : 3,
+      "title" : "Hands off everything"
+    },
+    {
+      "controls" : [
+        "lt"
+      ],
+      "detail" : "LT is on the left side. Squeeze it all the way down and release it completely.",
+      "id" : "lt",
+      "kind" : "trigger",
+      "releaseSeconds" : 0.5,
+      "seconds" : 3,
+      "title" : "Pull LT fully, then let go"
+    },
+    {
+      "controls" : [
+        "lb"
+      ],
+      "detail" : "LB is on the left side. Press it, let go, press it again, let go. ",
+      "id" : "lb",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press LB twice"
+    },
+    {
+      "controls" : [
+        "sax_left"
+      ],
+      "detail" : "SAX left is on the left side. Press it, let go, press it again, let go. The pad shows this one as the button the controller's own profile sends for it.",
+      "id" : "sax_left",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press SAX left twice"
+    },
+    {
+      "controls" : [
+        "dpad_up"
+      ],
+      "detail" : "D-pad up is on the front. Press it, let go, press it again, let go. ",
+      "id" : "dpad_up",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press D-pad up twice"
+    },
+    {
+      "controls" : [
+        "dpad_right"
+      ],
+      "detail" : "D-pad right is on the front. Press it, let go, press it again, let go. ",
+      "id" : "dpad_right",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press D-pad right twice"
+    },
+    {
+      "controls" : [
+        "dpad_down"
+      ],
+      "detail" : "D-pad down is on the front. Press it, let go, press it again, let go. ",
+      "id" : "dpad_down",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press D-pad down twice"
+    },
+    {
+      "controls" : [
+        "dpad_left"
+      ],
+      "detail" : "D-pad left is on the front. Press it, let go, press it again, let go. ",
+      "id" : "dpad_left",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press D-pad left twice"
+    },
+    {
+      "controls" : [
+        "left_stick"
+      ],
+      "detail" : "Push it to the rim and go all the way round, slowly, once or twice, then release it. Leave the right stick alone.",
+      "id" : "left_stick",
+      "kind" : "stick",
+      "releaseSeconds" : 0.5,
+      "seconds" : 5,
+      "title" : "Roll the LEFT stick in one or two slow circles, then let go"
+    },
+    {
+      "controls" : [
+        "l3"
+      ],
+      "detail" : "L3 is on the front. Press it, let go, press it again, let go. ",
+      "id" : "l3",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press L3 twice"
+    },
+    {
+      "controls" : [
+        "view"
+      ],
+      "detail" : "View is on the front. Press it, let go, press it again, let go. ",
+      "id" : "view",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press View twice"
+    },
+    {
+      "controls" : [
+        "start"
+      ],
+      "detail" : "Start is on the front. Press it, let go, press it again, let go. The pad shows Start as the Guide button.",
+      "id" : "start",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Start twice"
+    },
+    {
+      "controls" : [
+        "profile"
+      ],
+      "detail" : "Profile is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "profile",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Profile twice"
+    },
+    {
+      "controls" : [
+        "g1"
+      ],
+      "detail" : "G1 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g1",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G1 twice"
+    },
+    {
+      "controls" : [
+        "g2"
+      ],
+      "detail" : "G2 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g2",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G2 twice"
+    },
+    {
+      "controls" : [
+        "g3"
+      ],
+      "detail" : "G3 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g3",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G3 twice"
+    },
+    {
+      "controls" : [
+        "g4"
+      ],
+      "detail" : "G4 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g4",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G4 twice"
+    },
+    {
+      "controls" : [
+        "g5"
+      ],
+      "detail" : "G5 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g5",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G5 twice"
+    },
+    {
+      "controls" : [
+        "menu"
+      ],
+      "detail" : "Menu is on the front. Press it, let go, press it again, let go. ",
+      "id" : "menu",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Menu twice"
+    },
+    {
+      "controls" : [
+        "a"
+      ],
+      "detail" : "A is on the front. Press it, let go, press it again, let go. ",
+      "id" : "a",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press A twice"
+    },
+    {
+      "controls" : [
+        "b"
+      ],
+      "detail" : "B is on the front. Press it, let go, press it again, let go. ",
+      "id" : "b",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press B twice"
+    },
+    {
+      "controls" : [
+        "x"
+      ],
+      "detail" : "X is on the front. Press it, let go, press it again, let go. ",
+      "id" : "x",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press X twice"
+    },
+    {
+      "controls" : [
+        "y"
+      ],
+      "detail" : "Y is on the front. Press it, let go, press it again, let go. ",
+      "id" : "y",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Y twice"
+    },
+    {
+      "controls" : [
+        "right_stick"
+      ],
+      "detail" : "Push it to the rim and go all the way round, slowly, once or twice, then release it. Leave the left stick alone.",
+      "id" : "right_stick",
+      "kind" : "stick",
+      "releaseSeconds" : 0.5,
+      "seconds" : 5,
+      "title" : "Roll the RIGHT stick in one or two slow circles, then let go"
+    },
+    {
+      "controls" : [
+        "r3"
+      ],
+      "detail" : "R3 is on the front. Press it, let go, press it again, let go. ",
+      "id" : "r3",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press R3 twice"
+    },
+    {
+      "controls" : [
+        "sax_right"
+      ],
+      "detail" : "SAX right is on the right side. Press it, let go, press it again, let go. The pad shows this one as the button the controller's own profile sends for it.",
+      "id" : "sax_right",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press SAX right twice"
+    },
+    {
+      "controls" : [
+        "rb"
+      ],
+      "detail" : "RB is on the right side. Press it, let go, press it again, let go. ",
+      "id" : "rb",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press RB twice"
+    },
+    {
+      "controls" : [
+        "rt"
+      ],
+      "detail" : "RT is on the right side. Squeeze it all the way down and release it completely.",
+      "id" : "rt",
+      "kind" : "trigger",
+      "releaseSeconds" : 0.5,
+      "seconds" : 3,
+      "title" : "Pull RT fully, then let go"
+    },
+    {
+      "controls" : [
+        "paddle_outer_left"
+      ],
+      "detail" : "Paddle outer left is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_outer_left",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle outer left twice"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left"
+      ],
+      "detail" : "Paddle inner left is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_inner_left",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle inner left twice"
+    },
+    {
+      "controls" : [
+        "paddle_inner_right"
+      ],
+      "detail" : "Paddle inner right is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_inner_right",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle inner right twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "detail" : "Paddle outer right is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_outer_right",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle outer right twice"
+    }
+  ],
+  "title" : "Full check",
+  "version" : 1
+}

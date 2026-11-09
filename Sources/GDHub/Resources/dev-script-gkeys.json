@@ -1,0 +1,79 @@
+{
+  "id" : "gkeys",
+  "notes" : "G1-G5 and Profile are not forwarded to the pad unless a mapping routes them, so the pad must stay quiet; Start arrives as the Guide button (report 0x02). Use it after touching key mappings.",
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+        "g1"
+      ],
+      "detail" : "G1 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g1",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G1 twice"
+    },
+    {
+      "controls" : [
+        "g2"
+      ],
+      "detail" : "G2 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g2",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G2 twice"
+    },
+    {
+      "controls" : [
+        "g3"
+      ],
+      "detail" : "G3 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g3",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G3 twice"
+    },
+    {
+      "controls" : [
+        "g4"
+      ],
+      "detail" : "G4 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g4",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G4 twice"
+    },
+    {
+      "controls" : [
+        "g5"
+      ],
+      "detail" : "G5 is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "g5",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press G5 twice"
+    },
+    {
+      "controls" : [
+        "profile"
+      ],
+      "detail" : "Profile is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
+      "id" : "profile",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Profile twice"
+    },
+    {
+      "controls" : [
+        "start"
+      ],
+      "detail" : "Start is on the front. Press it, let go, press it again, let go. The pad shows Start as the Guide button.",
+      "id" : "start",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Start twice"
+    }
+  ],
+  "title" : "G keys, Profile and Start",
+  "version" : 1
+}
