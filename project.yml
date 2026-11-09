@@ -51,12 +51,13 @@ targets:
             IOResourceMatch: IOKit
             IOUserClass: GDHubVirtualHID
             IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            # T3: the pad is created by the ROOT (Create(root, "GDHubPadProperties")), so its properties sit at root level,
+            # next to the user client's. They used to be nested in UserClientProperties.
+            GDHubPadProperties: {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualPad}
+            # D8/T11: GDHubKeyboardProperties / GDHubPointerProperties move up the same way
             UserClientProperties:
               IOClass: IOUserUserClient
               IOUserClass: GDHubVirtualHIDUserClient
-              GDHubPadProperties: {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualPad}
-              # D8: GDHubKeyboardProperties: {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualKeyboard}
-              # D8: GDHubPointerProperties:  {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualPointer}
     entitlements:
       path: Dext/GDHubVirtualHID/GDHubVirtualHID.entitlements
       properties: {com.apple.developer.driverkit: true, com.apple.developer.driverkit.family.hid.device: true,

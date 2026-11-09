@@ -13,6 +13,11 @@ final class DextProtocolTests: XCTestCase {
             let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard parts.count >= 3, parts[0] == "#define", parts[1].hasPrefix("GDHUB_") else { continue }
             var tok = String(parts[2])
+            // "(1u << 8)" style bit definitions
+            if tok == "(1u", parts.count >= 5, parts[3] == "<<", let n = UInt64(parts[4].replacingOccurrences(of: ")", with: "")) {
+                out[String(parts[1])] = 1 << n
+                continue
+            }
             if tok.hasSuffix("u") || tok.hasSuffix("U") { tok.removeLast() }
             let value: UInt64?
             if tok.hasPrefix("0x") || tok.hasPrefix("0X") { value = UInt64(tok.dropFirst(2), radix: 16) }
@@ -25,8 +30,10 @@ final class DextProtocolTests: XCTestCase {
     /// Every numeric `#define` in the header and its Swift mirror.
     private var mirror: [String: UInt64] {
         typealias P = DextProtocol
+        typealias S2 = DextStatus2.Offset
         return [
             "GDHUB_PROTOCOL_VERSION": UInt64(P.version),
+            "GDHUB_SPEC_VERSION": UInt64(P.specVersion),
             "GDHUB_USERCLIENT_TYPE": UInt64(P.userClientType),
             "GDHUB_SEL_HELLO": UInt64(P.Selector.hello),
             "GDHUB_SEL_CREATE_DEVICE": UInt64(P.Selector.createDevice),
@@ -37,6 +44,8 @@ final class DextProtocolTests: XCTestCase {
             "GDHUB_SEL_REGISTER_OUTPUT": UInt64(P.Selector.registerOutput),
             "GDHUB_SEL_GET_STATUS": UInt64(P.Selector.getStatus),
             "GDHUB_SEL_DEV_TERMINATE": UInt64(P.Selector.devTerminate),
+            "GDHUB_SEL_SET_FORWARDING": UInt64(P.Selector.setForwarding),
+            "GDHUB_SEL_GET_STATUS2": UInt64(P.Selector.getStatus2),
             "GDHUB_SEL_COUNT": UInt64(P.Selector.count),
             "GDHUB_SLOT_PAD": UInt64(P.Slot.pad.rawValue),
             "GDHUB_SLOT_KEYBOARD": UInt64(P.Slot.keyboard.rawValue),
@@ -45,6 +54,11 @@ final class DextProtocolTests: XCTestCase {
             "GDHUB_CAP_PAD": P.Capability.pad,
             "GDHUB_CAP_KEYBOARD": P.Capability.keyboard,
             "GDHUB_CAP_POINTER": P.Capability.pointer,
+            "GDHUB_CAP_ROOT_PAD": P.Capability.rootPad,
+            "GDHUB_FWD_INERT": P.Forwarding.inert,
+            "GDHUB_PADSRC_NONE": UInt64(P.PadSource.none.rawValue),
+            "GDHUB_PADSRC_UC": UInt64(P.PadSource.userClient.rawValue),
+            "GDHUB_PADSRC_TAP": UInt64(P.PadSource.tap.rawValue),
             "GDHUB_MAX_DESCRIPTOR": UInt64(P.Limit.maxDescriptor),
             "GDHUB_MAX_REPORT": UInt64(P.Limit.maxReport),
             "GDHUB_MAX_INPUT_REPORTS": UInt64(P.Limit.maxInputReports),
@@ -78,6 +92,26 @@ final class DextProtocolTests: XCTestCase {
             "GDHUB_SPEC_LEN_SERIAL": UInt64(P.Length.serial),
             "GDHUB_SPEC_FLAG_HID_DEFAULT_BEHAVIOR": UInt64(P.Spec.flagHIDDefaultBehavior),
             "GDHUB_OUTPUT_ARG_COUNT": UInt64(P.outputArgCount),
+            "GDHUB_ST2_VERSION": UInt64(DextStatus2.version),
+            "GDHUB_ST2_MAX_SIZE": UInt64(DextStatus2.maxSize),
+            "GDHUB_ST2_SIZE": UInt64(DextStatus2.size),
+            "GDHUB_ST2_OFF_VERSION": UInt64(S2.version), "GDHUB_ST2_OFF_SIZE": UInt64(S2.size),
+            "GDHUB_ST2_OFF_BUILD": UInt64(S2.build), "GDHUB_ST2_OFF_NONCE": UInt64(S2.nonce),
+            "GDHUB_ST2_OFF_ROOT_PID": UInt64(S2.rootPid), "GDHUB_ST2_OFF_DESIRED_STATE": UInt64(S2.desiredState),
+            "GDHUB_ST2_OFF_PAD_SOURCE": UInt64(S2.padSource), "GDHUB_ST2_OFF_PAD_LIVE": UInt64(S2.padLive),
+            "GDHUB_ST2_OFF_OWNER_PRESENT": UInt64(S2.ownerPresent),
+            "GDHUB_ST2_OFF_UC_POSTS": UInt64(S2.ucPosts), "GDHUB_ST2_OFF_UC_REJECTED": UInt64(S2.ucRejected),
+            "GDHUB_ST2_OFF_NEUTRAL_POSTS": UInt64(S2.neutralPosts), "GDHUB_ST2_OFF_POST_ERRORS": UInt64(S2.postErrors),
+            "GDHUB_ST2_OFF_SYNC_VIOLATIONS": UInt64(S2.syncViolations), "GDHUB_ST2_OFF_PAD_CREATES": UInt64(S2.padCreates),
+            "GDHUB_ST2_OFF_PAD_DESTROYS": UInt64(S2.padDestroys), "GDHUB_ST2_OFF_CREATE_FAILS": UInt64(S2.createFails),
+            "GDHUB_ST2_OFF_OUTPUTS_SEEN": UInt64(S2.outputsSeen), "GDHUB_ST2_OFF_OUTPUTS_NO_OWNER": UInt64(S2.outputsNoOwner), "GDHUB_ST2_OFF_CREATE_EARLY": UInt64(S2.createEarly),
+            "GDHUB_ST2_OFF_PAD_SPEC_CRC": UInt64(S2.padSpecCRC), "GDHUB_ST2_OFF_METER_WINDOWS": UInt64(S2.meterWindows),
+            "GDHUB_ST2_OFF_HOP_COUNT": UInt64(S2.hopCount), "GDHUB_ST2_OFF_HOP_P50_NS": UInt64(S2.hopP50),
+            "GDHUB_ST2_OFF_HOP_P99_NS": UInt64(S2.hopP99), "GDHUB_ST2_OFF_HOP_MAX_NS": UInt64(S2.hopMax),
+            "GDHUB_ST2_OFF_HOP_MEAN_NS": UInt64(S2.hopMean),
+            "GDHUB_ST2_OFF_HR_COUNT": UInt64(S2.hrCount), "GDHUB_ST2_OFF_HR_P50_NS": UInt64(S2.hrP50),
+            "GDHUB_ST2_OFF_HR_P99_NS": UInt64(S2.hrP99), "GDHUB_ST2_OFF_HR_MAX_NS": UInt64(S2.hrMax),
+            "GDHUB_ST2_OFF_HR_MEAN_NS": UInt64(S2.hrMean),
         ]
     }
 
@@ -132,9 +166,61 @@ final class DextProtocolTests: XCTestCase {
 
     private func bt16Spec(_ identity: PadIdentity) throws -> [UInt8] { try identity.spec().encoded() }
 
-    func testDevTerminateIsTheNextSelector() {
-        XCTAssertEqual(DextProtocol.Selector.devTerminate, DextProtocol.Selector.getStatus + 1)
-        XCTAssertEqual(DextProtocol.Selector.count, DextProtocol.Selector.devTerminate + 1)
+    /// The selector numbers are a wire contract; none may ever move (build 17 and every later dext share them).
+    func testSelectorNumbersNeverMove() {
+        typealias S = DextProtocol.Selector
+        XCTAssertEqual([S.hello, S.createDevice, S.destroyDevice, S.postReport, S.postNeutral, S.heartbeat, S.registerOutput,
+                        S.getStatus, S.devTerminate], Array(0...8), "the original nine, exactly as build 17 numbers them")
+        XCTAssertEqual(S.setForwarding, 9)
+        XCTAssertEqual(S.getStatus2, 11, "10 is reserved for the mapping blob (T5)")
+        XCTAssertEqual(S.count, S.getStatus2 + 1)
+        XCTAssertEqual(DextProtocol.version, 1, "the protocol version stays 1: hello is an exact match")
+        XCTAssertEqual(DextProtocol.specVersion, 1)
+    }
+
+    func testCapabilityBitsAreAdditive() {
+        typealias C = DextProtocol.Capability
+        XCTAssertEqual(C.pad | C.keyboard | C.pointer, 7, "bits 0-2 stay the slot bits")
+        XCTAssertEqual(C.rootPad, 0x100)
+        XCTAssertEqual(C.rootPad & (C.pad | C.keyboard | C.pointer), 0)
+        // build 17 answered hello with capabilities == 1; that must not read as root-pad capable
+        XCTAssertFalse(DextHello(protocolVersion: 1, dextBuild: 17, capabilities: C.pad).hasRootPad)
+        XCTAssertTrue(DextHello(protocolVersion: 1, dextBuild: 18, capabilities: C.pad | C.rootPad).hasRootPad)
+    }
+
+    /// The root is found by class AND server name. The tap that joins in T4 shares the server name; without the class it
+    /// would be matched as the root and hello would go to the wrong service.
+    func testMatchingDictionaryNamesTheRootClass() throws {
+        let props = DextClient.matchingProperties
+        XCTAssertEqual(props["IOUserServerName"], "com.interlinked.gdhub.VirtualHID")
+        XCTAssertEqual(props["IOUserClass"], "GDHubVirtualHID")
+        XCTAssertEqual(props.count, 2)
+        let dict = DextClient.matching() as NSDictionary
+        let match = try XCTUnwrap(dict[kIOPropertyMatchKey] as? [String: String])
+        XCTAssertEqual(match, props)
+        // and the class is the one the dext's personality declares
+        let yml = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("project.yml"), encoding: .utf8)
+        XCTAssertTrue(yml.contains("IOUserClass: \(DextProtocol.rootUserClass)\n"), "project.yml root personality")
+    }
+
+    /// T3 moves GDHubPadProperties from the user client's dictionary to the root personality.
+    func testPadPropertiesSitAtRootLevelInTheProjectFile() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let yml = try String(contentsOf: url.appendingPathComponent("project.yml"), encoding: .utf8)
+        let lines = yml.components(separatedBy: "\n")
+        let pad = try XCTUnwrap(lines.firstIndex { $0.contains("GDHubPadProperties:") && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") })
+        let userClient = try XCTUnwrap(lines.firstIndex { $0.trimmingCharacters(in: .whitespaces) == "UserClientProperties:" })
+        func indent(_ l: String) -> Int { l.prefix { $0 == " " }.count }
+        XCTAssertEqual(indent(lines[pad]), indent(lines[userClient]), "same level as UserClientProperties, not inside it")
+        let plist = try String(contentsOf: url.appendingPathComponent("Dext/GDHubVirtualHID/Info.plist"), encoding: .utf8)
+        XCTAssertTrue(plist.contains("GDHubPadProperties"))
+    }
+
+    func testForwardingResultDecodesAndPadsShortOutputs() {
+        let r = DextForwardingResult(words: [0, 0, 1, 0])
+        XCTAssertEqual(r.padSource, 1); XCTAssertEqual(r.appliedState, DextProtocol.Forwarding.inert)
+        XCTAssertEqual(DextForwardingResult(words: [0]).lastError, 0, "a shorter reply reads as zeros")
     }
 
     func testBT16SpecEncoding() throws {

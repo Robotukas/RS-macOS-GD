@@ -17,10 +17,15 @@ protocol DextStatusSource: AnyObject, Sendable {
     func status() -> DextStatus?
 }
 
+/// T3: the dext's own counters and `hop`/`hr` summary (needs `DextProtocol.Capability.rootPad`).
+protocol DextStatus2Source: AnyObject {
+    func status2() -> DextStatus2?
+}
+
 /// Everything a process needs from the dext connection.
 typealias DextBackend = DextControlling & PadTransport & DextStatusSource
 
-extension DextClient: DextControlling, DextStatusSource {}
+extension DextClient: DextControlling, DextStatusSource, DextStatus2Source {}
 
 /// No IOKit at all: every call is a no-op and the state stays `.stopped`. Used by the GUI in engine and display-only
 /// mode, so none of its code paths can ever open the dext and say hello.

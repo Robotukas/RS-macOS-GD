@@ -38,7 +38,7 @@ kern_return_t GDHubSpecValidate(const uint8_t * p, size_t len)
 {
     if (!p || len < GDHUB_SPEC_HEADER_SIZE) { GDLog("spec rejected: length %zu < header", len); return kIOReturnBadArgument; }
     if (rd32(p, GDHUB_SPEC_OFF_MAGIC) != GDHUB_SPEC_MAGIC) { GDLog("spec rejected: bad magic"); return kIOReturnBadArgument; }
-    if (rd16(p, GDHUB_SPEC_OFF_VERSION) != GDHUB_PROTOCOL_VERSION) { GDLog("spec rejected: bad version"); return kIOReturnBadArgument; }
+    if (rd16(p, GDHUB_SPEC_OFF_VERSION) != GDHUB_SPEC_VERSION) { GDLog("spec rejected: bad version"); return kIOReturnBadArgument; }
     if (rd16(p, GDHUB_SPEC_OFF_HEADER_SIZE) != GDHUB_SPEC_HEADER_SIZE) { GDLog("spec rejected: bad header size"); return kIOReturnBadArgument; }
     if (p[GDHUB_SPEC_OFF_SLOT] >= GDHUB_SLOT_COUNT) { GDLog("spec rejected: slot %u", (unsigned)p[GDHUB_SPEC_OFF_SLOT]); return kIOReturnBadArgument; }
 
@@ -151,15 +151,29 @@ const uint8_t * GDHubSpecNeutral(OSData * spec, uint32_t index, uint32_t * lengt
     return p + off;
 }
 
-bool GDHubSpecIsDeclaredInput(OSData * spec, const uint8_t * report, uint32_t len)
+// Index of the input-table entry that `report` (first byte = report ID unless the spec has no IDs) is a complete
+// report for: same ID and exactly the entry's send length. -1 if there is none.
+int GDHubSpecFindInput(OSData * spec, const uint8_t * report, uint32_t len)
 {
     uint32_t count = GDHubSpecInputCount(spec);
-    if (!report || len == 0 || count == 0) return false;
-    if (GDHubSpecU8(spec, entryBase(0)) == 0) return len == GDHubSpecSendLength(spec, 0);   // no report IDs
+    if (!report || len == 0 || count == 0) return -1;
+    if (GDHubSpecU8(spec, entryBase(0)) == 0) return len == GDHubSpecSendLength(spec, 0) ? 0 : -1;   // no report IDs
     for (uint32_t i = 0; i < count; i++) {
-        if (report[0] == GDHubSpecU8(spec, entryBase(i)) && len == GDHubSpecSendLength(spec, i)) return true;
+        if (report[0] == GDHubSpecU8(spec, entryBase(i)) && len == GDHubSpecSendLength(spec, i)) return (int)i;
     }
-    return false;
+    return -1;
+}
+
+bool GDHubSpecIsDeclaredInput(OSData * spec, const uint8_t * report, uint32_t len)
+{
+    return GDHubSpecFindInput(spec, report, len) >= 0;
+}
+
+// CRC-32 of the whole spec blob: the value GDHM's specCRC32 field must carry (Shared/GDHubXlate.c gdx_crc32).
+uint32_t GDHubSpecCRC32(OSData * spec)
+{
+    uint32_t n; const uint8_t * p = specBytes(spec, &n);
+    return p ? gdh_crc32(p, n) : 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

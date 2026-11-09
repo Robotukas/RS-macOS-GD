@@ -13,6 +13,13 @@ let package = Package(
             publicHeadersPath: ".",
             cSettings: [.unsafeFlags(["-ffp-contract=off"])]
         ),
+        // The DriverKit-free core of the dext (registry state machine, meter, status2 packer, CRC-32): the same files the
+        // Xcode dext target compiles, built here so the tests can drive them.
+        .target(
+            name: "GDHubDextCore",
+            path: "Dext/GDHubVirtualHID/Core",
+            publicHeadersPath: "."
+        ),
         .executableTarget(
             name: "GDHub",
             dependencies: ["GDHubXlate"],
@@ -21,7 +28,7 @@ let package = Package(
         ),
         .testTarget(
             name: "GDHubTests",
-            dependencies: ["GDHub", "GDHubXlate"],
+            dependencies: ["GDHub", "GDHubXlate", "GDHubDextCore"],
             path: "Tests/GDHubTests"
         ),
     ]

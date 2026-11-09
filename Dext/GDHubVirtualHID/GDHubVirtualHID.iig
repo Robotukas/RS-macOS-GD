@@ -10,5 +10,9 @@ public:
     virtual kern_return_t Start(IOService * provider) override;   // Start(SUPERDISPATCH) then RegisterService()
     virtual kern_return_t Stop(IOService * provider) override;
     virtual kern_return_t NewUserClient(uint32_t type, IOUserClient ** userClient) override;
+    // RPC (no LOCAL, no LOCALONLY): dispatched onto this service's default queue. Called by the owning user client
+    // (rank 1 -> rank 2). `ownerGen` is the generation GDHubClaimOwner returned; a stale one is refused.
+    virtual kern_return_t CreatePad(uint64_t ownerGen);
+    virtual kern_return_t DestroyPad(uint64_t ownerGen);
 };
 #endif

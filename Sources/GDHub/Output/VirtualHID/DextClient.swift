@@ -2,6 +2,15 @@ import Foundation
 import IOKit
 import os
 
+/// One raw selector call: scalar inputs, expected scalar-output count, structure-output capacity. The result carries the
+/// scalars and the structure bytes the dext returned.
+struct DextRawResult {
+    var kr: kern_return_t
+    var scalars: [UInt64] = []
+    var bytes: [UInt8] = []
+}
+typealias DextRawCall = (_ selector: UInt32, _ scalarsIn: [UInt64], _ scalarOutCount: Int, _ structOutCapacity: Int) -> DextRawResult
+
 /// Talks to the GDHub DriverKit extension through its user client (design §5.2).
 /// Every method and every callback runs on `queue` (the app's `vhidQueue`).
 final class DextClient: @unchecked Sendable {   // confined to `queue`
@@ -31,6 +40,13 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     private var service: io_service_t = 0
     private var connect: io_connect_t = 0
     private var lastOutputSequence: UInt64?
+    /// `hello` output[2] of the dext this client is connected to (0 while not connected). Features beyond the original
+    /// selector set are used only when their bit is set: a dext without `Capability.rootPad` (build 17) answers selectors
+    /// 9 and 11 with "bad argument".
+    private(set) var capabilities: UInt64 = 0
+    var hasRootPad: Bool { capabilities & DextProtocol.Capability.rootPad != 0 }
+    /// Tests replace the IOKit call with a fake that behaves like a given dext.
+    private var testCall: DextRawCall?
 
     // Reconnect back-off. A crashing dext re-publishes its service in a tight loop, and each re-publication would
     // run hello again (~27 ms apart in the bug 2 crash loop). `failures` counts consecutive failed attempts.
@@ -90,9 +106,15 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         setState(.stopped)
     }
 
-    private static func matching() -> CFDictionary {
+    /// The property match of the dext's root service. `IOUserServerName` is shared by every service of the dext (the
+    /// receiver tap joins in T4), so `IOUserClass` picks the root.
+    static var matchingProperties: [String: String] {
+        ["IOUserServerName": dextID, "IOUserClass": DextProtocol.rootUserClass]
+    }
+
+    static func matching() -> CFDictionary {
         let dict = IOServiceMatching("IOUserService") as NSMutableDictionary
-        dict[kIOPropertyMatchKey] = ["IOUserServerName": dextID]
+        dict[kIOPropertyMatchKey] = matchingProperties
         return dict
     }
 
@@ -215,6 +237,7 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         failures = 0
         refusalLatched = false
         connectedAt = .now()
+        capabilities = out[2]
         registerOutput()
         Self.log.info("connected: driver build \(out[1]) protocol \(out[0]) capabilities \(out[2]) (app build \(self.appBuild))")
         setState(.connected(dextBuild: out[1]))
@@ -226,6 +249,7 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     private func closeConnection() {
         if connect != 0 { IOServiceClose(connect); connect = 0 }
         if service != 0 { IOObjectRelease(service); service = 0 }
+        capabilities = 0
     }
 
     private func setState(_ new: State) {
@@ -292,15 +316,67 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
 
     func status() -> DextStatus? {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard connect != 0 else { return nil }
-        var out = [UInt64](repeating: 0, count: DextStatus.scalarCount)
-        var n = UInt32(DextStatus.scalarCount)
-        let kr = IOConnectCallScalarMethod(connect, DextProtocol.Selector.getStatus, nil, 0, &out, &n)
-        guard kr == KERN_SUCCESS else {
-            Self.log.error("getStatus failed: 0x\(String(UInt32(bitPattern: kr), radix: 16), privacy: .public)")
+        guard isLinked else { return nil }
+        let r = callRaw(DextProtocol.Selector.getStatus, scalarsIn: [], scalarOutCount: DextStatus.scalarCount, structOutCapacity: 0)
+        guard r.kr == KERN_SUCCESS else {
+            Self.log.error("getStatus failed: 0x\(String(UInt32(bitPattern: r.kr), radix: 16), privacy: .public)")
             return nil
         }
-        return DextStatus(words: out)
+        return DextStatus(words: r.scalars)
+    }
+
+    /// GDHubStatus2 (T3): identity, counters, the last 10 s window of the dext's `hop` and `hr`. nil without
+    /// `Capability.rootPad`, when not connected, or on an error.
+    func status2() -> DextStatus2? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard isLinked, hasRootPad else { return nil }
+        let r = callRaw(DextProtocol.Selector.getStatus2, scalarsIn: [], scalarOutCount: 0, structOutCapacity: DextStatus2.maxSize)
+        guard r.kr == KERN_SUCCESS else {
+            Self.log.error("getStatus2 failed: 0x\(String(UInt32(bitPattern: r.kr), radix: 16), privacy: .public)")
+            return nil
+        }
+        return DextStatus2.decode(r.bytes)
+    }
+
+    /// Selector 9. T3 knows INERT only; `krUnsupported` without `Capability.rootPad` (the old dext has no such selector).
+    func setForwardingInert() -> (kr: kern_return_t, result: DextForwardingResult?) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard isLinked else { return (DextProtocol.krNotReady, nil) }
+        guard hasRootPad else { return (DextProtocol.krUnsupported, nil) }
+        let r = callRaw(DextProtocol.Selector.setForwarding, scalarsIn: [DextProtocol.Forwarding.inert, 0, 0],
+                        scalarOutCount: DextForwardingResult.scalarCount, structOutCapacity: 0)
+        return (r.kr, r.kr == KERN_SUCCESS ? DextForwardingResult(words: r.scalars) : nil)
+    }
+
+    private var isLinked: Bool { connect != 0 || testCall != nil }
+
+    private func callRaw(_ selector: UInt32, scalarsIn: [UInt64], scalarOutCount: Int, structOutCapacity: Int) -> DextRawResult {
+        if let testCall { return testCall(selector, scalarsIn, scalarOutCount, structOutCapacity) }
+        var sIn = scalarsIn
+        // Output pointers are passed only when the call has that kind of output; the kernel compares the counts.
+        let sOut = UnsafeMutablePointer<UInt64>.allocate(capacity: max(scalarOutCount, 1))
+        let nOut = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
+        let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: max(structOutCapacity, 1))
+        let bufLen = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+        defer { sOut.deallocate(); nOut.deallocate(); buf.deallocate(); bufLen.deallocate() }
+        sOut.initialize(repeating: 0, count: max(scalarOutCount, 1))
+        buf.initialize(repeating: 0, count: max(structOutCapacity, 1))
+        nOut.pointee = UInt32(scalarOutCount)
+        bufLen.pointee = structOutCapacity
+        let kr = IOConnectCallMethod(connect, selector, &sIn, UInt32(sIn.count), nil, 0,
+                                     scalarOutCount > 0 ? sOut : nil, scalarOutCount > 0 ? nOut : nil,
+                                     structOutCapacity > 0 ? buf : nil, structOutCapacity > 0 ? bufLen : nil)
+        guard kr == KERN_SUCCESS else { return DextRawResult(kr: kr) }
+        return DextRawResult(kr: kr,
+                             scalars: scalarOutCount > 0 ? Array(UnsafeBufferPointer(start: sOut, count: min(Int(nOut.pointee), scalarOutCount))) : [],
+                             bytes: structOutCapacity > 0 ? Array(UnsafeBufferPointer(start: buf, count: min(bufLen.pointee, structOutCapacity))) : [])
+    }
+
+    /// Test seam: behave as if connected to a dext that answers `call` and reported `capabilities` in `hello`.
+    func attachFakeDext(capabilities: UInt64, call: @escaping DextRawCall) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        self.capabilities = capabilities
+        testCall = call
     }
 
     // The dext's watchdog neutralises the pad after 2 s without activity (design §3.10). The heartbeat is sent by

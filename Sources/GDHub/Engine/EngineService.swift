@@ -101,13 +101,16 @@ final class EngineService: @unchecked Sendable {
             let window = self.stat.collect()
             let prio = LatencyMeter.currentThreadBasePriority()
             let napped = (prio ?? 31) <= 4
+            // T3: the dext's own `hop` (user client stamp to pad entry) and `hr` (handleReport) of its last 10 s window.
+            // status2 is a call on the dext connection, so it is made here on vhidQueue; nil on a dext without it.
+            let dextText = self.dext.status2()?.meterLogText.map { " | " + $0 } ?? ""
             self.meterQueue.async {
                 let s = CallbackStat.summary(of: window)
                 let l = self.lastSnapshot
                 let changed = l.samples > 0
                     ? " | changed-frames n=\(l.samples) total p50/p99/max \(LatencySnapshot.fmt(l.total.p50))/\(LatencySnapshot.fmt(l.total.p99))/\(LatencySnapshot.fmt(l.total.max)) ms posts=\(Int(l.postsHz.rounded()))Hz coalesced=\(Int(l.coalescedPercent.rounded()))%"
                     : ""
-                Self.log.notice("meter: \(s.logText, privacy: .public)\(changed, privacy: .public) napped=\(napped ? "yes" : "no", privacy: .public) vhidPrio=\(prio.map(String.init) ?? "?", privacy: .public)")
+                Self.log.notice("meter: \(s.logText, privacy: .public)\(changed, privacy: .public)\(dextText, privacy: .public) napped=\(napped ? "yes" : "no", privacy: .public) vhidPrio=\(prio.map(String.init) ?? "?", privacy: .public)")
             }
         }
         t.resume()

@@ -2,18 +2,30 @@
 // D2: hello, heartbeat, registerOutput (stores the completion only), getStatus, Team ID check, single-owner claim,
 // watchdog timer. D3: createDevice, destroyDevice, postReport, postNeutral, watchdog neutral reports, teardown of the
 // children, and the DEBUG-only devTerminate selector.
+// T3: the pad belongs to the ROOT. createDevice/destroyDevice call root->CreatePad/DestroyPad; posts go to
+// pad->submitInput/postNeutralFrom on the pad found through the registry (+1 for the duration of the call); each input
+// report has one fixed-length buffer whose length is set once. Selectors 9 (INERT only) and 11 (status2) are new.
+//
+// Queue: everything in this file runs on the user client's default queue (rank 1): ExternalMethod, WatchdogFired
+// (the timer is created on the same queue), Stop. The only synchronous calls out are root->CreatePad/DestroyPad (rank 2)
+// and pad->submitInput/postNeutralFrom (rank 4), each wrapped in GDH_SYNC; Terminate is a kernel call, not a queue entry.
 #include "GDHubInternal.h"
 #include "GDHubVirtualHID.h"
 #include "GDHubVirtualHIDUserClient.h"
 #include "GDHubVirtualPad.h"
 
 struct GDHubVirtualHIDUserClient_IVars {
-    GDHubVirtualHID * root;                         // provider, not retained
+    GDHubVirtualHID * root;                         // provider (retained by DriverKit until Stop), not retained here
     bool authorized, protocolOK, ownsRoot, neutralised, stopped;
-    IOLock * lock;                                  // guards spec[], outputAction, outputSeq/Count/Drops
-    OSData * spec[GDHUB_SLOT_COUNT];                // retained; immutable while the device exists (D3)
-    IOService * device[GDHUB_SLOT_COUNT];           // retained (+1 from Create) (D3)
-    IOBufferMemoryDescriptor * postBuffer[GDHUB_SLOT_COUNT];   // capacity GDHUB_MAX_REPORT (D3)
+    bool padCreated;                                // this client created the pad and has not destroyed it (T3)
+    uint64_t ownerGen;                              // generation GDHubClaimOwner returned; 0 until hello
+    IOLock * lock;                                  // guards outputAction, outputSeq/Count/Drops (D5 writes them from the pad's queue)
+    OSData * spec[GDHUB_SLOT_COUNT];                // retained; this client's copy, used on the UC queue only
+    // One buffer per input-table entry of the pad's spec: created once with its length set once (SetLength is a kernel
+    // RPC, so it is never called per post), filled with memcpy per post, handed to pad->submitInput.
+    IOBufferMemoryDescriptor * inBuf[GDHUB_MAX_INPUT_REPORTS];
+    void * inAddr[GDHUB_MAX_INPUT_REPORTS];
+    uint32_t inLen[GDHUB_MAX_INPUT_REPORTS];
     OSAction * outputAction;                        // retained completion from registerOutput
     uint64_t outputSeq, outputCount, outputDrops, postCount, watchdogFires;
     IODispatchQueue * queue; IOTimerDispatchSource * timer; OSAction * timerAction;
@@ -79,19 +91,21 @@ static kern_return_t sHello(OSObject * target, void * reference, IOUserClientMet
             GDLog("hello: refused, caller is not team %{public}s (0x%x)", GDHUB_TEAM_ID, (unsigned)kIOReturnNotPermitted);
             return kIOReturnNotPermitted;
         }
-        if (!GDHubRootClaim(iv->root, uc)) {
+        uint64_t gen = GDHubClaimOwner(uc);
+        if (gen == 0) {
             GDLog("hello: refused, dext already owned by another client (0x%x)", (unsigned)kIOReturnExclusiveAccess);
             return kIOReturnExclusiveAccess;
         }
         iv->authorized = true;
         iv->ownsRoot = true;
+        iv->ownerGen = gen;
     }
     iv->protocolOK = (a->scalarInput[0] == GDHUB_PROTOCOL_VERSION);
     iv->neutralised = false;
     iv->lastActivity = mach_absolute_time();
     a->scalarOutput[0] = GDHUB_PROTOCOL_VERSION;
     a->scalarOutput[1] = GDHUB_DEXT_BUILD;
-    a->scalarOutput[2] = GDHUB_CAP_PAD;     // capabilities: keyboard and pointer arrive in D8
+    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD;   // capabilities: keyboard and pointer arrive in D8
     a->scalarOutputCount = 3;
     GDLog("hello: app protocol %llu build %llu, dext protocol %u build %u, protocolOK=%d",
           a->scalarInput[0], a->scalarInput[1], (unsigned)GDHUB_PROTOCOL_VERSION, (unsigned)GDHUB_DEXT_BUILD,
@@ -122,42 +136,75 @@ static kern_return_t structureBytes(IOUserClientMethodArguments * a, const uint8
     return kIOReturnBadArgument;
 }
 
-// Posts one input report of `slot` through its postBuffer. Caller has checked that the device exists.
-static kern_return_t postBytes(GDHubVirtualHIDUserClient * uc, uint32_t slot, const uint8_t * bytes, uint32_t length)
+static void dropInputBuffers(GDHubVirtualHIDUserClient_IVars * iv)
 {
-    auto iv = uc->ivars;
-    IOBufferMemoryDescriptor * buf = iv->postBuffer[slot];
-    if (!iv->device[slot] || !buf || length == 0 || length > GDHUB_MAX_REPORT) return kIOReturnNotReady;
-    IOAddressSegment range = {};
-    kern_return_t kr = buf->GetAddressRange(&range);
-    if (kr != kIOReturnSuccess || !range.address || range.length < length) return kIOReturnError;
-    memcpy((void *)range.address, bytes, length);
-    kr = buf->SetLength(length);
-    if (kr != kIOReturnSuccess) return kr;
-    switch (slot) {
-    case GDHUB_SLOT_PAD: {
-        GDHubVirtualPad * pad = OSDynamicCast(GDHubVirtualPad, iv->device[slot]);
-        return pad ? pad->postReport(buf) : kIOReturnNotReady;
-    }
-    default:
-        return kIOReturnUnsupported;      // keyboard / pointer: D8
+    for (uint32_t i = 0; i < GDHUB_MAX_INPUT_REPORTS; i++) {
+        OSSafeReleaseNULL(iv->inBuf[i]);
+        iv->inAddr[i] = nullptr;
+        iv->inLen[i] = 0;
     }
 }
 
-static kern_return_t postNeutralReports(GDHubVirtualHIDUserClient * uc, uint32_t slot)
+// One buffer per input-table entry, each with its length set exactly once, here. A failure leaves nothing behind.
+static kern_return_t buildInputBuffers(GDHubVirtualHIDUserClient_IVars * iv, OSData * spec)
+{
+    uint32_t count = GDHubSpecInputCount(spec);
+    if (count < 1 || count > GDHUB_MAX_INPUT_REPORTS) return kIOReturnBadArgument;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t len = GDHubSpecSendLength(spec, i);
+        IOBufferMemoryDescriptor * b = nullptr;
+        kern_return_t kr = len ? IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, len, 0, &b) : kIOReturnBadArgument;
+        IOAddressSegment range = {};
+        if (kr == kIOReturnSuccess && b) kr = b->SetLength(len);
+        if (kr == kIOReturnSuccess && b) kr = b->GetAddressRange(&range);
+        if (kr == kIOReturnSuccess && (!range.address || range.length < len)) kr = kIOReturnError;
+        if (kr != kIOReturnSuccess || !b) {
+            if (b) b->release();
+            dropInputBuffers(iv);
+            return kr != kIOReturnSuccess ? kr : kIOReturnError;
+        }
+        iv->inBuf[i] = b;
+        iv->inAddr[i] = (void *)range.address;
+        iv->inLen[i] = len;
+    }
+    return kIOReturnSuccess;
+}
+
+// Forgets the pad this client created: asks the root to destroy it (rank 1 -> 2), then drops the client's own state.
+// If the root call fails, the registry slot is emptied directly (a stale generation still empties nothing).
+static kern_return_t postNeutralToPad(GDHubVirtualHIDUserClient * uc, uint32_t reason);
+
+static void destroyPad(GDHubVirtualHIDUserClient * uc)
 {
     auto iv = uc->ivars;
-    if (!iv->device[slot] || !iv->spec[slot]) return kIOReturnNotReady;
-    kern_return_t result = kIOReturnSuccess;
-    uint32_t count = GDHubSpecInputCount(iv->spec[slot]);
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t len = 0;
-        const uint8_t * bytes = GDHubSpecNeutral(iv->spec[slot], i, &len);
-        if (!bytes || len == 0) continue;
-        kern_return_t kr = postBytes(uc, slot, bytes, len);
-        if (kr != kIOReturnSuccess) result = kr;
+    // Plan 6.3: neutral before destroy. The result is ignored (there may be no live pad), and nothing waits.
+    (void)postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST);
+    if (iv->root && iv->ownerGen) {
+        GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_ROOT, GDHubRootQueue(iv->root), "DestroyPad");
+        kern_return_t kr = iv->root->DestroyPad(iv->ownerGen);
+        if (kr != kIOReturnSuccess) {
+            GDLog("DestroyPad returned 0x%x: taking the pad directly", (unsigned)kr);
+            int rc = 0;
+            OSObject * left = static_cast<OSObject *>(gdhr_pad_take(GDHubReg(), iv->ownerGen, &rc));
+            if (left) gdhr_ctr_add(GDHubReg(), GDHR_CTR_PAD_DESTROYS, 1);
+            GDHubTerminateAndRelease(left);
+        }
     }
-    return result;
+    iv->padCreated = false;
+    dropInputBuffers(iv);
+    OSSafeReleaseNULL(iv->spec[GDHUB_SLOT_PAD]);
+}
+
+// Posts the pad's neutral reports. Used by the postNeutral selector and the watchdog.
+static kern_return_t postNeutralToPad(GDHubVirtualHIDUserClient * uc, uint32_t reason)
+{
+    if (!uc->ivars->padCreated) return kIOReturnNotReady;
+    GDHubVirtualPad * pad = GDHubCopyPad();                    // +1 for the duration of the call
+    if (!pad) return kIOReturnNotReady;
+    GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_PAD, GDHubPadQueue(pad), "postNeutralFrom");
+    kern_return_t kr = pad->postNeutralFrom(GDHUB_PADSRC_UC, reason);
+    pad->release();
+    return kr;
 }
 
 static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserClientMethodArguments * a)
@@ -177,7 +224,14 @@ static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserCl
         if (map) map->release();
         return kIOReturnUnsupported;
     }
-    if (iv->device[slot]) { if (map) map->release(); return kIOReturnBusy; }
+    if (iv->padCreated) {
+        // Still ours, or gone behind our back (the pad stopped on its own)? Only a live registry slot means Busy.
+        if (gdhr_pad_state(GDHubReg()) != GDHR_PAD_NONE) { if (map) map->release(); return kIOReturnBusy; }
+        GDLog("createDevice: dropping a stale pad record");
+        iv->padCreated = false;
+        dropInputBuffers(iv);
+        OSSafeReleaseNULL(iv->spec[slot]);
+    }
 
     OSData * spec = OSData::withBytes(bytes, (uint32_t)len);
     unsigned vid = (unsigned)(bytes[GDHUB_SPEC_OFF_VENDOR] | (bytes[GDHUB_SPEC_OFF_VENDOR + 1] << 8));
@@ -185,42 +239,47 @@ static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserCl
     if (map) map->release();
     if (!spec) return kIOReturnNoMemory;
 
-    if (!iv->postBuffer[slot]) {
-        kr = IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, GDHUB_MAX_REPORT, 0, &iv->postBuffer[slot]);
-        if (kr != kIOReturnSuccess) { spec->release(); iv->postBuffer[slot] = nullptr; return kr; }
-    }
+    // Fixed-length input buffers first, so a failure here leaves the registry untouched.
+    kr = buildInputBuffers(iv, spec);
+    if (kr != kIOReturnSuccess) { GDLog("createDevice: input buffers 0x%x", (unsigned)kr); spec->release(); return kr; }
 
-    // The spec must be stored before Create(): the child reads it in handleStart. Do not hold the lock across Create.
-    IOLockLock(iv->lock);
-    iv->spec[slot] = spec;
-    IOLockUnlock(iv->lock);
-
-    static const char * const kSlotKey[GDHUB_SLOT_COUNT] = { "GDHubPadProperties", "GDHubKeyboardProperties", "GDHubPointerProperties" };
-    IOService * child = nullptr;
-    kr = uc->Create(uc, kSlotKey[slot], &child);
-    if (kr != kIOReturnSuccess || !child) {
-        GDLog("createDevice: Create(%{public}s) failed 0x%x", kSlotKey[slot], (unsigned)kr);
-        IOLockLock(iv->lock);
-        OSData * s = iv->spec[slot]; iv->spec[slot] = nullptr;
-        IOLockUnlock(iv->lock);
-        if (s) s->release();
-        return kr != kIOReturnSuccess ? kr : kIOReturnError;
+    // Stage the spec in the registry (the pad reads it in handleStart), then ask the root to create the pad. No lock is
+    // held across CreatePad: the registry lock is private to the core and released before this call.
+    gdhr * reg = GDHubReg();
+    int rc = gdhr_pad_stage(reg, iv->ownerGen, static_cast<OSObject *>(spec), GDHubSpecCRC32(spec));
+    if (rc != GDHR_OK) {
+        GDLog("createDevice: slot not available (registry %d)", rc);
+        dropInputBuffers(iv); spec->release();
+        return rc == GDHR_E_BUSY ? kIOReturnBusy : (rc == GDHR_E_NOT_OWNER ? kIOReturnNotPermitted : kIOReturnNotReady);
     }
-    iv->device[slot] = child;            // +1 from Create
+    GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_ROOT, GDHubRootQueue(iv->root), "CreatePad");
+    kr = iv->root->CreatePad(iv->ownerGen);
+    if (kr == kIOReturnSuccess) {
+        // Create may have returned before the pad's Start registered it (root logs "returned before the pad started").
+        // The engine treats a NotReady post as a lost device, so createDevice does not report success until the pad is
+        // LIVE: poll the registry for at most 500 ms. The pad's Start does not need this queue, so nothing deadlocks.
+        // In the normal case (already LIVE) this loop does not run at all.
+        uint32_t waited = 0;
+        while (gdhr_pad_state(reg) != GDHR_PAD_LIVE && waited < GDHUB_CREATE_WAIT_MS) { IOSleep(1); waited++; }
+        if (gdhr_pad_state(reg) != GDHR_PAD_LIVE) { GDLog("createDevice: pad not live after %u ms", (unsigned)waited); kr = kIOReturnNotReady; }
+        else if (waited) GDLog("createDevice: pad became live after %u ms", (unsigned)waited);
+    }
+    if (kr != kIOReturnSuccess) {
+        GDLog("createDevice: CreatePad failed 0x%x", (unsigned)kr);
+        // The slot must be empty whenever createDevice reports failure: even a pad that went LIVE (or is still starting)
+        // is taken out and terminated, so the next createDevice cannot find the slot Busy.
+        int rc = 0;
+        gdhr_pad_unstage(reg, iv->ownerGen);            // no-op unless the root never took the slot
+        OSObject * left = static_cast<OSObject *>(gdhr_pad_take(reg, iv->ownerGen, &rc));
+        if (left) gdhr_ctr_add(reg, GDHR_CTR_PAD_DESTROYS, 1);
+        GDHubTerminateAndRelease(left);
+        dropInputBuffers(iv); spec->release();
+        return kr;
+    }
+    iv->spec[slot] = spec;                              // keeps the +1 from withBytes
+    iv->padCreated = true;
     GDLog("createDevice: slot %u %04x:%04x created", slot, vid, pid);
     return kIOReturnSuccess;
-}
-
-static void dropDevice(GDHubVirtualHIDUserClient * uc, uint32_t slot)
-{
-    auto iv = uc->ivars;
-    IOService * dev = iv->device[slot];
-    iv->device[slot] = nullptr;
-    if (dev) { dev->Terminate(0); dev->release(); }
-    IOLockLock(iv->lock);
-    OSData * s = iv->spec[slot]; iv->spec[slot] = nullptr;
-    IOLockUnlock(iv->lock);
-    if (s) s->release();
 }
 
 static kern_return_t sDestroyDevice(OSObject * target, void * reference, IOUserClientMethodArguments * a)
@@ -229,9 +288,9 @@ static kern_return_t sDestroyDevice(OSObject * target, void * reference, IOUserC
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
     uint64_t slot = a->scalarInput[0];
     if (slot >= GDHUB_SLOT_COUNT) return kIOReturnBadArgument;
-    if (uc->ivars->device[slot]) {
+    if (slot == GDHUB_SLOT_PAD && uc->ivars->padCreated) {
         GDLog("destroyDevice: slot %llu", slot);
-        dropDevice(uc, (uint32_t)slot);
+        destroyPad(uc);
     }
     return kIOReturnSuccess;
 }
@@ -243,16 +302,25 @@ static kern_return_t sPostReport(OSObject * target, void * reference, IOUserClie
     auto iv = uc->ivars;
     uint64_t slot = a->scalarInput[0];
     if (slot >= GDHUB_SLOT_COUNT) return kIOReturnBadArgument;
-    if (!iv->device[slot] || !iv->spec[slot]) return kIOReturnNotReady;
+    if (slot != GDHUB_SLOT_PAD) return iv->spec[slot] ? kIOReturnUnsupported : kIOReturnNotReady;   // keyboard / pointer: D8
+    OSData * spec = iv->spec[GDHUB_SLOT_PAD];
+    if (!iv->padCreated || !spec) return kIOReturnNotReady;
     const uint8_t * bytes = nullptr; size_t len = 0; IOMemoryMap * map = nullptr;
     kern_return_t kr = structureBytes(a, &bytes, &len, &map);
     if (kr != kIOReturnSuccess) return kIOReturnBadArgument;
-    if (len < 1 || len > GDHUB_MAX_REPORT || !GDHubSpecIsDeclaredInput(iv->spec[slot], bytes, (uint32_t)len)) {
+    int idx = (len >= 1 && len <= GDHUB_MAX_REPORT) ? GDHubSpecFindInput(spec, bytes, (uint32_t)len) : -1;
+    if (idx < 0 || (uint32_t)idx >= GDHUB_MAX_INPUT_REPORTS || !iv->inBuf[idx] || iv->inLen[idx] != len) {
         if (map) map->release();
         return kIOReturnBadArgument;
     }
-    kr = postBytes(uc, (uint32_t)slot, bytes, (uint32_t)len);
+    memcpy(iv->inAddr[idx], bytes, len);                          // the buffer's length was set once, at creation
     if (map) map->release();
+    GDHubVirtualPad * pad = GDHubCopyPad();                       // +1 for the duration of the call; no lock is held after it
+    if (!pad) return kIOReturnNotReady;
+    GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_PAD, GDHubPadQueue(pad), "submitInput");
+    uint64_t tCall = mach_absolute_time();                        // `hop` starts here
+    kr = pad->submitInput(GDHUB_PADSRC_UC, tCall, iv->inBuf[idx], (uint32_t)len);
+    pad->release();
     if (kr == kIOReturnSuccess) {
         iv->postCount++;
         iv->lastActivity = mach_absolute_time();
@@ -267,20 +335,22 @@ static kern_return_t sPostNeutral(OSObject * target, void * reference, IOUserCli
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
     uint64_t slot = a->scalarInput[0];
     if (slot >= GDHUB_SLOT_COUNT) return kIOReturnBadArgument;
-    kern_return_t kr = postNeutralReports(uc, (uint32_t)slot);
+    if (slot != GDHUB_SLOT_PAD) return kIOReturnNotReady;
+    kern_return_t kr = postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST);
     if (kr == kIOReturnSuccess) uc->ivars->lastActivity = mach_absolute_time();
     return kr;
 }
 
 // DEBUG-ONLY dev experiment (GDHUB_DEV_TERMINATE, not in the design): terminate the root service so the dext process
 // can exit and kernelmanagerd can start a staged replacement build without a reboot. The Team check already ran in
-// hello (ExternalMethod gates every other selector on `authorized`).
+// hello (ExternalMethod gates every other selector on `authorized`). T3 order: the pad first, then the root.
 static kern_return_t sDevTerminate(OSObject * target, void * reference, IOUserClientMethodArguments * a)
 {
     (void)reference; (void)a;
 #if GDHUB_DEV_TERMINATE
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
-    GDLog("devTerminate: Terminate(0) on the root service (DEBUG-only)");
+    GDLog("devTerminate: pad, then Terminate(0) on the root service (DEBUG-only)");
+    if (uc->ivars->padCreated) destroyPad(uc);
     kern_return_t kr = uc->ivars->root ? uc->ivars->root->Terminate(0) : kIOReturnNotReady;
     GDLog("devTerminate: Terminate returned 0x%x", (unsigned)kr);
     return kr;
@@ -320,7 +390,7 @@ static kern_return_t sGetStatus(OSObject * target, void * reference, IOUserClien
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
     auto iv = uc->ivars;
     uint64_t mask = 0;
-    for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) if (iv->device[s]) mask |= (1ull << s);
+    if (iv->padCreated && gdhr_pad_state(GDHubReg()) == GDHR_PAD_LIVE) mask |= (1ull << GDHUB_SLOT_PAD);
     IOLockLock(iv->lock);
     uint64_t outCount = iv->outputCount, outDrops = iv->outputDrops;
     IOLockUnlock(iv->lock);
@@ -330,6 +400,53 @@ static kern_return_t sGetStatus(OSObject * target, void * reference, IOUserClien
     a->scalarOutput[3] = outCount;
     a->scalarOutput[4] = outDrops;
     a->scalarOutputCount = 5;
+    return kIOReturnSuccess;
+}
+
+// T3, selector 9. INERT only: there is no tap yet, so the only state is "nothing forwards". Anything else, and any
+// flag, is refused with kIOReturnUnsupported. Outputs: appliedState, tapPresent, padSource, lastError.
+static kern_return_t sSetForwarding(OSObject * target, void * reference, IOUserClientMethodArguments * a)
+{
+    (void)target; (void)reference;
+    if (a->scalarInput[0] != GDHUB_FWD_INERT || a->scalarInput[1] != 0) return kIOReturnUnsupported;
+    a->scalarOutput[0] = GDHUB_FWD_INERT;
+    a->scalarOutput[1] = 0;                                      // tapPresent
+    a->scalarOutput[2] = gdhr_pad_source(GDHubReg());
+    a->scalarOutput[3] = 0;                                      // lastError
+    a->scalarOutputCount = 4;
+    return kIOReturnSuccess;
+}
+
+// Selector 10 is reserved for the mapping blob (T5).
+static kern_return_t sReserved(OSObject * target, void * reference, IOUserClientMethodArguments * a)
+{
+    (void)target; (void)reference; (void)a;
+    return kIOReturnUnsupported;
+}
+
+// T3, selector 11: GDHubStatus2 as a structure output. The caller's maximum may be smaller than the structure (an older
+// app) or larger (a newer one); the dext returns min(size, maximum) bytes and the reader copes with either.
+static kern_return_t sGetStatus2(OSObject * target, void * reference, IOUserClientMethodArguments * a)
+{
+    (void)target; (void)reference;
+    uint64_t cap = a->structureOutputMaximumSize;
+    if (cap > GDHUB_ST2_MAX_SIZE) cap = GDHUB_ST2_MAX_SIZE;
+    if (cap < 8) return kIOReturnBadArgument;
+    uint8_t buf[GDHUB_ST2_MAX_SIZE];
+    size_t n = GDHubBuildStatus2(buf, (size_t)cap);
+    if (n == 0) return kIOReturnNotReady;
+    if (a->structureOutputDescriptor) {
+        IOMemoryMap * map = nullptr;
+        kern_return_t kr = a->structureOutputDescriptor->CreateMapping(0, 0, 0, 0, 0, &map);
+        if (kr != kIOReturnSuccess || !map) return kr != kIOReturnSuccess ? kr : kIOReturnError;
+        size_t room = (size_t)map->GetLength();
+        memcpy((void *)map->GetAddress(), buf, n < room ? n : room);
+        map->release();
+        return kIOReturnSuccess;
+    }
+    OSData * out = OSData::withBytes(buf, (uint32_t)n);
+    if (!out) return kIOReturnNoMemory;
+    a->structureOutput = out;                                    // released by the OS
     return kIOReturnSuccess;
 }
 
@@ -345,19 +462,14 @@ static const IOUserClientMethodDispatch sMethods[GDHUB_SEL_COUNT] = {
     /* 6 registerOutput */ { sRegisterOutput, 1, 0, 0,                                 0, 0 },
     /* 7 getStatus      */ { sGetStatus,      0, 0, 0,                                 5, 0 },
     /* 8 devTerminate   */ { sDevTerminate,   0, 0, 0,                                 0, 0 },   // DEBUG-only
+    /* 9 setForwarding  */ { sSetForwarding,  0, 3, 0,                                 4, 0 },   // T3, CAP_ROOT_PAD
+    /* 10 (reserved)   */ { sReserved,       kIOUserClientVariableStructureSize, kIOUserClientVariableStructureSize,
+                             kIOUserClientVariableStructureSize, kIOUserClientVariableStructureSize,
+                             kIOUserClientVariableStructureSize },                                        // T5: set mapping
+    /* 11 getStatus2    */ { sGetStatus2,     0, 0, 0,                                 0, kIOUserClientVariableStructureSize },  // T3, CAP_ROOT_PAD
 };
 
 // ---------------------------------------------------------------------------------------------------------------
-
-OSData * GDHubUCCopySpec(GDHubVirtualHIDUserClient * uc, uint32_t slot)
-{
-    if (!uc || !uc->ivars || slot >= GDHUB_SLOT_COUNT) return nullptr;
-    IOLockLock(uc->ivars->lock);
-    OSData * s = uc->ivars->spec[slot];
-    if (s) s->retain();
-    IOLockUnlock(uc->ivars->lock);
-    return s;
-}
 
 bool GDHubVirtualHIDUserClient::init()
 {
@@ -375,11 +487,8 @@ void GDHubVirtualHIDUserClient::free()
         OSSafeReleaseNULL(ivars->timer);
         OSSafeReleaseNULL(ivars->queue);
         OSSafeReleaseNULL(ivars->outputAction);
-        for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) {
-            OSSafeReleaseNULL(ivars->spec[s]);
-            OSSafeReleaseNULL(ivars->device[s]);
-            OSSafeReleaseNULL(ivars->postBuffer[s]);
-        }
+        for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) OSSafeReleaseNULL(ivars->spec[s]);
+        dropInputBuffers(ivars);
         if (ivars->lock) { IOLockFree(ivars->lock); ivars->lock = nullptr; }
     }
     IOSafeDeleteNULL(ivars, GDHubVirtualHIDUserClient_IVars, 1);
@@ -420,24 +529,21 @@ kern_return_t IMPL(GDHubVirtualHIDUserClient, Stop)
     GDLog("client stop (owner=%d posts=%llu watchdogFires=%llu)", (int)ivars->ownsRoot, ivars->postCount,
           ivars->watchdogFires);
     ivars->stopped = true;                 // the watchdog handler bails out from now on
-    // Children go with the client (§3.9). Terminate is asynchronous; each child's Stop releases its own references.
-    for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) {
-        IOService * dev = ivars->device[s];
-        ivars->device[s] = nullptr;
-        if (dev) { dev->Terminate(0); dev->release(); }
-        IOLockLock(ivars->lock);
-        OSData * sp = ivars->spec[s]; ivars->spec[s] = nullptr;
-        IOLockUnlock(ivars->lock);
-        if (sp) sp->release();
-        OSSafeReleaseNULL(ivars->postBuffer[s]);
+    // The pad belongs to the root now, so it does not go away with this client by itself: destroy it here (G5, §3.9).
+    // Terminate is asynchronous; the pad's Stop releases its own references. The owner is released last, and the core
+    // hands back any pad that is still registered for this owner so none can outlive it.
+    if (ivars->ownsRoot) {
+        if (ivars->padCreated) destroyPad(this);
+        GDHubReleaseOwner(this);
+        ivars->ownsRoot = false;
     }
+    for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) OSSafeReleaseNULL(ivars->spec[s]);
+    dropInputBuffers(ivars);
     IOLockLock(ivars->lock);
     OSAction * out = ivars->outputAction;
     ivars->outputAction = nullptr;
     IOLockUnlock(ivars->lock);
     if (out) out->release();
-    if (ivars->root) GDHubRootRelease(ivars->root, this);
-    ivars->ownsRoot = false;
 
     if (!ivars->timer) return Stop(provider, SUPERDISPATCH);     // Start failed before the timer existed
 
@@ -472,10 +578,8 @@ void IMPL(GDHubVirtualHIDUserClient, WatchdogFired)
     (void)action; (void)time;
     if (ivars->stopped) return;            // Stop is cancelling the timer: do nothing and do not re-arm
     uint64_t now = mach_absolute_time();
-    bool anyDevice = false;
-    for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) if (ivars->device[s]) anyDevice = true;
-    if (anyDevice && !ivars->neutralised && ivars->lastActivity != 0 && now - ivars->lastActivity > ivars->timeoutTicks) {
-        for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) if (ivars->device[s]) postNeutralReports(this, s);
+    if (ivars->padCreated && !ivars->neutralised && ivars->lastActivity != 0 && now - ivars->lastActivity > ivars->timeoutTicks) {
+        postNeutralToPad(this, GDHUB_NEUTRAL_WATCHDOG);
         ivars->neutralised = true;
         ivars->watchdogFires++;
         GDLog("watchdog: no activity for more than %u ms, neutral reports posted (fires=%llu)",

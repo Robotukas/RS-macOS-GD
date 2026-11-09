@@ -5,6 +5,8 @@ import IOKit
 /// `DextProtocolTests` parses the header text and compares every `#define` number with the constants below.
 enum DextProtocol {
     static let version = 1
+    /// Version of the DeviceSpec blob. Checked by the dext's spec validation instead of `version` (T3); both are 1.
+    static let specVersion = 1
     static let userClientType: UInt32 = 0
 
     enum Selector {
@@ -18,7 +20,11 @@ enum DextProtocol {
         static let getStatus: UInt32 = 7
         /// DEBUG-ONLY dev experiment (not in the design): the dext calls Terminate(0) on its root service.
         static let devTerminate: UInt32 = 8
-        static let count: UInt32 = 9
+        /// T3, behind `Capability.rootPad`. Scalars in: state, flags, argMs. Scalars out: appliedState, tapPresent, padSource, lastError.
+        static let setForwarding: UInt32 = 9
+        /// 10 is reserved (set mapping, T5) and 12 too (create device 2, T7).
+        static let getStatus2: UInt32 = 11
+        static let count: UInt32 = 12
     }
 
     enum Slot: UInt8 {
@@ -26,11 +32,24 @@ enum DextProtocol {
         static let count = 3
     }
 
-    /// `hello` output[2] bits, `1 << slot`.
+    /// `hello` output[2] bits. Bits 0-2 are `1 << slot`; higher bits are features, only ever added (the additive rule in
+    /// GDHubProtocol.h). A dext that does not set a bit does not have the selectors behind it: the app must not call them.
     enum Capability {
         static let pad: UInt64 = 1
         static let keyboard: UInt64 = 2
         static let pointer: UInt64 = 4
+        /// T3: the root service owns the pad; selectors `setForwarding` (9) and `getStatus2` (11) exist.
+        static let rootPad: UInt64 = 1 << 8
+    }
+
+    /// Forwarding state of `setForwarding`. T3 knows INERT only.
+    enum Forwarding {
+        static let inert: UInt64 = 0
+    }
+
+    /// Who may post to the pad (`padSource` in status2 and in `setForwarding`'s output).
+    enum PadSource: UInt8 {
+        case none = 0, userClient = 1, tap = 2
     }
 
     enum Limit {
@@ -46,6 +65,11 @@ enum DextProtocol {
         static let headerSize = 256
         static let flagHIDDefaultBehavior: UInt8 = 1
     }
+
+    /// Where the app's `DextClient` finds the dext's root service: a service of class IOUserService that has both of these
+    /// properties. `IOUserServerName` alone is not enough from T4 on, when a second service of the same dext (the receiver
+    /// tap) carries the same server name.
+    static let rootUserClass = "GDHubVirtualHID"
 
     enum Offset {
         static let magic = 0
@@ -89,6 +113,106 @@ enum DextProtocol {
     static let krBusy: kern_return_t = kern_return_t(bitPattern: 0xE000_02D5)
     static let krUnsupported: kern_return_t = kern_return_t(bitPattern: 0xE000_02C7)
     static let krNotReady: kern_return_t = kern_return_t(bitPattern: 0xE000_02D8)
+}
+
+// MARK: - GDHubStatus2 (T3 subset)
+
+/// Summary of one dext histogram over its last completed 10 s window, in nanoseconds (bucket upper edges, clamped to the max).
+struct DextMeterSummary: Equatable {
+    var count: UInt32 = 0, p50Ns: UInt32 = 0, p99Ns: UInt32 = 0, maxNs: UInt32 = 0, meanNs: UInt32 = 0
+
+    /// "p50/p99/max/mean" in microseconds: the percentiles and the maximum in whole microseconds (rounded to nearest; the
+    /// dext's smallest bucket edge is 1 us), the mean exact to a tenth, truncated.
+    var microsecondsText: String {
+        func us(_ ns: UInt32) -> Int { Int((Double(ns) / 1000).rounded()) }
+        return "\(us(p50Ns))/\(us(p99Ns))/\(us(maxNs))/\(meanNs / 1000).\((meanNs % 1000) / 100)"
+    }
+}
+
+/// `getStatus2` (selector 11), mirror of GDHUB_ST2_* in GDHubProtocol.h. Decoded by offset; a buffer shorter than the
+/// dext wrote, or longer than this app knows, both decode: fields beyond min(declared size, bytes received) read as 0.
+struct DextStatus2: Equatable {
+    enum Offset {
+        static let version = 0, size = 2, build = 4, nonce = 8, rootPid = 16
+        static let desiredState = 20, padSource = 21, padLive = 22, ownerPresent = 23
+        static let ucPosts = 24, ucRejected = 32, neutralPosts = 40, postErrors = 48, syncViolations = 56
+        static let padCreates = 64, padDestroys = 72, createFails = 80, outputsSeen = 88, outputsNoOwner = 96, createEarly = 104
+        static let padSpecCRC = 112, meterWindows = 116
+        static let hopCount = 120, hopP50 = 124, hopP99 = 128, hopMax = 132, hopMean = 136
+        static let hrCount = 140, hrP50 = 144, hrP99 = 148, hrMax = 152, hrMean = 156
+    }
+    static let version = 1
+    static let size = 160
+    static let maxSize = 512
+    /// version, size and build: the least a reader needs.
+    static let minimumBytes = 8
+
+    var version: UInt16 = 0
+    var declaredSize: UInt16 = 0
+    var build: UInt32 = 0
+    var instanceNonce: UInt64 = 0
+    var rootPid: UInt32 = 0
+    var desiredState: UInt8 = 0
+    var padSource: UInt8 = 0
+    var padLive = false
+    var ownerPresent = false
+    var ucPosts: UInt64 = 0, ucRejected: UInt64 = 0, neutralPosts: UInt64 = 0, postErrors: UInt64 = 0
+    var syncViolations: UInt64 = 0, padCreates: UInt64 = 0, padDestroys: UInt64 = 0, createFails: UInt64 = 0
+    var outputsSeen: UInt64 = 0, outputsNoOwner: UInt64 = 0, createEarly: UInt64 = 0
+    var padSpecCRC: UInt32 = 0
+    var meterWindows: UInt32 = 0
+    var hop = DextMeterSummary()
+    var hr = DextMeterSummary()
+
+    var source: DextProtocol.PadSource? { DextProtocol.PadSource(rawValue: padSource) }
+
+    /// nil if fewer than `minimumBytes` arrived or the structure claims a size or version this reader cannot use.
+    static func decode(_ bytes: [UInt8]) -> DextStatus2? {
+        guard bytes.count >= minimumBytes else { return nil }
+        func le(_ off: Int, _ n: Int) -> UInt64 {
+            var v: UInt64 = 0
+            for i in 0..<n { v |= UInt64(bytes[off + i]) << UInt64(8 * i) }
+            return v
+        }
+        let ver = UInt16(le(Offset.version, 2)), declared = UInt16(le(Offset.size, 2))
+        guard ver >= 1, Int(declared) >= minimumBytes else { return nil }
+        let valid = min(Int(declared), bytes.count)
+        func u(_ off: Int, _ n: Int) -> UInt64 { off + n <= valid ? le(off, n) : 0 }
+        var s = DextStatus2()
+        s.version = ver; s.declaredSize = declared
+        s.build = UInt32(u(Offset.build, 4)); s.instanceNonce = u(Offset.nonce, 8); s.rootPid = UInt32(u(Offset.rootPid, 4))
+        s.desiredState = UInt8(u(Offset.desiredState, 1)); s.padSource = UInt8(u(Offset.padSource, 1))
+        s.padLive = u(Offset.padLive, 1) != 0; s.ownerPresent = u(Offset.ownerPresent, 1) != 0
+        s.ucPosts = u(Offset.ucPosts, 8); s.ucRejected = u(Offset.ucRejected, 8); s.neutralPosts = u(Offset.neutralPosts, 8)
+        s.postErrors = u(Offset.postErrors, 8); s.syncViolations = u(Offset.syncViolations, 8)
+        s.padCreates = u(Offset.padCreates, 8); s.padDestroys = u(Offset.padDestroys, 8); s.createFails = u(Offset.createFails, 8)
+        s.outputsSeen = u(Offset.outputsSeen, 8); s.outputsNoOwner = u(Offset.outputsNoOwner, 8); s.createEarly = u(Offset.createEarly, 8)
+        s.padSpecCRC = UInt32(u(Offset.padSpecCRC, 4)); s.meterWindows = UInt32(u(Offset.meterWindows, 4))
+        s.hop = DextMeterSummary(count: UInt32(u(Offset.hopCount, 4)), p50Ns: UInt32(u(Offset.hopP50, 4)),
+                                 p99Ns: UInt32(u(Offset.hopP99, 4)), maxNs: UInt32(u(Offset.hopMax, 4)),
+                                 meanNs: UInt32(u(Offset.hopMean, 4)))
+        s.hr = DextMeterSummary(count: UInt32(u(Offset.hrCount, 4)), p50Ns: UInt32(u(Offset.hrP50, 4)),
+                                p99Ns: UInt32(u(Offset.hrP99, 4)), maxNs: UInt32(u(Offset.hrMax, 4)),
+                                meanNs: UInt32(u(Offset.hrMean, 4)))
+        return s
+    }
+
+    /// The part of the engine's meter line that comes from the dext; nil until the dext has closed a 10 s window with posts.
+    var meterLogText: String? {
+        guard hr.count > 0 else { return nil }
+        return "dext: hop p50/p99/max/mean \(hop.microsecondsText) us hr \(hr.microsecondsText) us n=\(hr.count) win=\(meterWindows)"
+            + (syncViolations > 0 ? " syncViolations=\(syncViolations)" : "")
+    }
+}
+
+/// Outputs of `setForwarding`.
+struct DextForwardingResult: Equatable {
+    var appliedState: UInt64 = 0, tapPresent: UInt64 = 0, padSource: UInt64 = 0, lastError: UInt64 = 0
+    static let scalarCount = 4
+    init(words: [UInt64]) {
+        let w = words + [UInt64](repeating: 0, count: Self.scalarCount)
+        appliedState = w[0]; tapPresent = w[1]; padSource = w[2]; lastError = w[3]
+    }
 }
 
 /// Error codes the dext returns, as Swift cases.
@@ -160,6 +284,8 @@ struct DextHello: Equatable {
     var dextBuild: UInt64
     var capabilities: UInt64
     static let scalarCount = 3
+
+    var hasRootPad: Bool { capabilities & DextProtocol.Capability.rootPad != 0 }
 }
 
 /// One output report delivered through the `registerOutput` completion (design §3.8).
@@ -277,7 +403,7 @@ struct DeviceSpec: Equatable {
             for (i, b) in u.enumerated() { out[off + i] = b }
         }
         put32(O.magic, DextProtocol.Spec.magic)
-        put16(O.version, DextProtocol.version)
+        put16(O.version, DextProtocol.specVersion)
         put16(O.headerSize, DextProtocol.Spec.headerSize)
         out[O.slot] = slot.rawValue
         out[O.flags] = flags
