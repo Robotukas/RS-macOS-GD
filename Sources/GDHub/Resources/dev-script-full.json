@@ -1,6 +1,6 @@
 {
   "id" : "full",
-  "notes" : "Every control: both sticks first, then a hands-off check, then the rest in layout order (triggers, every button including the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start). About three minutes. Run it on the Engine path first and on Driver LIVE after that, then compare the two reports. The sticks come before the hands-off check because the pad posts nothing while idle and does not answer GetReport: its state is known only after it has moved once, and a stick step ends at centre.",
+  "notes" : "Every control: both sticks first, then a hands-off check, then the rest in layout order (triggers, every button including the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start). About three minutes. Run it on the Engine path first and on Driver LIVE after that, then compare the two reports. The sticks come before the hands-off check because the pad posts nothing while idle and does not answer GetReport: its state is known only after it has moved once, and a stick step ends at centre. Profile comes last: each press switches the controller's onboard profile, which changes what the paddles and SAX keys echo (seen 2026-11-09).",
   "schema" : 1,
   "steps" : [
     {
@@ -135,16 +135,6 @@
       "kind" : "digital",
       "seconds" : 3,
       "title" : "Press Start twice"
-    },
-    {
-      "controls" : [
-        "profile"
-      ],
-      "detail" : "Profile is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key unless a mapping routes it.",
-      "id" : "profile",
-      "kind" : "digital",
-      "seconds" : 3,
-      "title" : "Press Profile twice"
     },
     {
       "controls" : [
@@ -326,6 +316,16 @@
       "kind" : "digital",
       "seconds" : 3,
       "title" : "Press Paddle outer right twice"
+    },
+    {
+      "controls" : [
+        "profile"
+      ],
+      "detail" : "Profile is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key. Each press also switches the controller's own profile, which changes what the paddles and SAX keys send.",
+      "id" : "profile",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Profile twice"
     }
   ],
   "title" : "Full check",

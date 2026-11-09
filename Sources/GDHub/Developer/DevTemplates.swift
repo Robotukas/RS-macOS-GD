@@ -127,9 +127,11 @@ enum DevBuiltins {
                 + "including the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start). About three minutes. Run it on the "
                 + "Engine path first and on Driver LIVE after that, then compare the two reports. The sticks come before the "
                 + "hands-off check because the pad posts nothing while idle and does not answer GetReport: its state is known only "
-                + "after it has moved once, and a stick step ends at centre.",
+                + "after it has moved once, and a stick step ends at centre. Profile comes last: each press switches the "
+                + "controller's onboard profile, which changes what the paddles and SAX keys echo (seen 2026-11-09).",
             steps: ordered.filter { $0.kind == .stick }.map(step(for:)) + [restStep()]
-                + ordered.filter { $0.kind != .stick }.map(step(for:)))
+                + ordered.filter { $0.kind != .stick && $0.id != "profile" }.map(step(for:))
+                + ordered.filter { $0.id == "profile" }.map(step(for:)))
         let sticks = DevTemplate(
             id: "sticks", title: "Sticks check",
             notes: "Both sticks, then a hands-off check (after the sticks, so the pad's state is known). Use it after changing "
@@ -141,7 +143,17 @@ enum DevBuiltins {
             notes: "G1-G5 and Profile are not forwarded to the pad unless a mapping routes them, so the pad must stay quiet; "
                 + "Start arrives as the Guide button (report 0x02). Use it after touching key mappings.",
             steps: gkeyIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
-        return [full, sticks, gkeys]
+        let echoIDs = ["paddle_outer_left", "paddle_inner_left", "paddle_inner_right", "paddle_outer_right", "sax_left", "sax_right"]
+        var echo = DevTemplate(
+            id: "paddles-sax-echo", title: "Paddles and SAX echo (App, then Driver)",
+            notes: "The four paddles and the two SAX keys, without touching Profile, run on the App path and then on Driver LIVE "
+                + "back to back. The expected column assumes the factory echo (paddles = D-pad, SAX = A/B); when the controller's "
+                + "current onboard profile differs, the step fails with 'unexpected change on <button>' — that button IS the "
+                + "echo. Both passes must show the same echoes; if they differ, the driver's translation is at fault, not the "
+                + "profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
+            steps: echoIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
+        echo.paths = ["engine", "driver"]
+        return [full, sticks, gkeys, echo]
     }
 
     static func restStep() -> DevStep {
@@ -175,8 +187,10 @@ enum DevBuiltins {
 
     private static func buttonNote(_ id: String) -> String {
         switch id {
-        case "g1", "g2", "g3", "g4", "g5", "profile":
+        case "g1", "g2", "g3", "g4", "g5":
             return "The pad should send nothing for this key unless a mapping routes it."
+        case "profile":
+            return "The pad should send nothing for this key. Each press also switches the controller's own profile, which changes what the paddles and SAX keys send."
         case "start":
             return "The pad shows Start as the Guide button."
         case "sax_left", "sax_right":

@@ -133,8 +133,10 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(full.steps.prefix(stickIDs.count).map { $0.controls.first! }, stickIDs)
         XCTAssertEqual(full.steps[stickIDs.count].devKind, .rest)
         XCTAssertEqual(full.steps.count, 1 + layout.controls.count)
+        // Profile is last: each press switches the controller's onboard profile, which changes the paddle/SAX echoes.
         XCTAssertEqual(full.steps.filter { $0.devKind != .rest }.map { $0.controls.first! },
-                       stickIDs + layout.controlsByOrder.filter { $0.kind != .stick }.map { $0.id }, "one step per control")
+                       stickIDs + layout.controlsByOrder.filter { $0.kind != .stick && $0.id != "profile" }.map { $0.id } + ["profile"],
+                       "one step per control, Profile last")
         XCTAssertEqual(full.steps.filter { $0.devKind == .rest }.count, 1)
         for s in full.steps where s.devKind != .rest {
             let c = layout.control(id: s.controls[0])!
@@ -217,13 +219,13 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(entry("wrong")?.errors, ["wrong.json step 1: unknown control g6"])
         XCTAssertEqual(entry("wrong")?.isRunnable, false, "Start stays disabled while an error stands")
         XCTAssertNil(entry("notes"))
-        XCTAssertEqual(entries.prefix(3).map(\.id), ["full", "sticks", "gkeys"], "built-ins and overrides first, in their order")
+        XCTAssertEqual(entries.prefix(4).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo"], "built-ins and overrides first, in their order")
         XCTAssertEqual(entries.last?.source, .local)
     }
 
     func testAMissingFolderIsFine() {
         let entries = DevTemplates.load(folder: fresh().appendingPathComponent("nope"), layout: layout)
-        XCTAssertEqual(entries.count, 3)
+        XCTAssertEqual(entries.count, 4)
     }
 
     func testWarningsKeepATemplateRunnable() throws {

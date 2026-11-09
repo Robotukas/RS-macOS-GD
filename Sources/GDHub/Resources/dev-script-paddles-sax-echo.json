@@ -1,0 +1,73 @@
+{
+  "id" : "paddles-sax-echo",
+  "notes" : "The four paddles and the two SAX keys, without touching Profile, run on the App path and then on Driver LIVE back to back. The expected column assumes the factory echo (paddles = D-pad, SAX = A/B); when the controller's current onboard profile differs, the step fails with 'unexpected change on <button>' — that button IS the echo. Both passes must show the same echoes; if they differ, the driver's translation is at fault, not the profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
+  "paths" : [
+    "engine",
+    "driver"
+  ],
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+        "paddle_outer_left"
+      ],
+      "detail" : "Paddle outer left is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_outer_left",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle outer left twice"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left"
+      ],
+      "detail" : "Paddle inner left is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_inner_left",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle inner left twice"
+    },
+    {
+      "controls" : [
+        "paddle_inner_right"
+      ],
+      "detail" : "Paddle inner right is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_inner_right",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle inner right twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "detail" : "Paddle outer right is on the back. Press it, let go, press it again, let go. The pad shows a paddle as the button the controller's own profile sends for it.",
+      "id" : "paddle_outer_right",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press Paddle outer right twice"
+    },
+    {
+      "controls" : [
+        "sax_left"
+      ],
+      "detail" : "SAX left is on the left side. Press it, let go, press it again, let go. The pad shows this one as the button the controller's own profile sends for it.",
+      "id" : "sax_left",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press SAX left twice"
+    },
+    {
+      "controls" : [
+        "sax_right"
+      ],
+      "detail" : "SAX right is on the right side. Press it, let go, press it again, let go. The pad shows this one as the button the controller's own profile sends for it.",
+      "id" : "sax_right",
+      "kind" : "digital",
+      "seconds" : 3,
+      "title" : "Press SAX right twice"
+    }
+  ],
+  "title" : "Paddles and SAX echo (App, then Driver)",
+  "version" : 1
+}
