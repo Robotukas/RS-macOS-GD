@@ -87,6 +87,8 @@ struct DriverCommands: View {
 
     @ViewBuilder private var engineBody: some View {
         Text(driver.engineStatus.menuText)
+        Text(driver.inputPathStatusText)
+        inputPathMenu
         Text("Pad is controlled by the background engine")
         Button("Restart engine") { driver.restartEngine() }
             .disabled(driver.engineUninstalled)
@@ -104,6 +106,24 @@ struct DriverCommands: View {
         Divider()
         driverButtons
     }
+
+    /// T6: the choice writes the `inputPath` key the engine polls (App = engine, Driver = shadow while there is no LIVE mode).
+    /// Explicit buttons with a hand-drawn checkmark, not a `Picker`: a click on the item that is already selected must still
+    /// reach the engine ("choose Driver to try again" after a fallback), and a Picker is not known to call its setter then.
+    @ViewBuilder private var inputPathMenu: some View {
+        Menu("Input path") {
+            ForEach(Self.inputPathItems, id: \.value) { item in
+                Button {
+                    driver.chooseInputPath(item.value)
+                } label: {
+                    if driver.inputPathSelection == item.value { Label(item.title, systemImage: "checkmark") } else { Text(item.title) }
+                }
+            }
+        }
+        .disabled(driver.runningEnginePid == nil)
+    }
+
+    static let inputPathItems: [(value: String, title: String)] = [("engine", "App"), ("shadow", "Driver (shadow)")]
 
     @ViewBuilder private var driverButtons: some View {
         switch driver.state {
@@ -130,6 +150,7 @@ struct DriverCommands: View {
             Divider()
         }
         Text(statusText)
+        Text(driver.inputPathStatusText)
         if let connectionText { Text(connectionText) }
         Text(padText)
         if let trafficText { Text(trafficText) }

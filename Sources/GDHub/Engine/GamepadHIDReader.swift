@@ -20,6 +20,8 @@ final class GamepadHIDReader: @unchecked Sendable {
 
     /// T5: the parity sampler's ring of recent frames. Recording happens only while `ring.enabled` (SHADOW armed).
     var ring: FrameRing?
+    /// T6 (F1 stall detection): valid controller frames seen so far. One add per frame on `queue`, read on `queue`.
+    private(set) var framesSeen: UInt64 = 0
 
     init(queue: DispatchQueue, presence: ControllerPresence, core: EngineCore, stat: CallbackStat) {
         self.queue = queue
@@ -88,6 +90,7 @@ final class GamepadHIDReader: @unchecked Sendable {
     private func handle(reportID: UInt32, report: UnsafeMutablePointer<UInt8>, length: CFIndex, timeStamp: UInt64, tC: UInt64) {
         guard reportID == 6,
               let frame = GamepadFrame.parse(UnsafeBufferPointer(start: report, count: length)) else { return }
+        framesSeen &+= 1
         if let ring, ring.enabled { ring.record(timestamp: timeStamp, report: report, length: length) }
         let tK = LatencyMeter.nanos(fromMach: timeStamp)
         stat.record(tK: tK, tC: tC)

@@ -42,6 +42,12 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     @Published private(set) var mode: GUIMode
     /// launchd job state in engine mode (refreshed every few seconds and after each agent operation).
     @Published private(set) var engineStatus = AgentStatus()
+    /// T6: what the engine says about the input path (nil until it wrote a report), from `TapStatusWatcher`. The GUI never asks
+    /// the dext: the engine owns that connection and publishes this.
+    @Published private(set) var tapStatus: TapStatusReport?
+    /// The stored `inputPath` value as this process last read it (own writes at once, the rest every 5 s).
+    @Published private(set) var inputPathStored: String? = UserDefaults.standard.string(forKey: InputPath.defaultsKey)
+    private var tapStatusWatcher: TapStatusWatcher?
     /// True after the engine could not be started and this session switched to the in-app engine.
     @Published private(set) var engineUnavailable = false
     /// Called on the main actor when the session falls back to in-app mode, so the owner can wire the virtual pad.
@@ -253,6 +259,11 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     /// Refreshes `engineStatus` now and every 5 s.
     private func startStatusRefresh() {
+        if tapStatusWatcher == nil {
+            let w = TapStatusWatcher { [weak self] report in Task { @MainActor in self?.tapStatus = report } }
+            w.start()
+            tapStatusWatcher = w
+        }
         statusTask?.cancel()
         statusTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -264,6 +275,9 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     private func refreshEngineStatus() {
         guard mode == .engine else { return }
+        tapStatusWatcher?.refresh()
+        let stored = UserDefaults.standard.string(forKey: InputPath.defaultsKey)
+        if stored != inputPathStored { inputPathStored = stored }
         agent.perform { [weak self] a in
             let st = a.status()
             Task { @MainActor in
@@ -555,6 +569,36 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
             engineSettled(clearUpdate: true)
             // Dev aid: `open -a GDHub --args --install-driver` installs without the menu.
             if CommandLine.arguments.contains("--install-driver") { installOrUpdate() }
+        }
+    }
+}
+
+// MARK: Input path (T6)
+
+extension DriverManager {
+    /// The pid launchd reports for the running engine (nil when it is not running).
+    var runningEnginePid: Int32? { engineStatus.isRunning ? engineStatus.pid : nil }
+
+    /// The Driver menu's input-path status line.
+    var inputPathStatusText: String { InputPathMenu.status(mode: mode, engineRunningPid: runningEnginePid, report: tapStatus) }
+
+    /// Which radio item is on.
+    var inputPathSelection: String { InputPathMenu.selection(report: tapStatus, engineRunningPid: runningEnginePid, stored: inputPathStored) }
+
+    /// Menu: writes the same `inputPath` key the engine polls once a second, so the GUI and the engine never hold separate state.
+    /// Picking an arming path also removes the breaker latch, which is how the owner re-selects the driver path (plan 6.5 #3).
+    func chooseInputPath(_ value: String) {
+        Self.writeInputPath(value)
+        inputPathStored = value
+    }
+
+    nonisolated static func writeInputPath(_ value: String, defaults: UserDefaults = .standard) {
+        defaults.set(value, forKey: InputPath.defaultsKey)
+        // Every pick is visible to the engine, even the item that is already selected (the text then does not change).
+        defaults.set(defaults.integer(forKey: InputPath.choiceKey) &+ 1, forKey: InputPath.choiceKey)
+        if InputPath(defaultsValue: value).arms {
+            defaults.removeObject(forKey: InputPath.breakerKey)
+            defaults.removeObject(forKey: InputPath.breakerReasonKey)
         }
     }
 }

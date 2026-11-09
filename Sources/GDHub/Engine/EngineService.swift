@@ -20,6 +20,7 @@ final class EngineService: @unchecked Sendable {
     private let reader: GamepadHIDReader
     private let poller: DextStatusPoller
     private let tapSupervisor: TapSupervisor
+    private let statusPublisher: TapStatusPublisher
     private let stat = CallbackStat()
     private let throttle: ThrottleCheck
     private let store = MappingStore.envisionPro
@@ -49,6 +50,12 @@ final class EngineService: @unchecked Sendable {
         presence = ControllerPresence(queue: vhidQueue)
         reader = GamepadHIDReader(queue: vhidQueue, presence: presence, core: core, stat: stat)
         reader.ring = ring
+        let readerRef = reader
+        tapSupervisor.engineFrames = { readerRef.framesSeen }
+        // The Driver menu (a separate process) reads this file; the write is off vhidQueue, and only when the report changed.
+        let publisher = TapStatusPublisher(queue: controlQueue)
+        statusPublisher = publisher
+        tapSupervisor.statusSink = { report in publisher.update(report) }
         poller = DextStatusPoller(queue: vhidQueue, dext: client, sink: padSink, latencyLogEvery: logEverySeconds)
         throttle = ThrottleCheck(queue: vhidQueue)
         Self.log.notice("virtual pad rate cap \(Int(config.maxRateHz)) Hz")
@@ -92,6 +99,7 @@ final class EngineService: @unchecked Sendable {
             reader.start()
             presence.startTimer()
             tapSupervisor.start()
+            statusPublisher.start()                        // rewrites the report file every 30 s on controlQueue
             throttle.start()
             startMeterTimer()
         }
@@ -105,7 +113,7 @@ final class EngineService: @unchecked Sendable {
 
         let p = PowerObserver(vhidQueue: vhidQueue,
                               willSleep: { [weak self] in self?.core.neutral() },
-                              didWake: { [weak self] in self?.presence.didWake() })
+                              didWake: { [weak self] in self?.presence.didWake(); self?.tapSupervisor.didWake() })
         p.start()
         power = p
     }

@@ -28,11 +28,23 @@ protocol TapControlling: AnyObject {
     var hasTap: Bool { get }
     /// T5: the dext has SHADOW and `setMapping`.
     var hasXlate: Bool { get }
+    /// T6: the dext reports a LIVE capability. Always false before T7; `inputPath = driver` then runs as shadow.
+    var hasLive: Bool { get }
+    /// T6: `tapDrill pause5` can be carried out (the dext implements the dev pause flag of selector 9). False for every dext
+    /// before T7: build 23's selector 9 accepts no flags at all.
+    var supportsPauseDrill: Bool { get }
+    /// Pauses the tap's counting for `ms` milliseconds without changing its state (the F1 drill). Unsupported unless
+    /// `supportsPauseDrill`.
+    func pauseTap(ms: UInt64) -> kern_return_t
     func setMapping(_ blob: [UInt8]) -> (kr: kern_return_t, result: DextMappingResult?)
     func setForwarding(_ state: UInt64) -> (kr: kern_return_t, result: DextForwardingResult?)
     func status2() -> DextStatus2?
 }
-extension DextClient: TapControlling {}
+extension DextClient: TapControlling {
+    var hasLive: Bool { false }
+    var supportsPauseDrill: Bool { false }
+    func pauseTap(ms: UInt64) -> kern_return_t { DextProtocol.krUnsupported }
+}
 
 /// Everything a process needs from the dext connection.
 typealias DextBackend = DextControlling & PadTransport & DextStatusSource

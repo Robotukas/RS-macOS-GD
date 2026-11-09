@@ -104,6 +104,8 @@ Profile (MainActor edits) ─compile─► CompiledProfile ─► MappingEngine 
                                                      └► OJDProfileCompiler → `OJD --headless map import/enable` (OJD owner)
 ```
 
+> **Note (receiver takeover, T6).** This pipeline stays the engine's. The driver's own translator (`Shared/GDHubXlate.c`, GDHM v1) runs only what a mapping blob can say: stateless rules with at most two OR'ed sources per output item. Anything else, including the done-check remap "paddle_outer_right -> Y" with echo suppression, `MapBlobEncoder` refuses (`.unsupported(reason)`), and that mapping runs on this pipeline, i.e. on the engine path. The Driver menu then shows `Input path: App (mapping needs GDHM v2: <reason>)`. Each new in-driver primitive costs one driver replacement. In T6 the engine posts in every input-path mode; `shadow` only lets the driver translate the same frames for comparison.
+
 ### 3.2 Files under `Sources/GDHub` (new unless marked *mod*)
 
 ```

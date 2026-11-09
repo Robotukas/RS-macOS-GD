@@ -56,7 +56,12 @@ final class MappingWatcher: @unchecked Sendable {
     private func reload() {
         guard FileManager.default.fileExists(atPath: store.url.path) else { return }
         let m = store.load()
-        guard m != last else { return }
+        guard m != last else {
+            // By design: a rewrite of identical content (same mapping, however the bytes were written) changes nothing and is not
+            // reported at the default log level. Debug level, so a check with `log stream --level debug` can see it happened.
+            Self.log.debug("mapping file changed, content identical: nothing to reload")
+            return
+        }
         last = m
         onMapping(m)
     }

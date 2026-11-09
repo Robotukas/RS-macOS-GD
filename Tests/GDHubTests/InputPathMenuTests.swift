@@ -1,0 +1,212 @@
+import XCTest
+@testable import GDHub
+
+/// T6: the Driver menu's input-path line as a pure function of what the GUI knows (every state), the report file the engine
+/// writes and the GUI reads, and the menu's write of the `inputPath` key.
+final class InputPathMenuTests: XCTestCase {
+    private func report(_ edit: (inout TapStatusReport) -> Void = { _ in }) -> TapStatusReport {
+        var r = TapStatusReport()
+        r.pid = 777; r.connected = true; r.capTap = true; r.capXlate = true
+        edit(&r)
+        return r
+    }
+    private func text(_ r: TapStatusReport?, mode: GUIMode = .engine, pid: Int32? = 777) -> String {
+        InputPathMenu.status(mode: mode, engineRunningPid: pid, report: r)
+    }
+
+    // MARK: every state of the menu
+
+    func testGuiModesWithoutAnEngineToAsk() {
+        XCTAssertEqual(text(nil, mode: .inApp, pid: nil), "Input path: App (in-app mode: no background engine)")
+        XCTAssertEqual(text(report(), mode: .displayOnly), "Input path: unknown (display-only copy)")
+    }
+
+    func testEngineNotRunningOrNotYetReporting() {
+        XCTAssertEqual(text(report(), pid: nil), "Input path: unknown (engine not running)")
+        XCTAssertEqual(text(nil), "Input path: unknown (waiting for the engine)")
+        XCTAssertEqual(text(report { $0.pid = 111 }), "Input path: unknown (waiting for the engine)", "a file left by another (dead) engine is not shown")
+    }
+
+    func testNotConnectedAndOldDextWithoutTheTap() {
+        XCTAssertEqual(text(report { $0.connected = false }), "Input path: App (waiting for the driver)")
+        XCTAssertEqual(text(report { $0.capTap = false; $0.capXlate = false; $0.path = "shadow" }),
+                       "Input path: App (this driver has no receiver tap; update the driver)")
+    }
+
+    func testInertCountAndShadow() {
+        XCTAssertEqual(text(report()), "Input path: App")
+        XCTAssertEqual(text(report { $0.path = "count"; $0.armed = "count" }), "Input path: App (driver counting frames)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow" }), "Input path: Driver (shadow, parity not yet checked)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.parityChecked = true; $0.parityOkBucket = 1200 }),
+                       "Input path: Driver (shadow, parity checked)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.parityMismatches = 2 }),
+                       "Input path: Driver (shadow, 2 parity mismatches)")
+        XCTAssertEqual(text(report { $0.path = "driver"; $0.armed = "shadow"; $0.liveUnavailable = true }),
+                       "Input path: Driver (shadow, parity not yet checked; live mode not available in this driver)")
+    }
+
+    func testPathAskedForButNotArmedYet() {
+        XCTAssertEqual(text(report { $0.path = "shadow" }), "Input path: App (driver not armed yet)")
+    }
+
+    func testFallbackWithAndWithoutAutomaticRetry() {
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.fallback = "tap stalled"; $0.fallbackRetrying = true }),
+                       "Input path: App (fallback: tap stalled; retrying)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.fallback = "driver restarted (instance changed since the arming was accepted)" }),
+                       "Input path: App (fallback: driver restarted (instance changed since the arming was accepted); choose Driver to try again)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.fallback = "parity mismatch" }),
+                       "Input path: App (fallback: parity mismatch; choose Driver to try again)")
+    }
+
+    func testATapWithoutShadowModeSaysSo() {
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.capXlate = false }), "Input path: App (this driver cannot run shadow mode; update the driver)")
+        XCTAssertEqual(text(report { $0.path = "driver"; $0.capXlate = false }), "Input path: App (this driver cannot run shadow mode; update the driver)")
+        XCTAssertEqual(text(report { $0.path = "engine"; $0.capXlate = false }), "Input path: App", "on the app path there is nothing to explain")
+        XCTAssertEqual(text(report { $0.path = "count"; $0.armed = "count"; $0.capXlate = false }), "Input path: App (driver counting frames)")
+    }
+
+    func testBreakerAndLimiter() {
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.latched = "breaker" }),
+                       "Input path: App (driver path stopped after repeated driver restarts; choose Driver to try again)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.latched = "limiter"; $0.fallback = "tap absent" }),
+                       "Input path: App (driver path stopped after repeated fallbacks; choose Driver to try again)")
+    }
+
+    func testUnsupportedMappingShowsTheReason() {
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.mappingNote = "echo suppression" }),
+                       "Input path: App (mapping needs GDHM v2: echo suppression)")
+        XCTAssertEqual(text(report { $0.mappingNote = "echo suppression" }), "Input path: App",
+                       "on the engine path nobody asked for the driver: no note")
+    }
+
+    // MARK: radio selection
+
+    func testSelectionFollowsTheEnginesPathWhenKnownElseTheStoredValue() {
+        XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "shadow" }, engineRunningPid: 777, stored: "engine"), "shadow")
+        XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "driver" }, engineRunningPid: 777, stored: "engine"), "shadow")
+        XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: 777, stored: "shadow"), "shadow")
+        XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "shadow" }, engineRunningPid: 999, stored: "engine"), "engine", "a stale report is not trusted")
+        XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: nil), "engine")
+        XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: "bogus"), "engine")
+        XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: "count"), "count")
+    }
+
+    // MARK: the file
+
+    func testReportRoundTripAndSchema() throws {
+        var r = report { $0.path = "shadow"; $0.armed = "shadow"; $0.fallback = "tap stalled"; $0.fallbackRetrying = true; $0.mappingNote = "x" }
+        r.parityOkBucket = 300
+        XCTAssertEqual(TapStatusReport.decode(try XCTUnwrap(r.encoded())), r)
+        var future = r; future.schema = 99
+        XCTAssertNil(TapStatusReport.decode(try XCTUnwrap(future.encoded())), "another schema is not guessed at")
+        XCTAssertNil(TapStatusReport.decode(Data("not json".utf8)))
+    }
+
+    private func tempStore() -> TapStatusStore {
+        TapStatusStore(url: FileManager.default.temporaryDirectory.appendingPathComponent("gdhub-tapstatus-\(UUID().uuidString)/state/engine-tap-status.json"))
+    }
+
+    func testStoreWritesAtomicallyIntoItsOwnSubdirectory() throws {
+        let store = tempStore(); defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent().deletingLastPathComponent()) }
+        XCTAssertNil(store.read())
+        store.write(report())
+        XCTAssertEqual(store.read(), report())
+        XCTAssertEqual(store.url.deletingLastPathComponent().lastPathComponent, "state",
+                       "a sub-directory, so the engine's MappingWatcher on the parent does not wake for its own status writes")
+        XCTAssertTrue(TapStatusStore.standard.url.path.hasSuffix("/GDHub/state/engine-tap-status.json") || ProcessInfo.processInfo.environment["GDHUB_SUPPORT_DIR"] != nil)
+    }
+
+    func testWatcherDeliversAChangeOnceAndNotAnIdenticalRewrite() throws {
+        let store = tempStore(); defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent().deletingLastPathComponent()) }
+        let lock = NSLock(); var got: [TapStatusReport?] = []
+        let w = TapStatusWatcher(store: store, debounce: 0.02) { r in lock.lock(); got.append(r); lock.unlock() }
+        XCTAssertTrue(w.start()); defer { w.stop() }
+        func count() -> Int { lock.lock(); defer { lock.unlock() }; return got.count }
+        let first = expectation(description: "initial nil"); DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { first.fulfill() }
+        wait(for: [first], timeout: 2)
+        XCTAssertEqual(count(), 1, "the first read delivers 'no report'")
+        store.write(report { $0.path = "shadow" })
+        let t0 = Date()
+        while count() < 2, Date().timeIntervalSince(t0) < 2 { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertEqual(count(), 2); XCTAssertLessThan(Date().timeIntervalSince(t0), 1.0, "event driven: well inside the 1.2 s of the live check")
+        lock.lock(); XCTAssertEqual(got.last??.path, "shadow"); lock.unlock()
+        store.write(report { $0.path = "shadow" })                      // identical content
+        w.refresh()
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(count(), 2, "an identical rewrite delivers nothing")
+        store.write(report { $0.path = "engine" })
+        let t1 = Date()
+        while count() < 3, Date().timeIntervalSince(t1) < 2 { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertEqual(count(), 3)
+    }
+
+    // MARK: the menu's write
+
+    func testChoosingAnArmingPathWritesTheKeyAndRemovesTheBreaker() throws {
+        let suite = "gdhub.test.\(UUID().uuidString)"
+        let d = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { d.removePersistentDomain(forName: suite) }
+        d.set(1.0e9, forKey: InputPath.breakerKey); d.set("breaker", forKey: InputPath.breakerReasonKey)
+        DriverManager.writeInputPath("engine", defaults: d)
+        XCTAssertEqual(d.string(forKey: InputPath.defaultsKey), "engine")
+        XCTAssertNotNil(d.object(forKey: InputPath.breakerKey), "going back to the app path does not clear the latch")
+        DriverManager.writeInputPath("shadow", defaults: d)
+        XCTAssertEqual(d.string(forKey: InputPath.defaultsKey), "shadow", "the very key the engine polls")
+        XCTAssertNil(d.object(forKey: InputPath.breakerKey)); XCTAssertNil(d.object(forKey: InputPath.breakerReasonKey))
+        // every pick moves the choice counter, the already selected item included
+        let c1 = d.integer(forKey: InputPath.choiceKey)
+        DriverManager.writeInputPath("shadow", defaults: d)
+        DriverManager.writeInputPath("shadow", defaults: d)
+        XCTAssertEqual(d.integer(forKey: InputPath.choiceKey), c1 + 2, "the engine sees a pick even when the text did not change")
+        XCTAssertEqual(d.string(forKey: InputPath.defaultsKey), "shadow")
+        XCTAssertEqual(InputPath(defaultsValue: d.object(forKey: InputPath.defaultsKey)), .shadow)
+    }
+
+    /// A Picker is not known to call its setter when the checked item is clicked again, so the menu is explicit buttons.
+    func testTheInputPathMenuIsButtonsNotAPicker() throws {
+        let src = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/GDHub/UI/DriverCommands.swift")
+        let t = try String(contentsOf: src, encoding: .utf8)
+        XCTAssertFalse(t.contains("Picker("))
+        XCTAssertTrue(t.contains("driver.chooseInputPath(item.value)"))
+        XCTAssertTrue(t.contains("systemImage: \"checkmark\""))
+    }
+
+    // MARK: the publisher
+
+    func testPublisherWritesChangesRewritesOnTimerAndHealsAFailedWrite() {
+        let q = DispatchQueue(label: "test.publisher")
+        var writes: [TapStatusReport] = []; var failNext = 0
+        let p = TapStatusPublisher(queue: q, retryAfter: 0.05) { r in if failNext > 0 { failNext -= 1; return false }; writes.append(r); return true }
+        let a = report { $0.path = "shadow" }
+        p.update(a); q.sync {}
+        XCTAssertEqual(writes, [a])
+        p.update(a); q.sync {}
+        XCTAssertEqual(writes.count, 1, "an identical report is not written again on update")
+        q.sync { p.flush(force: true) }
+        XCTAssertEqual(writes.count, 2, "the timer's rewrite is unconditional (a deleted file comes back)")
+        // a failed write is not remembered as written, and is retried
+        let b = report { $0.path = "engine" }
+        failNext = 1
+        p.update(b); q.sync {}
+        XCTAssertEqual(writes.count, 2)
+        let t0 = Date(); while writes.count < 3, Date().timeIntervalSince(t0) < 2 { Thread.sleep(forTimeInterval: 0.01); q.sync {} }
+        XCTAssertEqual(writes.last, b)
+    }
+
+    func testPublisherRecreatesADeletedFile() throws {
+        let store = tempStore(); defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent().deletingLastPathComponent()) }
+        let q = DispatchQueue(label: "test.publisher2")
+        let p = TapStatusPublisher(queue: q, store: store)
+        p.update(report()); q.sync {}
+        XCTAssertNotNil(store.read())
+        try FileManager.default.removeItem(at: store.url)
+        XCTAssertNil(store.read())
+        q.sync { p.flush(force: true) }
+        XCTAssertNotNil(store.read(), "healed by the periodic rewrite, without a state change")
+        XCTAssertEqual(TapStatusPublisher.rewriteEvery, 30)
+    }
+
+    func testTheMenuNeverOffersAValueTheEngineWouldNotRead() {
+        for v in ["engine", "shadow"] { XCTAssertNotEqual(InputPath(defaultsValue: v).rawValue, "", v); XCTAssertEqual(InputPath(defaultsValue: v).rawValue, v) }
+    }
+}
