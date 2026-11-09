@@ -205,3 +205,23 @@ The repo builds with `xcodebuild`. Unit tests are in `Tests/GDHubTests`. Do not 
 | Major: #3 gain is a guess; rank it lower and make it conditional | **Right, with one correction to the gate metric** | 942/1039 main samples idle confirmed in `SP/review/s.txt` (**M**). #3 split into 3a (micro, unconditional) and 3b (conditional, below #4/#5). Correction: the gate cannot be callback→send. Today the callback itself runs on the main run loop, so a main stall delays `tC`, not `tS−tC`. The gate is `kernel→drain` (`tD−tK`), and the meter gained a `tD` stage. "Fixed buffer" became "no copy": the callback is already on main, so the handler is called synchronously with the IOKit buffer. A fixed buffer could not survive the `main.async` hop anyway |
 | Major: #4 default change breaks tests; `.strict` for every timer | **Right** | Tests at VirtualPadSinkTests.swift:142-158, 174-187 and 189-199 confirmed. With a 1 ms cap, `b` at +1 ms posts at once (`now < last+interval` is false), so `[a]` becomes `[a,b,a]`. The default stays at 250 and is overridden in DriverManager. `strict:` parameter added, used only on lines 410/422. Added: `object(forKey:)`, because `double(forKey:)` returns 0 when the key is unset. Rev 1's "felt gain is smaller because Shadow samples every 10 ms" was wrong, and the gain column is corrected |
 | Major: hidQueue = vhidQueue shares IORegistry scans | **Partly right** | Fix #2 polling on vhidQueue would add a 1 Hz IORegistry scan; it is replaced by an event-driven watcher on its own `.utility` queue. But `DuplicatePadGuard`'s scan is not periodic: it runs only in `createIfWanted` (publish, identity switch, recreate), not while the pad is published and in use (VirtualPadSink.swift:270-273). The poller and heartbeat on vhidQueue each make one IOConnect call per tick. Their effect is checked by the meter's `pollerWorst` |
+
+## 7. Measured under real play, 2026-11-09 01:31–01:37 (release build, meter on, Shadow fullscreen)
+
+The user played for about six minutes. 110 ten-second meter windows with at least 30 changed frames:
+
+| Metric | Median window | Best | Worst |
+|---|---|---|---|
+| GDHub total delay, p50 | 57 ms | 3 ms | 97 ms |
+| GDHub total delay, p95 | 135 ms | 70 ms | 495 ms |
+| GDHub total delay, max | 195 ms | 93 ms | 1476 ms |
+| Kernel timestamp → HID callback, p50 | 55 ms | 0.3 ms | 89 ms |
+| Driver call (IOConnect), p50 | 1.2 ms | 0.9 ms | 2.0 ms |
+| Posts to the pad | 15 Hz | – | 26 Hz |
+| States coalesced away | 76 % | – | 83 % |
+
+`napwatch` over the same period: every GDHub thread at base priority 4 in 940 of 1316 samples, exactly the samples with no GDHub window on screen. **The lag the user felt was GDHub's own main-thread HID callback being starved by the background-role clamp**, not Shadow's 10 ms poll. Fix #1 (activity assertion) does not prevent the clamp.
+
+**Experiment (01:42):** the same 1 kHz receiver stream read by `latprobe` running as a launchd agent with `ProcessType = Interactive`, Shadow fullscreen in front, GDHub clamped in part of the run: 19264 of ~19250 reports, kernel → callback p50 0.14 ms, p95 0.33 ms, p99 0.55 ms, max 8.9 ms. A legacy `launchctl submit` job (default process type) was bad: only 3072 reports in 20 s, p95 35 ms. A plain child process of a foreground app: p50 0.12 ms, p99 2.9 ms, max 37 ms.
+
+**Decision:** move the hot path (HID read → mapper → sink → dext client) out of the GUI app into a headless engine process registered as an Interactive LaunchAgent. The GUI becomes a front end. This supersedes the conditional fix 3b. Interim workaround for the user: run Shadow windowed on the same Space as the GDHub window, where the clamp does not apply.
