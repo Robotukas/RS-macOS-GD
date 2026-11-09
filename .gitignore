@@ -13,3 +13,5 @@ scuf-envision/tools/gcprobe
 # Xcode/DriverKit build (scripts/build-xcode.sh)
 .xcodebuild/
 Xcode/build-number
+
+scuf-envision/tools/bragi

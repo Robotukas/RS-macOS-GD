@@ -31,16 +31,37 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     @Published private(set) var connection: DextClient.State = .stopped
 
     /// Serial queue for every dext call and callback (design §5.2). Later phases share it with the pad sink.
-    let vhidQueue = DispatchQueue(label: "com.interlinked.gdhub.vhid")
+    let vhidQueue = DispatchQueue(label: "com.interlinked.gdhub.vhid", qos: .userInteractive)
     let dext: DextClient
     let sink: VirtualPadSink
+    private let poller: DextStatusPoller
 
     /// Pad publication state (design §5.4) and whether the test pattern is running.
-    @Published private(set) var padState: PadPublishState = .off
+    @Published private(set) var padState: PadPublishState = .off {
+        didSet { if padState == .off, oldValue != .off { evaluateAutoPublish() } }
+    }
     @Published private(set) var testPatternRunning = false
+    /// Live traffic from `getStatus` (nil while not connected).
+    @Published private(set) var padStats: PadStats?
+
+    // Auto-publish policy: publish the pad when the controller connects (the pad then stays, reporting neutral, while
+    // the controller sleeps). An explicit Unpublish holds auto-publish off until the user publishes again or the app
+    // restarts.
+    static let autoPublishKey = "vhid.pad.autoPublish"
+    @Published var autoPublish: Bool = (UserDefaults.standard.object(forKey: DriverManager.autoPublishKey) as? Bool) ?? true {
+        didSet {
+            guard autoPublish != oldValue else { return }
+            UserDefaults.standard.set(autoPublish, forKey: Self.autoPublishKey)
+            evaluateAutoPublish(retryBlocked: true)
+        }
+    }
+    private var controllerActive = false
+    private var autoPublishHeldOff = false
 
     // Dev aids from the command line (confined to vhidQueue once running).
     private var pendingDevTerminate = CommandLine.arguments.contains("--dev-terminate-driver")
+    /// True from launch until `--dev-terminate-driver` has terminated the old driver process (main actor).
+    private var devTerminateOutstanding = CommandLine.arguments.contains("--dev-terminate-driver")
     private var pendingTestPattern = CommandLine.arguments.contains("--test-pattern")
     private var lastActiveBuild: String?
 
@@ -55,16 +76,26 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         embeddedBuild = Bundle(url: embeddedDextURL)?.infoDictionary?["CFBundleVersion"] as? String
         let client = DextClient(queue: vhidQueue)
         dext = client
-        sink = VirtualPadSink(queue: vhidQueue, transport: client)
+        let padSink = VirtualPadSink(queue: vhidQueue, transport: client)
+        sink = padSink
+        poller = DextStatusPoller(queue: vhidQueue, dext: client, sink: padSink)
         super.init()
+        poller.onUpdate = { [weak self] stats in
+            Task { @MainActor in
+                guard let self, self.padStats != stats else { return }
+                self.padStats = stats
+            }
+        }
         dext.onState = { [weak self] new in
             // Called on vhidQueue.
             guard let self else { return }
-            if case .connected = new { self.sink.transportConnected() } else { self.sink.transportLost() }
+            if case .connected = new { self.sink.transportConnected(); self.poller.start() }
+            else { self.sink.transportLost(); self.poller.stop() }
             self.runDevAidsIfConnected(new)
             Task { @MainActor in
                 if new != self.connection { Self.log.info("connection: \(String(describing: new), privacy: .public)") }
                 self.connection = new
+                self.evaluateAutoPublish()
             }
         }
         sink.onPadState = { [weak self] new in
@@ -99,6 +130,10 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         vhidQueue.asyncAfter(deadline: .now() + 1) { [dext] in
             Self.log.info("--dev-terminate-driver: calling devTerminate")
             dext.devTerminate()
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                self?.devTerminateOutstanding = false
+            }
         }
     }
 
@@ -157,10 +192,43 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     // MARK: Pad actions (design §5.4; all hop to vhidQueue)
 
-    func publishPad(_ identity: PadIdentity) { vhidQueue.async { [sink] in sink.publish(identity) } }
-    func unpublishPad() { vhidQueue.async { [sink] in sink.unpublish() } }
+    func publishPad(_ identity: PadIdentity) {
+        autoPublishHeldOff = false
+        vhidQueue.async { [sink] in sink.publish(identity) }
+    }
+    func unpublishPad() {
+        autoPublishHeldOff = true
+        vhidQueue.async { [sink] in sink.unpublish() }
+    }
     func runTestPattern() { vhidQueue.async { [sink] in sink.runTestPattern() } }
     func stopTestPattern() { vhidQueue.async { [sink] in sink.stopTestPattern() } }
+
+    // MARK: Controller and lifecycle hooks (design §5.6; called by AppModel on the main actor)
+
+    /// The controller's status changed. Not-active means asleep, receiver idle or disconnected: the pad goes neutral
+    /// but stays published. Becoming active may auto-publish.
+    func controllerStatusChanged(_ status: EnvisionProDevice.Status) {
+        controllerActive = (status == .active)
+        if status != .active { vhidQueue.async { [sink] in sink.neutral() } }
+        evaluateAutoPublish(retryBlocked: true)
+    }
+
+    /// Neutral pad immediately (system sleep). Synchronous so it lands before the Mac sleeps.
+    func neutralNow() { vhidQueue.sync { sink.neutral() } }
+
+    /// App is quitting: destroy the pad and close the connection so the devices disappear at once.
+    func prepareForTermination() { vhidQueue.sync { sink.shutdown(); dext.stop() } }
+
+    /// Publishes the persisted (or default) identity when the policy says so. `retryBlocked` also re-tries a pad that
+    /// was blocked by a duplicate device.
+    private func evaluateAutoPublish(retryBlocked: Bool = false) {
+        guard autoPublish, controllerActive, !autoPublishHeldOff, case .connected = connection else { return }
+        guard padState == .off || (retryBlocked && { if case .blockedDuplicate = padState { return true } else { return false } }())
+        else { return }
+        let id = PadIdentity.named(UserDefaults.standard.string(forKey: VirtualPadSink.identityKey) ?? "") ?? .default
+        Self.log.info("auto-publish: controller connected, publishing \(id.id, privacy: .public)")
+        vhidQueue.async { [sink] in sink.publish(id, persist: false) }
+    }
 
     /// Clears the connection back-off and the refusal latch (Retry in the Driver menu).
     func retryConnection() { vhidQueue.async { [dext] in dext.retry() } }
@@ -243,6 +311,8 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
             let (code, msg) = Self.describe(error)
             Self.log.error("request failed: \(code) \(msg, privacy: .public)")
             self.set(.failed(code: code, message: msg))
+            // installOrUpdate closed the connection first; a failed request leaves the old driver running, so keep using it.
+            self.vhidQueue.async { [dext] in dext.start() }
         }
     }
 
@@ -263,6 +333,16 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
             vhidQueue.async { [dext] in dext.start() }       // no-op when already running
         } else if let old = enabled.map(\.v).max(by: { (Int($0) ?? 0) < (Int($1) ?? 0) }) {
             if case .updating = state { return }   // already replacing
+            if devTerminateOutstanding {
+                // Dev aid: sysextd refuses a second replacement while the previous driver process is still running
+                // ("two entries ... terminating_for_upgrade"), so let `--dev-terminate-driver` end that process first.
+                Self.log.info("update \(old) -> \(self.embeddedBuild ?? "?", privacy: .public) deferred until the old driver process has been terminated")
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(3))
+                    self?.queryProperties()
+                }
+                return
+            }
             set(.updating(from: old, to: embeddedBuild ?? "?"))
             installOrUpdate()
         } else if infos.contains(where: { $0.awaiting }) {

@@ -8,6 +8,9 @@ final class AppModel: ObservableObject {
     let envision: EnvisionProDevice
     let modules: [DeviceModule]
     let monitor: HIDMonitor
+    /// Driver install state, dext connection and the virtual pad sink (design §5.6).
+    let driver = DriverManager()
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private var routes: [ObjectIdentifier: (module: DeviceModule, usagePage: Int)] = [:]
 
     init() {
@@ -33,13 +36,36 @@ final class AppModel: ObservableObject {
         }
         monitor.start()
         envision.recoverInterruptedEditIfNeeded()
+        wireVirtualPad()
+    }
+
+    /// Feeds the virtual pad from the controller and ties it to the app and system lifecycle (design §5.6).
+    private func wireVirtualPad() {
+        let sink = driver.sink
+        let driver = driver
+        // One async hop per frame onto vhidQueue; the UI path is unchanged.
+        let envision = envision
+        envision.onFrame = { frame, mapping in
+            sink.submit(frame: frame, mapping: mapping, revision: envision.mappingRevision)
+        }
+        envision.onStatusChange = { status in driver.controllerStatusChanged(status) }
+
+        // The pad must be neutral before the Mac sleeps, and gone as soon as the app quits.
+        let sleep = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { driver.neutralNow() }
+        }
+        let terminate = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { driver.prepareForTermination() }
+        }
+        lifecycleObservers = [sleep, terminate]
     }
 }
 
 @main
 struct GDHubApp: App {
     @StateObject private var model = AppModel()
-    @StateObject private var driver = DriverManager()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -51,13 +77,13 @@ struct GDHubApp: App {
                 .frame(minWidth: 900, minHeight: 640)
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)
-                    driver.start()
+                    model.driver.start()
                 }
         }
         .defaultSize(width: 1200, height: 860)
         .commands {
             CommandMenu("Layout") { LayoutCommands(device: model.envision, editor: model.envision.editor) }
-            CommandMenu("Driver") { DriverCommands(driver: driver) }
+            CommandMenu("Driver") { DriverCommands(driver: model.driver) }
         }
     }
 }

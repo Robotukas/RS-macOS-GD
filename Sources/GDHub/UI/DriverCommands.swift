@@ -39,8 +39,16 @@ struct DriverCommands: View {
         case .off: return "Virtual pad: not published"
         case .publishing(let id): return "Virtual pad: publishing \(id)…"
         case .published(let id): return "Virtual pad: \(id) published"
+        case .blockedDuplicate(let d): return "Virtual pad blocked: \(d) already has this ID. Disconnect it or pick another identity"
         case .error(let e): return "Virtual pad error: \(e)"
         }
+    }
+
+    /// Live traffic line, shown while the pad is published: "Posts: 1,234 total, 0/s".
+    var trafficText: String? {
+        guard isPublished, let s = driver.padStats else { return nil }
+        let rate = s.postsPerSecond < 10 ? String(format: "%.1f", s.postsPerSecond) : String(Int(s.postsPerSecond.rounded()))
+        return "Posts: \(s.totalPosts) total, \(rate)/s (controller frames in: \(Int(s.framesPerSecond.rounded()))/s)"
     }
 
     var isConnected: Bool { if case .connected = driver.connection { return true } else { return false } }
@@ -56,7 +64,9 @@ struct DriverCommands: View {
         Text(statusText)
         if let connectionText { Text(connectionText) }
         Text(padText)
+        if let trafficText { Text(trafficText) }
         Divider()
+        Toggle("Publish virtual pad when the controller is connected", isOn: $driver.autoPublish)
         Menu("Publish virtual pad") {
             ForEach(PadIdentity.all, id: \.id) { identity in
                 Button(identity.id) { driver.publishPad(identity) }

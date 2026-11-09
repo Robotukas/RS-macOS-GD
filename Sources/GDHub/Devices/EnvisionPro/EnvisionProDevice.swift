@@ -54,14 +54,24 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     }
 
     @Published private(set) var frame = GamepadFrame()
-    @Published private(set) var status: Status = .disconnected
+    @Published private(set) var status: Status = .disconnected {
+        didSet { if status != oldValue { onStatusChange?(status) } }
+    }
     @Published private(set) var eventLog: [LoggedEvent] = []
     @Published var mapping: ControlMapping {
-        didSet { if mapping != oldValue { store.save(mapping) } }
+        didSet { if mapping != oldValue { mappingRevision &+= 1; store.save(mapping) } }
     }
+    /// Bumped on every mapping change; lets the virtual pad feed drop duplicate frames cheaply.
+    private(set) var mappingRevision = 0
     @Published private(set) var learn: LearnSession?
     /// Summary of the last learn step of the most recently finished session.
     @Published private(set) var lastLearnResult = ""
+
+    /// Every parsed report 0x06 with the current mapping, on the main actor (virtual pad feed, design §5.6).
+    /// Called after `status` has been set to `.active` for that frame.
+    var onFrame: ((GamepadFrame, ControlMapping) -> Void)?
+    /// Called when `status` changes: asleep, receiver idle and disconnected all mean "pad neutral".
+    var onStatusChange: ((Status) -> Void)?
 
     private let store: MappingStore
     private var latestFrame = GamepadFrame()
@@ -136,6 +146,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         for e in new.diff(from: previous) { log(e.text, at: now) }
         latestFrame = new
         hasFrame = true
+        onFrame?(new, mapping)
         publish(new)
         learn?.feed(new, now: now)
     }

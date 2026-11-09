@@ -17,7 +17,6 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
 
     static let dextID = "com.interlinked.gdhub.VirtualHID"
     private static let log = Logger(subsystem: "com.interlinked.gdhub", category: "vhid")
-    private static let heartbeatInterval: DispatchTimeInterval = .milliseconds(500)
 
     var onState: ((State) -> Void)?             // called on queue
     var onOutput: ((OutputReport) -> Void)?     // called on queue
@@ -31,7 +30,6 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     private var termIterator: io_iterator_t = 0
     private var service: io_service_t = 0
     private var connect: io_connect_t = 0
-    private var heartbeatTimer: DispatchSourceTimer?
     private var lastOutputSequence: UInt64?
 
     // Reconnect back-off. A crashing dext re-publishes its service in a tight loop, and each re-publication would
@@ -218,7 +216,6 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         refusalLatched = false
         connectedAt = .now()
         registerOutput()
-        startHeartbeat()
         Self.log.info("connected: driver build \(out[1]) protocol \(out[0]) capabilities \(out[2]) (app build \(self.appBuild))")
         setState(.connected(dextBuild: out[1]))
         if let s = status() {
@@ -227,7 +224,6 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     }
 
     private func closeConnection() {
-        heartbeatTimer?.cancel(); heartbeatTimer = nil
         if connect != 0 { IOServiceClose(connect); connect = 0 }
         if service != 0 { IOObjectRelease(service); service = 0 }
     }
@@ -307,15 +303,8 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         return DextStatus(words: out)
     }
 
-    // The dext's watchdog neutralises the pad after 2 s without activity (design §3.10). D2 sends heartbeats
-    // while connected; from D3 on the sink does this while a device is published.
-    private func startHeartbeat() {
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + Self.heartbeatInterval, repeating: Self.heartbeatInterval)
-        t.setEventHandler { [weak self] in self?.heartbeat() }
-        t.resume()
-        heartbeatTimer = t
-    }
+    // The dext's watchdog neutralises the pad after 2 s without activity (design §3.10). The heartbeat is sent by
+    // `VirtualPadSink` (every 500 ms while a device is published); the client only offers `heartbeat()`.
 
     // MARK: Async output (rumble, D5 decodes it)
 
