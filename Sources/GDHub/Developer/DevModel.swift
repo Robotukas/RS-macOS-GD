@@ -24,13 +24,26 @@ struct DevSchemaError: Error, CustomStringConvertible, Equatable {
 enum DevKind: String, Codable, CaseIterable {
     case rest, stick, trigger, digital, held
 
-    /// The layout kind a control must have for a step of this kind; nil for `rest`, which takes no control.
-    var layoutKind: ControlLayout.Kind? {
+    /// Whether a control of this layout kind fits a step of this kind; `rest` takes no control. A held step watches
+    /// one pad item: a button, or a trigger held down.
+    func fits(_ control: ControlLayout.Kind) -> Bool {
         switch self {
-        case .rest: return nil
-        case .stick: return .stick
-        case .trigger: return .trigger
-        case .digital, .held: return .button
+        case .rest: return true
+        case .stick: return control == .stick
+        case .trigger: return control == .trigger
+        case .digital: return control == .button
+        case .held: return control == .button || control == .trigger
+        }
+    }
+
+    /// What a control must be for this kind, for the validation message.
+    var fitsDescription: String {
+        switch self {
+        case .rest: return "no control"
+        case .stick: return "a stick"
+        case .trigger: return "a trigger"
+        case .digital: return "a button"
+        case .held: return "a button or a trigger"
         }
     }
 
@@ -44,7 +57,7 @@ enum DevKind: String, Codable, CaseIterable {
         }
     }
 
-    var defaultReleaseSeconds: Double { self == .stick || self == .trigger ? 0.5 : 0 }
+    var defaultReleaseSeconds: Double { self == .stick || self == .trigger || self == .held ? 0.5 : 0 }
 }
 
 /// Per-step overrides of the judge's thresholds and of the simulated expectation. Flat on purpose: only the keys of the
@@ -62,8 +75,10 @@ struct DevExpect: Codable, Equatable {
     // digital: replaces the simulated expectation
     var items: DevExpectedItems?
     var times: Int?
-    // held (step 2)
+    // held: the pad item that has to stay held ("RT", "A", a hat direction "N"…"NW"; nil = derived from the control)
+    // and the trigger level that counts as held (0.5)
     var item: String?
+    var minLevel: Double?
     var seconds: Double?
 
     init() {}
@@ -80,6 +95,7 @@ struct DevExpect: Codable, Equatable {
         items = try c.decodeIfPresent(DevExpectedItems.self, forKey: .items)
         times = try c.decodeIfPresent(Int.self, forKey: .times)
         item = try c.decodeIfPresent(String.self, forKey: .item)
+        minLevel = try c.decodeIfPresent(Double.self, forKey: .minLevel)
         seconds = try c.decodeIfPresent(Double.self, forKey: .seconds)
     }
 }
@@ -145,7 +161,7 @@ struct DevToggleInputPath: Codable, Equatable {
     }
 }
 
-/// Something the app does during a step (step 2). Step 1 only parses it and marks the step skipped.
+/// Something the app does during a held step: hands the controller over between input paths while the owner holds.
 struct DevAction: Codable, Equatable {
     var toggleInputPath: DevToggleInputPath?
     init() {}
@@ -201,6 +217,35 @@ struct DevStep: Codable, Equatable {
 
     var devKind: DevKind? { DevKind(rawValue: kind) }
 
+    /// The toggle actions in order. They run one after the other.
+    var toggleActions: [DevToggleInputPath] { (actions ?? []).compactMap(\.toggleInputPath) }
+
+    /// A step that switches the input path while it runs (needs the background engine).
+    var hasInputPathActions: Bool { toggleActions.contains { !$0.values.isEmpty && $0.count >= 1 } }
+
+    /// Every path write of the step as milliseconds from the window start, in order: each toggle cycles through its
+    /// `values` `count` times, one write per `intervalMs`, starting at the window start; the next toggle starts when the
+    /// previous one has completed (its last interval has run out).
+    var inputPathSchedule: [(offsetMs: Int, value: String)] {
+        var out: [(offsetMs: Int, value: String)] = []
+        var base = 0
+        for t in toggleActions where !t.values.isEmpty && t.count >= 1 {
+            let step = max(t.intervalMs, 1)
+            for k in 0..<t.count { out.append((base + k * step, t.values[k % t.values.count])) }
+            base += t.count * step
+        }
+        return out
+    }
+
+    /// When the last action has completed, ms from the window start; nil without actions.
+    var inputPathActionsMs: Int? {
+        let toggles = toggleActions.filter { !$0.values.isEmpty && $0.count >= 1 }
+        return toggles.isEmpty ? nil : toggles.reduce(0) { $0 + $1.count * max($1.intervalMs, 1) }
+    }
+
+    /// A held step with actions keeps its window until the last action is done and this much has passed.
+    static let afterActionsSeconds = 1.5
+
     static let readyRange: ClosedRange<Double> = 0...30
     static let releaseRange: ClosedRange<Double> = 0...10
     static let defaultReadySeconds = 2.0
@@ -208,6 +253,13 @@ struct DevStep: Codable, Equatable {
     /// Length of the capture window after clamping into 1…`DevTemplate.maxSeconds`.
     var effectiveSeconds: Double {
         min(max(seconds ?? devKind?.defaultSeconds ?? 3, 1), DevTemplate.maxSeconds)
+    }
+
+    /// How long the window really runs: `effectiveSeconds`, except that a held step with actions ends
+    /// `afterActionsSeconds` after its last action has completed.
+    var windowSeconds: Double {
+        if devKind == .held, let ms = inputPathActionsMs { return Double(ms) / 1000 + Self.afterActionsSeconds }
+        return effectiveSeconds
     }
 
     /// Minimum "hands off" time before Go; the hands-still gate may extend it.
@@ -319,7 +371,7 @@ struct DevTemplate: Codable, Equatable {
                     v.errors.append("\(at): unknown control \(cid)")
                     continue
                 }
-                if let kind, let want = kind.layoutKind, control.kind != want {
+                if let kind, kind != .rest, !kind.fits(control.kind) {
                     v.errors.append("\(at): a \(kind.rawValue) step does not fit control \(cid) (a \(control.kind.rawValue))")
                 }
             }
@@ -342,6 +394,20 @@ struct DevTemplate: Codable, Equatable {
                 if let hat = items.hat, PadHat.value(named: hat).map({ $0 == 0 }) ?? true {
                     v.errors.append("\(at): expect names unknown hat direction \"\(hat)\"")
                 }
+            }
+            if kind == .held {
+                if let name = step.expect?.item, DevHeldItem(name: name) == nil {
+                    v.errors.append("\(at): expect names unknown item \"\(name)\" (use RT, LT, a button such as A, or a hat direction N…NW)")
+                }
+                if let level = step.expect?.minLevel, !(level > 0 && level <= 1) {
+                    v.errors.append("\(at): expect minLevel \(Self.number(level)) must be above 0 and at most 1")
+                }
+            }
+            if !(step.actions ?? []).isEmpty, kind != nil, kind != .held {
+                v.errors.append("\(at): actions are only supported on held steps")
+            }
+            if kind == .held, let ms = step.inputPathActionsMs, step.effectiveSeconds < step.windowSeconds {
+                v.warnings.append("\(at): seconds \(Self.number(step.effectiveSeconds)) is shorter than the actions need; the window follows the actions and runs \(Self.number(step.windowSeconds)) s (\(Self.number(Double(ms) / 1000)) s of actions + \(Self.number(DevStep.afterActionsSeconds)) s)")
             }
             for action in step.actions ?? [] {
                 guard let t = action.toggleInputPath else { continue }
@@ -566,11 +632,14 @@ struct DevPathEvent: Codable, Equatable {
     var latched: String?
     var liveUnavailable = false
     var mappingNote: String?
+    /// Set on an event that records a path write the run made during a step (a hand-over): the value written. `armed`
+    /// and the rest are what the engine reported at that moment.
+    var wrote: String?
 
     init(tMs: Double = 0, armed: String = "", fallback: String? = nil, latched: String? = nil,
-         liveUnavailable: Bool = false, mappingNote: String? = nil) {
+         liveUnavailable: Bool = false, mappingNote: String? = nil, wrote: String? = nil) {
         self.tMs = tMs; self.armed = armed; self.fallback = fallback; self.latched = latched
-        self.liveUnavailable = liveUnavailable; self.mappingNote = mappingNote
+        self.liveUnavailable = liveUnavailable; self.mappingNote = mappingNote; self.wrote = wrote
     }
 
     init(from decoder: Decoder) throws {
@@ -581,6 +650,7 @@ struct DevPathEvent: Codable, Equatable {
         latched = try c.decodeIfPresent(String.self, forKey: .latched)
         liveUnavailable = try c.value(.liveUnavailable, false)
         mappingNote = try c.decodeIfPresent(String.self, forKey: .mappingNote)
+        wrote = try c.decodeIfPresent(String.self, forKey: .wrote)
     }
 }
 

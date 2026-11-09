@@ -18,6 +18,9 @@ import Foundation
 /// - trigger: `t.peak`, `t.settledMs`
 /// - digital: `bit.rises`, `bit.falls` (the fewest over the expected items; the totals when nothing is expected),
 ///   `hat.visited` (bit mask of the hat values seen, bit n = value n), `neutrals`, `unexpected`, `entrySet`
+/// - held: `held.minLevel` (lowest trigger value from the moment it was held; 1 or 0 for a button), `held.drops`
+///   (held to released transitions), `held.padReports`, `held.ms` (held until the window end). Only the window counts:
+///   the release tail is where the owner lets go.
 enum DevJudge {
     struct Rules: Equatable {
         var deadZone = 0.12
@@ -29,6 +32,10 @@ enum DevJudge {
         var digitalTimes = 2
         var otherStickStill = true
         var requireReturn = true
+        /// A held step: the trigger value that counts as held, and how long after the window start the item may take
+        /// to get there (the window opens when the control first moves, so the pull is still on its way).
+        var heldMinLevel = 0.5
+        var heldEngageMs = 2000.0
 
         /// The rules with a step's own overrides applied.
         func applying(_ e: DevExpect?) -> Rules {
@@ -42,6 +49,7 @@ enum DevJudge {
             if let v = e.times { r.digitalTimes = v }
             if let v = e.otherStickStill { r.otherStickStill = v }
             if let v = e.requireReturn { r.requireReturn = v }
+            if let v = e.minLevel { r.heldMinLevel = v }
             return r
         }
     }
@@ -78,10 +86,13 @@ enum DevJudge {
         /// How many virtual pads the reader matched at window start.
         var matchedCount: Int
         var reference: Reference?
+        /// Path hand-overs the app made during the window (held steps with actions), for the detail line.
+        var handOvers: Int
 
         init(step: DevStep, expected: DevExpectedItems = DevExpectedItems(), entryState: PadDecodedState?,
              reports: [TimedReport], windowStartNs: UInt64, windowEndNs: UInt64, endNs: UInt64? = nil,
-             matchedCount: Int = 1, reference: Reference? = nil) {
+             matchedCount: Int = 1, reference: Reference? = nil, handOvers: Int = 0) {
+            self.handOvers = handOvers
             self.step = step
             self.expected = expected
             self.entryState = entryState
@@ -121,13 +132,15 @@ enum DevJudge {
             return done(.inconclusive("reader matched \(input.matchedCount) pads"),
                         "The pad reader must see exactly one GDHub pad to judge a step; it saw \(input.matchedCount).")
         }
-        if kind == .held { return done(.inconclusive("held steps arrive in step 2"), "Held-state steps are not judged by this build.") }
         guard let entry = input.entryState else {
             return done(.inconclusive("pad state unknown"), "The reader had seen no report from the pad before this step, so there is nothing to compare with.")
         }
 
         let rules = base.applying(step.expect)
-        let tl = Timeline(input: input, entry: entry, decoder: decoder)
+        // A held step is judged on the window alone: the tail after it is where the owner lets go.
+        var timelineInput = input
+        if kind == .held { timelineInput.endNs = max(input.windowEndNs, input.windowStartNs) }
+        let tl = Timeline(input: timelineInput, entry: entry, decoder: decoder)
         tl.fill(&metrics, reference: input.reference)
 
         switch kind {
@@ -135,7 +148,7 @@ enum DevJudge {
         case .stick: return tl.judgeStick(input, rules: rules, metrics: &metrics)
         case .trigger: return tl.judgeTrigger(input, rules: rules, metrics: &metrics)
         case .digital: return tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
-        case .held: preconditionFailure("handled above")
+        case .held: return tl.judgeHeld(input, rules: rules, metrics: &metrics)
         }
     }
 
@@ -363,6 +376,71 @@ enum DevJudge {
             return finish(fails, passText: summary, summary: summary, &m)
         }
 
+        // MARK: held
+
+        func judgeHeld(_ input: Input, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
+            guard let targets = DevExpectation.heldTargets(step: input.step, expected: input.expected) else {
+                return Outcome(verdict: .inconclusive("unknown item \"\(input.step.expect?.item ?? "")\""),
+                               metrics: with(&m, "The step's expect.item is not a name this build knows."))
+            }
+            guard !targets.isEmpty else {
+                return Outcome(verdict: .inconclusive("nothing on the pad to hold"),
+                               metrics: with(&m, "The step's controls produce nothing on the pad (a G key or Profile, say), so there is nothing to hold; name an item in expect.item."))
+            }
+            let label = targets.map(\.name).joined(separator: " + ")
+            let level = rules.heldMinLevel
+            let held: (PadDecodedState) -> Bool = { s in
+                targets.allSatisfy { $0.isHeld(s, minLevel: level) }
+                    && !s.isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease)
+            }
+            let triggers: [PadTrigger] = targets.compactMap { if case .trigger(let t) = $0 { return t } else { return nil } }
+            // "Lowest" starts once the trigger has been all the way down (the pull in is not a dip).
+            func lowest(from engage: Int) -> Double? {
+                guard !triggers.isEmpty else { return nil }
+                let level: (PadDecodedState) -> Double = { s in triggers.map { s.value(of: $0) }.min() ?? 1 }
+                let from = states.indices.first { $0 >= engage && level(states[$0]) >= rules.triggerPeak } ?? engage
+                return states[from...].map(level).min()
+            }
+            let windowMs = Double(endNs &- times[0]) / 1e6
+
+            // The window opens on the first movement, so the item is still on its way up: it counts as held from the
+            // first moment it is, which must come within the engage allowance.
+            guard let engage = states.indices.first(where: { held(states[$0]) }) else {
+                let best = triggers.isEmpty ? nil : states.map { s in triggers.map { s.value(of: $0) }.min() ?? 1 }.max()
+                m.values = ["held.minLevel": best ?? 0, "held.drops": 0, "held.padReports": Double(m.padReports), "held.ms": 0]
+                let how = best.map { " (highest \(DevJudge.fmt($0)), needs \(DevJudge.fmt(level)))" } ?? ""
+                return finish(["\(label) never became held in the window\(how)"], passText: "",
+                              summary: "\(m.padReports) pad reports, \(m.padChanged) changed.", &m)
+            }
+            var drops = 0
+            var firstDropNs: UInt64?
+            for i in (engage + 1)..<max(count, engage + 1) where held(states[i - 1]) && !held(states[i]) {
+                drops += 1
+                if firstDropNs == nil { firstDropNs = times[i] }
+            }
+            let engageMs = Double(times[engage] - times[0]) / 1e6
+            let heldMs = Double(endNs &- times[engage]) / 1e6
+            let low = lowest(from: engage)
+            m.values = ["held.minLevel": low ?? (drops == 0 ? 1 : 0), "held.drops": Double(drops),
+                        "held.padReports": Double(m.padReports), "held.ms": heldMs]
+
+            var fails: [String] = []
+            if drops > 0 {
+                let first = firstDropNs.map { String(format: ", first at %.2f s", Double($0 - times[0]) / 1e6 / 1000) } ?? ""
+                fails.append("\(label) did not stay held: drops \(drops)\(first)" + (low.map { ", lowest \(DevJudge.fmt($0))" } ?? ""))
+            } else if !held(last) {
+                fails.append("\(label) was not held at the end of the window")
+            }
+            if engageMs > rules.heldEngageMs {
+                fails.append("\(label) only became held \(String(format: "%.1f", engageMs / 1000)) s into the window (allowed \(String(format: "%.1f", rules.heldEngageMs / 1000)) s)")
+            }
+            let overs = input.handOvers > 0 ? " through \(input.handOvers) hand-over\(input.handOvers == 1 ? "" : "s")" : ""
+            let lowText = low.map { "; lowest \(DevJudge.fmt($0))" } ?? ""
+            let pass = "\(label) stayed held for \(String(format: "%.1f", heldMs / 1000)) s\(overs)\(lowText); \(m.padReports) pad reports."
+            let summary = "\(label) held \(String(format: "%.1f", heldMs / 1000)) s of a \(String(format: "%.1f", windowMs / 1000)) s window\(overs)\(lowText); \(m.padReports) pad reports, \(m.padChanged) changed."
+            return finish(fails, passText: pass, summary: summary, &m)
+        }
+
         // MARK: shared
 
         private func finish(_ fails: [String], passText: String, summary: String, _ m: inout DevMetrics) -> Outcome {
@@ -381,6 +459,13 @@ enum DevJudge {
     }
 
     // MARK: Words
+
+    /// The Expected column of a held step: what has to stay held.
+    static func heldSummary(step: DevStep, expected: DevExpectedItems) -> String {
+        let level = step.expect?.minLevel ?? Rules().heldMinLevel
+        guard let targets = DevExpectation.heldTargets(step: step, expected: expected), !targets.isEmpty else { return "nothing to hold" }
+        return targets.map { $0.isTrigger ? "\($0.name) held ≥ \(fmt(level))" : "\($0.name) held" }.joined(separator: ", ")
+    }
 
     static func fmt(_ v: Double) -> String { String(format: "%.2f", v) }
 

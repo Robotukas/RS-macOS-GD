@@ -153,7 +153,36 @@ enum DevBuiltins {
                 + "profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
             steps: echoIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
         echo.paths = ["engine", "driver"]
-        return [full, sticks, gkeys, echo]
+        return [full, sticks, gkeys, echo, t7RTHoldToggle()]
+    }
+
+    /// RT held while the app hands the controller between Driver and App (the T7 driver check the stopwatch kept
+    /// failing): the window opens when RT is held and the pad's RT must never drop for the whole of it.
+    static func t7RTHoldToggle() -> DevTemplate {
+        var hold = DevStep(id: "rt-hold", kind: .held, controls: ["rt"], title: "Pull RT fully and hold it",
+                           detail: "Keep it held the whole time. The app hands the controller between Driver and App 12 times meanwhile (about 40 s); the pad must never let go of RT. Let go when it says so.",
+                           seconds: 45)
+        var toggle = DevToggleInputPath()
+        toggle.values = ["driver", "engine"]
+        toggle.intervalMs = 3000
+        toggle.count = 12
+        var action = DevAction()
+        action.toggleInputPath = toggle
+        hold.actions = [action]
+        var expect = DevExpect()
+        expect.item = "RT"
+        expect.minLevel = 0.5
+        hold.expect = expect
+        return DevTemplate(
+            id: "t7-rt-hold-toggle", title: "RT held while the driver is handed over (T7)",
+            notes: "Pull RT all the way down and keep it there. While you hold it the app switches who drives the controller, "
+                + "Driver then App, 12 times (every 3 s, about 40 s in all), and the check is that the virtual pad's RT never "
+                + "drops below 0.5 in that time: no hand-over may let the trigger go. Use it after any change to pad "
+                + "arbitration, pinning or the posting gate. It needs the background engine. Start it with the App path "
+                + "selected; the path is put back to the run's target when the hand-overs are done and to what it was before "
+                + "when the run ends. The result also says how many hand-overs the engine was seen following (armed live / inert). "
+                + "Added 2026-11-09 for the T7 driver check.",
+            steps: [hold])
     }
 
     static func restStep() -> DevStep {

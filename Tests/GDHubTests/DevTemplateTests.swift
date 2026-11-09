@@ -162,7 +162,7 @@ final class DevTemplateTests: XCTestCase {
     func testBundledFilesAreTheGeneratorsOutputAndValidate() throws {
         let entries = DevTemplates.load(folder: fresh(), layout: layout)
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, in that order")
+        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, t7-rt-hold-toggle, in that order")
         for (entry, want) in zip(entries, generated) {
             XCTAssertEqual(entry.source, .builtIn)
             XCTAssertEqual(entry.url.lastPathComponent, DevBuiltins.fileName(for: want))
@@ -187,6 +187,107 @@ final class DevTemplateTests: XCTestCase {
                 XCTAssertEqual(try DevTemplate.decode(onDisk), t, url.lastPathComponent)
             }
         }
+    }
+
+    // MARK: held steps and actions
+
+    func testT7HoldToggleTemplateIsAsSpecifiedAndValidates() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "t7-rt-hold-toggle" })
+        XCTAssertEqual(t.title, "RT held while the driver is handed over (T7)")
+        XCTAssertFalse(t.notes.isEmpty)
+        XCTAssertNil(t.paths)
+        XCTAssertEqual(t.validate(layout: layout), [])
+        let step = try XCTUnwrap(t.steps.first)
+        XCTAssertEqual(t.steps.count, 1)
+        XCTAssertEqual(step.id, "rt-hold")
+        XCTAssertEqual(step.devKind, .held)
+        XCTAssertEqual(step.controls, ["rt"])
+        XCTAssertEqual(step.title, "Pull RT fully and hold it")
+        XCTAssertEqual(step.seconds, 45)
+        XCTAssertEqual(step.expect?.item, "RT")
+        XCTAssertEqual(step.expect?.minLevel, 0.5)
+        XCTAssertEqual(step.actions?.count, 1)
+        XCTAssertEqual(step.actions?.first?.toggleInputPath?.values, ["driver", "engine"])
+        XCTAssertEqual(step.actions?.first?.toggleInputPath?.intervalMs, 3000)
+        XCTAssertEqual(step.actions?.first?.toggleInputPath?.count, 12)
+        // 12 hand-overs 3 s apart, then 1.5 s: the window follows the actions, not the 45 s.
+        XCTAssertEqual(step.inputPathActionsMs, 36_000)
+        XCTAssertEqual(step.windowSeconds, 37.5)
+        XCTAssertEqual(step.effectiveReleaseSeconds, 0.5)
+        let schedule = step.inputPathSchedule
+        XCTAssertEqual(schedule.count, 12)
+        XCTAssertEqual(schedule.map(\.offsetMs), (0..<12).map { $0 * 3000 })
+        XCTAssertEqual(schedule.map(\.value), (0..<12).map { $0 % 2 == 0 ? "driver" : "engine" })
+    }
+
+    func testHeldKindFitsButtonsAndTriggersButNotSticks() {
+        let t = template(steps: [
+            DevStep(id: "s1", kind: .held, controls: ["rt"], title: "t"),
+            DevStep(id: "s2", kind: .held, controls: ["a"], title: "t"),
+            DevStep(id: "s3", kind: .held, controls: ["left_stick"], title: "t"),
+            DevStep(id: "s4", kind: .held, controls: [], title: "t"),
+        ])
+        XCTAssertEqual(t.validate(layout: layout), [
+            "full.json step 3: a held step does not fit control left_stick (a stick)",
+            "full.json step 4: needs at least one control",
+        ])
+        var seconds = DevStep(id: "h", kind: .held, controls: ["rt"], title: "t")
+        seconds.seconds = 120
+        XCTAssertEqual(template(steps: [seconds]).validation(layout: layout).warnings, [])
+        XCTAssertEqual(seconds.effectiveSeconds, 120, "a held step may be raised up to maxSeconds")
+        XCTAssertEqual(DevKind.held.defaultReleaseSeconds, 0.5)
+    }
+
+    func testHeldExpectActionsAndWindowChecks() {
+        var s = DevStep(id: "h", kind: .held, controls: ["rt"], title: "t", seconds: 10)
+        var e = DevExpect(); e.item = "Q"; e.minLevel = 1.5
+        s.expect = e
+        var toggle = DevToggleInputPath(); toggle.values = ["driver", "engine"]; toggle.intervalMs = 3000; toggle.count = 12
+        var act = DevAction(); act.toggleInputPath = toggle
+        s.actions = [act]
+        let v = template(steps: [s]).validation(layout: layout)
+        XCTAssertTrue(v.errors.contains { $0.contains("unknown item \"Q\"") }, "\(v.errors)")
+        XCTAssertTrue(v.errors.contains { $0.contains("minLevel 1.5 must be above 0 and at most 1") }, "\(v.errors)")
+        XCTAssertEqual(v.warnings.count, 1, "10 s is shorter than the actions need")
+        XCTAssertTrue(v.warnings[0].contains("the window follows the actions and runs 37.5 s"), v.warnings[0])
+        // Actions belong to held steps.
+        var d = digital("a", ["a"]); d.actions = [act]
+        XCTAssertTrue(template(steps: [d]).validate(layout: layout).contains("full.json step 1: actions are only supported on held steps"))
+        // Names a build knows.
+        for name in ["RT", "LT", "A", "D-pad left", "N", "NW"] {
+            var ok = DevStep(id: "h", kind: .held, controls: ["rt"], title: "t")
+            var ex = DevExpect(); ex.item = name
+            ok.expect = ex
+            XCTAssertEqual(template(steps: [ok]).validate(layout: layout), [], name)
+        }
+    }
+
+    func testActionScheduleRunsToggleActionsOneAfterTheOther() {
+        var s = DevStep(id: "h", kind: .held, controls: ["rt"], title: "t")
+        var one = DevToggleInputPath(); one.values = ["driver", "engine"]; one.intervalMs = 100; one.count = 3
+        var two = DevToggleInputPath(); two.values = ["shadow"]; two.intervalMs = 50; two.count = 2
+        var a1 = DevAction(); a1.toggleInputPath = one
+        var a2 = DevAction(); a2.toggleInputPath = two
+        s.actions = [a1, a2, DevAction()]
+        XCTAssertEqual(s.inputPathSchedule.map(\.offsetMs), [0, 100, 200, 300, 350])
+        XCTAssertEqual(s.inputPathSchedule.map(\.value), ["driver", "engine", "driver", "shadow", "shadow"])
+        XCTAssertEqual(s.inputPathActionsMs, 400)
+        XCTAssertTrue(s.hasInputPathActions)
+        XCTAssertFalse(DevStep(id: "x", kind: .held, controls: ["rt"], title: "t").hasInputPathActions)
+        XCTAssertNil(DevStep(id: "x", kind: .held, controls: ["rt"], title: "t").inputPathActionsMs)
+    }
+
+    func testHeldFieldsRoundTripAndOlderFilesStillDecode() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "t7-rt-hold-toggle" })
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+        let old = try DevTemplate.decode(Data(#"{"id":"o","steps":[{"id":"h","kind":"held","controls":["rt"],"expect":{"item":"RT","futureKey":2}}]}"#.utf8))
+        XCTAssertEqual(old.steps[0].expect?.item, "RT")
+        XCTAssertNil(old.steps[0].expect?.minLevel)
+        XCTAssertNil(old.steps[0].actions)
+        var ev = DevPathEvent(tMs: 12, armed: "live"); ev.wrote = "driver"
+        let data = try JSONEncoder().encode(ev)
+        XCTAssertEqual(try JSONDecoder().decode(DevPathEvent.self, from: data), ev)
+        XCTAssertNil(try JSONDecoder().decode(DevPathEvent.self, from: Data(#"{"tMs":1,"armed":"live"}"#.utf8)).wrote)
     }
 
     // MARK: loader
@@ -219,13 +320,13 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(entry("wrong")?.errors, ["wrong.json step 1: unknown control g6"])
         XCTAssertEqual(entry("wrong")?.isRunnable, false, "Start stays disabled while an error stands")
         XCTAssertNil(entry("notes"))
-        XCTAssertEqual(entries.prefix(4).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo"], "built-ins and overrides first, in their order")
+        XCTAssertEqual(entries.prefix(5).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "t7-rt-hold-toggle"], "built-ins and overrides first, in their order")
         XCTAssertEqual(entries.last?.source, .local)
     }
 
     func testAMissingFolderIsFine() {
         let entries = DevTemplates.load(folder: fresh().appendingPathComponent("nope"), layout: layout)
-        XCTAssertEqual(entries.count, 4)
+        XCTAssertEqual(entries.count, 5)
     }
 
     func testWarningsKeepATemplateRunnable() throws {

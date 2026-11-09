@@ -40,21 +40,41 @@ compare tool (exit 2).
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `id` | string | required | Unique in the template. Reports pair steps by this id, so keep it stable. |
-| `kind` | string | required | `rest`, `stick`, `trigger`, `digital` or `held` (`held` is step 2; it is parsed but not yet run). |
-| `controls` | [string] | [] | Ids from the control layout (`layout.controlsByOrder`). At least one, except for `rest`, which takes none. The control's layout kind must fit: `stick` needs a stick, `trigger` a trigger, `digital`/`held` a button (D-pad, paddles, SAX, G keys, Profile and Start count as buttons). |
+| `kind` | string | required | `rest`, `stick`, `trigger`, `digital` or `held` (an item that must stay held for the whole window; see "held steps" below). |
+| `controls` | [string] | [] | Ids from the control layout (`layout.controlsByOrder`). At least one, except for `rest`, which takes none. The control's layout kind must fit: `stick` needs a stick, `trigger` a trigger, `digital` a button (D-pad, paddles, SAX, G keys, Profile and Start count as buttons), `held` a button or a trigger. |
 | `title` | string | "" | The instruction headline. |
 | `detail` | string | "" | The line under it. |
 | `seconds` | number | by kind | Length of the capture window. Range 1...120; outside is clamped with a warning. Defaults: rest 3, stick 5, trigger 3, digital 3, held 5. The ring shows it; a step may end earlier when its goal is reached. |
 | `readySeconds` | number | 2 | Minimum "hands off" time before Go. Range 0...30. The hands-still gate can extend it. |
-| `releaseSeconds` | number | 0.5 for stick and trigger, else 0 | Tail after the window where the owner lets go. Range 0...10. |
+| `releaseSeconds` | number | 0.5 for stick, trigger and held, else 0 | Tail after the window where the owner lets go. Range 0...10. |
 | `expect` | object? | by kind | Overrides of the judge. Flat; only keys that fit the step's kind apply, the rest are ignored. |
 | `requires` | object? | absent | `{ "mapping": { "<control>": "<binding name>" } }`. If the current mapping does not route that control to that output, the step is recorded as `skipped` with the reason, not failed. |
-| `actions` | [object]? | absent | **Reserved for step 2.** The only action defined is `{ "toggleInputPath": { "values": ["engine","driver"], "intervalMs": 1000, "count": 1 } }`. Step 1 parses and validates it and marks the step `skipped` (precondition). |
+| `actions` | [object]? | absent | Held steps only. The one action is `{ "toggleInputPath": { "values": ["driver","engine"], "intervalMs": 3000, "count": 12 } }`; see "held steps" below. Without the background engine (in-app mode) the step is recorded `skipped` ("needs the background engine"). |
 
 `expect` keys: stick `minReports` (100), `extent` (0.40), `deadZone` (0.12), `otherStickStill` (true),
 `requireReturn` (true); trigger `peak` (0.90), `release` (0.05); digital `items` (`{buttons:[...], hat:"N"..."NW",
-guide:bool}`, replaces the simulated expectation; empty means "nothing on the pad") and `times` (2); held `item`,
-`seconds`.
+guide:bool}`, replaces the simulated expectation; empty means "nothing on the pad") and `times` (2); held `item`
+(`RT`, `LT`, a button name such as `A`, `D-pad left`, or a hat direction `N`…`NW`; absent = derived from the control)
+and `minLevel` (0.5, the trigger value that counts as held).
+
+### Held steps
+
+The window opens on the first frame where the control is active (trigger above 5 %, button bit set). From then on the
+pad item must stay held with no sample below: a trigger at or above `minLevel`, the button bit set, the hat at the
+direction. Every held-to-released transition is a drop, and a report that puts everything at neutral is one. The item
+must be held within 2 s of the window start (the pull is still on its way when the window opens). Pass = `held.drops`
+0 and held at the end of the window. Only the window is judged; the release tail after it is where the owner lets go.
+Metric values: `held.minLevel` (lowest trigger value once it had been all the way down), `held.drops`,
+`held.padReports`, `held.ms`; with actions also `held.handOvers` and `held.handOversConfirmed`.
+
+Without `actions` the window runs the full `seconds` and never ends early. With `toggleInputPath` actions the window
+ends 1.5 s after the last action has completed (`count` × `intervalMs`; `seconds` is not used then, and a warning says so
+when it is shorter): one path write at the window start and then one per `intervalMs`, cycling through `values`. Several
+actions run one after the other. A `pathEvents` entry with `wrote` records each write; the tap-status changes that follow
+are recorded as usual, and the "armed changed during the step" invalidation is off for such a step. A hand-over counts as
+confirmed when the engine is seen armed as the value asks (`inert` for engine, `live` for driver, `shadow`) before the
+next write. When the hand-overs are over (and on Pause, Back or Skip) the path is written back to what the pass tests;
+the run's final restore puts the original keys back as always.
 
 ### `paths` (multi-run)
 
@@ -141,7 +161,7 @@ A complete real template is `Sources/GDHub/Resources/dev-script-full.json`.
 | `complete` | `false` when the run was stopped, the app quit or an error ended it. The table is partial then. |
 | `requestedPath` | What the owner or template asked for: `engine`, `shadow`, `driver`, or `inApp`. |
 | `effectivePath` | What the engine reported it was **armed** with (`inert` for Engine, `shadow`, `live`), never the request. Absent if it was never observed. |
-| `pathEvents` | `[{tMs, armed, fallback?, latched?, liveUnavailable, mappingNote?}]`: every change of the engine's tap status during the run. |
+| `pathEvents` | `[{tMs, armed, fallback?, latched?, liveUnavailable, mappingNote?, wrote?}]`: every change of the engine's tap status during the run, and an entry with `wrote` (the value) for each path write a held step's actions made. |
 | `notes` | Free text lines (for example how the path was put back). |
 
 ### Header

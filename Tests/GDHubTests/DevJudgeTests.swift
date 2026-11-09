@@ -3,6 +3,8 @@ import XCTest
 
 /// Synthetic pad report streams on a fake timeline: the window starts at `w`, and every time below is in milliseconds
 /// from it. Like the sink, the rig emits only the reports whose bytes changed, so the stream has the same gaps.
+private extension Int { var asDouble: Double { Double(self) } }
+
 private struct Rig {
     static let w: UInt64 = 10_000_000_000
     var reports: [DevJudge.TimedReport] = []
@@ -37,10 +39,10 @@ final class DevJudgeTests: XCTestCase {
 
     private func run(_ step: DevStep, expected: DevExpectedItems = DevExpectedItems(), entry: PadState? = PadState(),
                      rig: Rig, windowMs: Double = 5000, releaseMs: Double = 500, matched: Int = 1,
-                     reference: DevJudge.Reference? = nil, rules: DevJudge.Rules = .init()) -> DevJudge.Outcome {
+                     reference: DevJudge.Reference? = nil, rules: DevJudge.Rules = .init(), handOvers: Int = 0) -> DevJudge.Outcome {
         let input = DevJudge.Input(step: step, expected: expected, entryState: entry.map(decoded), reports: rig.reports,
                                    windowStartNs: Rig.ns(0), windowEndNs: Rig.ns(windowMs), endNs: Rig.ns(windowMs + releaseMs),
-                                   matchedCount: matched, reference: reference)
+                                   matchedCount: matched, reference: reference, handOvers: handOvers)
         return DevJudge.judge(input, rules: rules)
     }
 
@@ -269,9 +271,6 @@ final class DevJudgeTests: XCTestCase {
         XCTAssertEqual(run(aStep, expected: aExpected, entry: nil, rig: rig).verdict, .inconclusive("pad state unknown"))
         XCTAssertEqual(run(aStep, expected: aExpected, rig: rig, matched: 0).verdict, .inconclusive("reader matched 0 pads"))
         XCTAssertEqual(run(aStep, expected: aExpected, rig: rig, matched: 2).verdict, .inconclusive("reader matched 2 pads"))
-        let held = DevStep(id: "h", kind: .held, controls: ["lt"], title: "t")
-        guard case .inconclusive(let why) = run(held, rig: rig).verdict else { return XCTFail() }
-        XCTAssertTrue(why.contains("step 2"))
         var bogus = aStep; bogus.kind = "wiggle"
         guard case .inconclusive = run(bogus, rig: rig).verdict else { return XCTFail() }
     }
@@ -339,5 +338,147 @@ final class DevJudgeTests: XCTestCase {
         for (i, p) in [(0.5, 0.0), (0.0, 0.5), (-0.5, 0.0), (0.0, -0.5)].enumerated() { few.set(state { $0.lx = p.0; $0.ly = p.1 }, at: 100 + Double(i) * 100) }
         few.set(PadState(), at: 600)
         assertPass(run(stick, rig: few))
+    }
+
+    // MARK: held
+
+    private var rtHold: DevStep {
+        var s = DevStep(id: "rt-hold", kind: .held, controls: ["rt"], title: "t", seconds: 45)
+        var e = DevExpect(); e.item = "RT"; e.minLevel = 0.5
+        s.expect = e
+        return s
+    }
+    private let holdMs = 38_000.0
+
+    /// RT ramps up over 150 ms, jitters between 0.98 and 1.0 for the whole window and is let go in the tail.
+    private func holdRT(_ rig: inout Rig, until end: Double? = nil, letGoAt: Double? = 38_200) {
+        rig.set(state { $0.rt = 0.30 }, at: 50)
+        rig.set(state { $0.rt = 0.80 }, at: 100)
+        rig.set(state { $0.rt = 1.0 }, at: 150)
+        var t = 1000.0
+        while t < (end ?? holdMs) {
+            rig.set(state { $0.rt = 0.98 }, at: t)
+            rig.set(state { $0.rt = 1.0 }, at: t + 500)
+            t += 1000
+        }
+        if let letGoAt { rig.set(PadState(), at: letGoAt) }
+    }
+
+    func testHeldPassesWhenTheItemNeverDropsAndLettingGoInTheTailIsNotADrop() {
+        var rig = Rig()
+        holdRT(&rig)
+        let o = run(rtHold, rig: rig, windowMs: holdMs, releaseMs: 500, handOvers: 12)
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["held.drops"], 0)
+        XCTAssertEqual(o.metrics.values["held.minLevel"] ?? 0, 0.98, accuracy: 0.01)
+        XCTAssertEqual(o.metrics.values["held.ms"] ?? 0, 37_900, accuracy: 1, "held from the first report at or above 0.5 (the 100 ms ramp step) to the window end")
+        XCTAssertEqual(o.metrics.values["held.padReports"], o.metrics.padReports.asDouble)
+        XCTAssertTrue(o.metrics.detail.hasPrefix("RT stayed held for 37.9 s through 12 hand-overs; lowest 0.98;"), o.metrics.detail)
+    }
+
+    func testHeldFailsOnADropEvenOneReportLong() {
+        for low in [0.0, 0.3] {
+            var rig = Rig()
+            holdRT(&rig, until: 20_000, letGoAt: nil)
+            rig.set(state { $0.rt = low }, at: 20_100)       // the pad lets go for 50 ms ...
+            rig.set(state { $0.rt = 1.0 }, at: 20_150)       // ... and comes back
+            rig.set(PadState(), at: 38_200)
+            let o = run(rtHold, rig: rig, windowMs: holdMs, releaseMs: 500, handOvers: 12)
+            assertFail(o, containing: "drops 1")
+            XCTAssertEqual(o.metrics.values["held.drops"], 1)
+            XCTAssertEqual(o.metrics.values["held.minLevel"] ?? 9, low, accuracy: 0.01)
+            XCTAssertTrue(o.metrics.detail.contains("first at 20.10 s"), o.metrics.detail)
+        }
+    }
+
+    func testHeldCountsEveryDropAndANeutralPost() {
+        var rig = Rig()
+        holdRT(&rig, until: 10_000, letGoAt: nil)
+        rig.set(PadState(), at: 10_000)                      // everything neutral
+        rig.set(state { $0.rt = 1.0 }, at: 10_040)
+        rig.set(PadState(), at: 11_000)
+        rig.set(state { $0.rt = 1.0 }, at: 11_040)
+        let o = run(rtHold, rig: rig, windowMs: 20_000, releaseMs: 500)
+        assertFail(o, containing: "drops 2")
+    }
+
+    func testHeldFailsWhenNotHeldAtTheEnd() {
+        var rig = Rig()
+        holdRT(&rig, until: 3000, letGoAt: 4000)             // let go inside a 5 s window
+        let o = run(rtHold, rig: rig, windowMs: 5000, releaseMs: 500)
+        assertFail(o, containing: "drops 1")
+    }
+
+    func testHeldFailsWhenNeverHeldOrOnlyMuchTooLate() {
+        var weak = Rig()
+        weak.set(state { $0.rt = 0.30 }, at: 100)
+        let never = run(rtHold, rig: weak, windowMs: 3000)
+        assertFail(never, containing: "never became held")
+        XCTAssertTrue(never.metrics.detail.contains("highest 0.30"), never.metrics.detail)
+
+        var late = Rig()
+        late.set(state { $0.rt = 1.0 }, at: 2500)
+        assertFail(run(rtHold, rig: late, windowMs: 5000), containing: "only became held 2.5 s into the window")
+    }
+
+    func testHeldAlreadyHeldAtTheStartCountsFromTheStart() {
+        let o = run(rtHold, entry: state { $0.rt = 1.0 }, rig: Rig(), windowMs: 3000)
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["held.ms"] ?? 0, 3000, accuracy: 1)
+    }
+
+    func testHeldButtonAndHatItems() {
+        let aHold = DevStep(id: "a-hold", kind: .held, controls: ["a"], title: "t", seconds: 5)
+        var rig = Rig()
+        rig.set(state { $0.buttons = [.a] }, at: 100)
+        rig.set(state { $0.buttons = [.a]; $0.lx = 0.9 }, at: 2000)     // other items moving does not matter
+        rig.set(PadState(), at: 5100)                                    // let go in the tail
+        let o = run(aHold, expected: DevExpectedItems(buttons: ["A"]), rig: rig, windowMs: 5000)
+        assertPass(o)
+        XCTAssertTrue(o.metrics.detail.hasPrefix("A stayed held for 4.9 s;"), o.metrics.detail)
+        XCTAssertEqual(o.metrics.values["held.minLevel"], 1)
+
+        var flicker = Rig()
+        flicker.set(state { $0.buttons = [.a] }, at: 100)
+        flicker.set(PadState(), at: 2000)
+        flicker.set(state { $0.buttons = [.a] }, at: 2010)
+        assertFail(run(aHold, expected: DevExpectedItems(buttons: ["A"]), rig: flicker, windowMs: 5000), containing: "A did not stay held: drops 1")
+
+        var hat = DevStep(id: "w-hold", kind: .held, controls: ["paddle_outer_left"], title: "t", seconds: 5)
+        var e = DevExpect(); e.item = "W"
+        hat.expect = e
+        var west = Rig()
+        west.set(state { $0.buttons = [.dpadLeft] }, at: 100)
+        assertPass(run(hat, expected: DevExpectedItems(hat: "W"), rig: west, windowMs: 5000))
+    }
+
+    func testHeldInconclusiveCases() {
+        var rig = Rig()
+        holdRT(&rig)
+        guard case .inconclusive(let why) = run(rtHold, rig: rig, windowMs: holdMs, matched: 2).verdict else { return XCTFail() }
+        XCTAssertEqual(why, "reader matched 2 pads")
+        guard case .inconclusive(let why2) = run(rtHold, entry: nil, rig: rig, windowMs: holdMs).verdict else { return XCTFail() }
+        XCTAssertEqual(why2, "pad state unknown")
+        // A G key puts nothing on the pad: there is nothing to hold.
+        let g1 = DevStep(id: "g1-hold", kind: .held, controls: ["g1"], title: "t", seconds: 5)
+        guard case .inconclusive(let why3) = run(g1, rig: rig, windowMs: 5000).verdict else { return XCTFail() }
+        XCTAssertEqual(why3, "nothing on the pad to hold")
+        var bad = rtHold
+        var e = DevExpect(); e.item = "Q"
+        bad.expect = e
+        guard case .inconclusive(let why4) = run(bad, rig: rig, windowMs: 5000).verdict else { return XCTFail() }
+        XCTAssertTrue(why4.hasPrefix("unknown item"), why4)
+    }
+
+    func testHeldItemNames() {
+        XCTAssertEqual(DevHeldItem(name: "RT"), .trigger(.right))
+        XCTAssertEqual(DevHeldItem(name: "lt"), .trigger(.left))
+        XCTAssertEqual(DevHeldItem(name: "A"), .item(.a))
+        XCTAssertEqual(DevHeldItem(name: "D-pad left"), .item(.dpadLeft))
+        XCTAssertEqual(DevHeldItem(name: "NE"), .hat(2))
+        XCTAssertNil(DevHeldItem(name: "none"))
+        XCTAssertNil(DevHeldItem(name: "Q"))
+        XCTAssertTrue(DevHeldItem.hat(2).isHeld(decoded(state { $0.buttons = [.dpadUp, .dpadRight] }), minLevel: 0.5))
+        XCTAssertFalse(DevHeldItem.hat(2).isHeld(decoded(state { $0.buttons = [.dpadUp] }), minLevel: 0.5))
     }
 }

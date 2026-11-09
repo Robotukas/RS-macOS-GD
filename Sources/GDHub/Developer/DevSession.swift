@@ -561,7 +561,12 @@ final class DevSession: ObservableObject {
             let verdict = DevRunCore.latestVerdict(r)
             var seen = m?.detail ?? ""
             if seen.isEmpty, let reason = verdict?.reason { seen = reason }
-            return DevResultRow(index: r.index, title: title, expected: r.expected.summary, seen: seen,
+            // A held step watches one item (a trigger has no place in the expected buttons).
+            var expectedText = r.expected.summary
+            if steps.indices.contains(r.index), steps[r.index].step.devKind == .held {
+                expectedText = DevJudge.heldSummary(step: steps[r.index].step, expected: r.expected)
+            }
+            return DevResultRow(index: r.index, title: title, expected: expectedText, seen: seen,
                                 loss: pct(m?.lossRatio),
                                 onset: m?.onsetMs.map { String(format: "%.1f ms", $0) } ?? "–",
                                 frames: m.map { $0.framesSeen > 0 ? "\($0.framesSeen)" : "–" } ?? "–",

@@ -239,7 +239,7 @@ idle ─Start─▶ snapshot ─▶ switching(≤10 s, confirm) ─▶ step k: r
    + `.inflight` + `willTerminate`; report writer; templates (bundle listing, folder, validation, remembered choice,
    `paths`); generated `full`, `sticks`, `gkeys`; UI pieces incl. pad-state overlay, linked lighting, magnifier, Skip,
    keyboard; compare tool + docs; unit tests. Install; run `full` on Engine, then Driver LIVE; compare.
-2. **Step 2:** `held` kind and `actions` (then `t7-rt-hold-toggle`), volume consumer-report check for G2–G4, "Run again
+2. **Step 2:** `held` kind and `actions` with `t7-rt-hold-toggle` (**built 2026-11-09**; semantics in `docs/protocol/developer-mode-files.md`, "Held steps"), volume consumer-report check for G2–G4, "Run again
    on…", "Copy summary", a two-report comparison view in the app.
 3. **Step 3:** sound (tick at Go and Done, off by default).
 

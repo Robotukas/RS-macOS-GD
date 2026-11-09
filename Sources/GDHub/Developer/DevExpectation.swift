@@ -55,9 +55,25 @@ enum DevExpectation {
     /// step's controls.
     static func resolve(step: DevStep, mapping: ControlMapping, layout: ControlLayout) -> DevExpectedItems {
         if let override = step.expect?.items { return override }
+        // A held step that names its item expects exactly that (a trigger has no place in the item list).
+        if step.devKind == .held, let name = step.expect?.item, let held = DevHeldItem(name: name) {
+            return DevExpectedItems(items: held.padItems)
+        }
         var all: Set<PadItem> = []
         for cid in step.controls { all.formUnion(expectedItems(for: cid, mapping: mapping, layout: layout)) }
         return DevExpectedItems(items: all)
+    }
+
+    /// What a held step watches: its `expect.item` when it names one, otherwise the trigger of an `lt` / `rt` control and
+    /// the items the pad shows for the step's button controls. nil when `expect.item` is not a name this build knows.
+    static func heldTargets(step: DevStep, expected: DevExpectedItems) -> [DevHeldItem]? {
+        if let name = step.expect?.item { return DevHeldItem(name: name).map { [$0] } }
+        var out: [DevHeldItem] = []
+        for cid in step.controls {
+            if cid == "lt" { out.append(.trigger(.left)) } else if cid == "rt" { out.append(.trigger(.right)) }
+        }
+        out += expected.items.sorted().map { DevHeldItem.item($0) }
+        return out
     }
 
     /// The layout controls that draw the expected output, in item order: A → `a`, hat W → `dpad_left`, hat NE →
@@ -81,5 +97,54 @@ enum DevExpectation {
         for (flag, item) in pairs where b.contains(flag) { s.insert(item) }
         s.formUnion(PadHat.items(PadReportBuilders.hat(b)))
         return s
+    }
+}
+
+/// One output of the virtual pad that a held step requires to stay held.
+enum DevHeldItem: Equatable {
+    case trigger(PadTrigger)
+    /// A button, a D-pad direction (the hat presses it) or Guide.
+    case item(PadItem)
+    /// Exactly this hat value, 1 (N) … 8 (NW).
+    case hat(UInt8)
+
+    /// "RT", "LT", a `PadItem` name ("A", "D-pad left", "Guide") or a hat direction ("N" … "NW").
+    init?(name: String) {
+        switch name.uppercased() {
+        case "RT": self = .trigger(.right); return
+        case "LT": self = .trigger(.left); return
+        default: break
+        }
+        if let item = PadItem(name: name) { self = .item(item); return }
+        if let v = PadHat.value(named: name.uppercased()), v != 0 { self = .hat(v); return }
+        return nil
+    }
+
+    var name: String {
+        switch self {
+        case .trigger(let t): return t == .left ? "LT" : "RT"
+        case .item(let i): return i.name
+        case .hat(let v): return "hat " + PadHat.name(v)
+        }
+    }
+
+    var isTrigger: Bool { if case .trigger = self { return true } else { return false } }
+
+    /// The pad items it presses (a trigger presses none).
+    var padItems: Set<PadItem> {
+        switch self {
+        case .trigger: return []
+        case .item(let i): return [i]
+        case .hat(let v): return PadHat.items(v)
+        }
+    }
+
+    /// Triggers count as held from `minLevel` up; everything else is a bit or the hat.
+    func isHeld(_ s: PadDecodedState, minLevel: Double) -> Bool {
+        switch self {
+        case .trigger(let t): return s.value(of: t) >= minLevel
+        case .item(let i): return s.items.contains(i)
+        case .hat(let v): return s.hat == v
+        }
     }
 }

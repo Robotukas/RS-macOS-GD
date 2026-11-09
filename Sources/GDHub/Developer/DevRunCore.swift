@@ -118,11 +118,7 @@ struct DevResolvedStep: Equatable {
                 linked = DevExpectation.linkedOutputControls(for: expected).filter { !step.controls.contains($0) }
             }
             var skip: String?
-            if kind == .held {
-                skip = "held steps arrive in step 2"
-            } else if let actions = step.actions, !actions.isEmpty {
-                skip = "actions arrive in step 2"
-            } else if let want = step.requires?.mapping {
+            if let want = step.requires?.mapping {
                 for (cid, out) in want.sorted(by: { $0.key < $1.key }) {
                     // "g1 as y" means g1 carries the receiver binding that the y control carries.
                     if mapping.buttons[cid] == nil || mapping.buttons[cid] != mapping.buttons[out] {
@@ -241,6 +237,8 @@ struct DevRunCore {
         /// beyond its nominal length: an owner who rolls the stick until the ring fills needs a moment to let go.
         static let releaseGrace: UInt64 = 3_000_000_000
         static let liveEvery: UInt64 = 250_000_000
+        /// A held step's last 2 s say "Keep holding…" without the hand-over count.
+        static let holdingTail: UInt64 = 2_000_000_000
     }
 
     // MARK: State
@@ -281,6 +279,9 @@ struct DevRunCore {
     private var pathUnconfirmed = false
     private var armedBaseline: String?
     private var rearmAccepted = false
+    /// The last value a hand-over wrote and has not been undone yet: the path goes back to the pass's target as soon
+    /// as no hand-over can follow (window over, paused, stepped away from).
+    private var handOverValue: String?
 
     // Output de-duplication.
     private var lastHighlights: [String: DevHighlight]?
@@ -300,6 +301,20 @@ struct DevRunCore {
         var pad: PadState
         var neutral: Bool
         var snapped: PadState
+    }
+
+    /// One path write of a held step's actions: when (ms from the window start, as ns) and what.
+    private struct ScheduledWrite: Equatable {
+        var offsetNs: UInt64
+        var value: String
+    }
+
+    /// A path write that has been made, and whether the engine was seen armed as it should be before the next one.
+    private struct HandOver: Equatable {
+        var value: String
+        var expectedArmed: String?
+        var atNs: UInt64
+        var confirmed = false
     }
 
     /// The attempt being recorded.
@@ -330,6 +345,10 @@ struct DevRunCore {
         var lastEvalVersion = -1
         /// Shadow runs: the parity counters when the step began.
         var parityBefore: (ok: Int, mismatches: Int)?
+        /// A held step with actions: the writes still to make, how many are done, and what became of each.
+        var schedule: [ScheduledWrite] = []
+        var nextWrite = 0
+        var handOvers: [HandOver] = []
     }
 
     // MARK: Read-only views for the shell
@@ -386,6 +405,7 @@ struct DevRunCore {
         case .rerun(let i, let p): rerun([i], pass: p, a: &a)
         case .rerunFailed(let p): rerunFailed(pass: p, a: &a)
         }
+        putPathBackAfterHandOvers(&a)
         refreshOutputs(&a)
         return a
     }
@@ -394,6 +414,13 @@ struct DevRunCore {
 
     private mutating func start(_ s: DevRunSetup, a: inout [Action]) {
         guard !isRunning else { return }
+        var s = s
+        // Actions switch the input path, which only the background engine can follow.
+        if s.target == .inApp {
+            for i in s.steps.indices where s.steps[i].skipReason == nil && s.steps[i].step.hasInputPathActions {
+                s.steps[i].skipReason = "needs the background engine"
+            }
+        }
         setup = s
         clock = max(clock, s.nowNs)
         passes = Self.passes(for: s)
@@ -408,6 +435,7 @@ struct DevRunCore {
         prompt = nil
         pauseReason = nil
         digitalIDs = Array(Set(s.mapping.buttons.keys).union(s.mapping.physicalBits.keys)).sorted()
+        handOverValue = nil
         resetPassFlags()
         lastHighlights = nil
         lastInstruction = nil
@@ -669,7 +697,13 @@ struct DevRunCore {
     private mutating func startWindow(at t: UInt64, a: inout [Action]) {
         guard let r = rs else { return }
         cur!.windowStartNs = t
-        cur!.windowEndNs = t + UInt64(r.step.effectiveSeconds * 1e9)
+        // A held step with actions runs until its last action is done and 1.5 s have passed; any other step for
+        // `seconds`.
+        cur!.windowEndNs = t + UInt64(r.step.windowSeconds * 1e9)
+        cur!.schedule = r.step.devKind == .held
+            ? r.step.inputPathSchedule.map { ScheduledWrite(offsetNs: UInt64($0.offsetMs) * 1_000_000, value: $0.value) } : []
+        cur!.nextWrite = 0
+        cur!.handOvers = []
         cur!.pathAtStart = observedPathName()
         cur!.matchedAtStart = matched
         cur!.refChanges = []
@@ -683,6 +717,72 @@ struct DevRunCore {
         cur!.evalVersion = 0; cur!.lastEvalVersion = -1; cur!.lastEvalNs = t
         // Reports that arrived before the window (the ready phase) are in `reports`; padChanged counts from here on.
         setPhase(.window, now: t)
+        emitDueWrites(a: &a)
+    }
+
+    // MARK: Hand-overs
+
+    /// Makes the writes of a held step's actions that are due: the first one with the window start, then one per
+    /// interval. All the timing is the runner's clock; the shell only carries each `.writePath` out.
+    private mutating func emitDueWrites(a: inout [Action]) {
+        guard cur != nil, case .step(_, .window) = state, let ws = cur!.windowStartNs else { return }
+        while cur!.nextWrite < cur!.schedule.count, clock >= ws + cur!.schedule[cur!.nextWrite].offsetNs {
+            let w = cur!.schedule[cur!.nextWrite]
+            cur!.nextWrite += 1
+            cur!.handOvers.append(HandOver(value: w.value, expectedArmed: DevTarget(templatePath: w.value)?.expectedArmed, atNs: clock))
+            handOverValue = w.value
+            writePathEvent(w.value, a: &a)
+        }
+        noteHandOverConfirmation()
+    }
+
+    /// The engine counts as having followed a write once it reports the armed state the value asks for, before the
+    /// next write: `inert` for engine, `live` for driver, `shadow` for shadow.
+    private mutating func noteHandOverConfirmation() {
+        guard cur != nil, let i = cur!.handOvers.indices.last, !cur!.handOvers[i].confirmed,
+              let want = cur!.handOvers[i].expectedArmed, liveStatus?.armed == want else { return }
+        cur!.handOvers[i].confirmed = true
+    }
+
+    private mutating func writePathEvent(_ value: String, a: inout [Action]) {
+        a.append(.writePath(value))
+        let s = liveStatus
+        pathEvents.append(DevPathEvent(tMs: pathEventMs(), armed: s?.armed ?? "", fallback: s?.fallback, latched: s?.latched,
+                                       liveUnavailable: s?.liveUnavailable ?? false, mappingNote: s?.mappingNote, wrote: value))
+    }
+
+    private func pathEventMs() -> Double {
+        guard let t0 = setup?.t0Ns else { return 0 }
+        return clock >= t0 ? Double(clock - t0) / 1e6 : 0
+    }
+
+    /// After the hand-overs: the path goes back to what the pass is testing, so the next step waits on the right path
+    /// and Resume finds it as it should be. Not while a window may still hand over, and not once the run has
+    /// finished: `restorePath` puts the original keys back and must have the last word.
+    private mutating func putPathBackAfterHandOvers(_ a: inout [Action]) {
+        guard let v = handOverValue, state != .finished else { return }
+        if case .step(_, .window) = state { return }
+        handOverValue = nil
+        if let want = target.pathValue, want != v { writePathEvent(want, a: &a) }
+    }
+
+    /// Hand-overs reached and confirmed, for the verdict detail.
+    private func handOverText(_ c: Cur) -> String {
+        guard !c.handOvers.isEmpty else { return "" }
+        let ok = c.handOvers.filter(\.confirmed).count
+        var byArmed: [String: (ok: Int, all: Int)] = [:]
+        for h in c.handOvers {
+            let k = h.expectedArmed ?? h.value
+            var e = byArmed[k] ?? (0, 0)
+            e.all += 1; if h.confirmed { e.ok += 1 }
+            byArmed[k] = e
+        }
+        let groups = byArmed.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value.ok)/\($0.value.all)" }.joined(separator: ", ")
+        var t = " Hand-overs confirmed \(ok)/\(c.handOvers.count) (armed \(groups))."
+        if ok < c.handOvers.count {
+            t += " The engine was not seen following every write, so the driver may not have carried the pad all the time."
+        }
+        return t
     }
 
     private mutating func endWindow(at t: UInt64, a: inout [Action]) {
@@ -739,7 +839,7 @@ struct DevRunCore {
         let entry = c.entry ?? (c.reports.contains { $0.tNs < ws } ? PadDecodedState.neutral : nil)
         return DevJudge.Input(step: r.step, expected: r.expected, entryState: entry, reports: c.reports,
                               windowStartNs: ws, windowEndNs: we, endNs: end, matchedCount: c.matchedAtStart,
-                              reference: reference(c, from: ws, to: end))
+                              reference: reference(c, from: ws, to: end), handOvers: c.handOvers.count)
     }
 
     private mutating func judgeAndAdvance(a: inout [Action]) {
@@ -750,6 +850,11 @@ struct DevRunCore {
         var att = makeAttempt(c, raw: input.rawReports())
         att.verdict = o.verdict
         att.metrics = o.metrics
+        if !c.handOvers.isEmpty {
+            att.metrics.values["held.handOvers"] = Double(c.handOvers.count)
+            att.metrics.values["held.handOversConfirmed"] = Double(c.handOvers.filter(\.confirmed).count)
+            att.metrics.detail += handOverText(c)
+        }
         // A shadow run's driver evidence is parity: keep the counters from before and after the step.
         if let before = c.parityBefore, let after = parity() {
             att.metrics.values["parity.okBefore"] = Double(before.ok)
@@ -845,7 +950,7 @@ struct DevRunCore {
                 default: return m.isActive(cid, f)
                 }
             }
-        case .trigger?:
+        case .trigger?, .held?:
             return r.step.controls.contains { cid in
                 switch cid {
                 case "lt": return pad.lt > ru.triggerRelease
@@ -853,7 +958,7 @@ struct DevRunCore {
                 default: return m.isActive(cid, f)
                 }
             }
-        case .digital?, .held?:
+        case .digital?:
             return r.step.controls.contains { m.isActive($0, f) }
         default:
             return false
@@ -975,14 +1080,16 @@ struct DevRunCore {
 
     private mutating func tickWindow(now: UInt64, a: inout [Action]) {
         guard let c = cur, let r = rs, let ws = c.windowStartNs, let we = c.windowEndNs else { return }
+        emitDueWrites(a: &a)
         if now >= we {
             endWindow(at: we, a: &a)
             finalizeIfDue(now: now, a: &a)
             return
         }
-        // Early end: the judge would pass on what has been seen and the control has been at rest long enough.
+        // Early end: the judge would pass on what has been seen and the control has been at rest long enough. A held
+        // step never ends early: it is about the whole window.
         let kind = r.step.devKind
-        guard kind != .rest, c.wantedActiveSeen, !c.wantedNowActive, let lastAct = c.lastWantedActiveNs,
+        guard kind != .rest, kind != .held, c.wantedActiveSeen, !c.wantedNowActive, let lastAct = c.lastWantedActiveNs,
               now >= lastAct, now - lastAct >= Timing.restForEarlyEnd,
               kind != .digital || c.wantedRises >= rules(for: r).digitalTimes,
               now >= c.lastEvalNs, now - c.lastEvalNs >= Timing.evalEvery, c.evalVersion != c.lastEvalVersion else { return }
@@ -998,10 +1105,10 @@ struct DevRunCore {
     // MARK: Status, engine, controller, reader
 
     private mutating func recordPathEvent() {
-        guard isRunning, let s = liveStatus, let setup else { return }
-        let ev = DevPathEvent(tMs: clock >= setup.t0Ns ? Double(clock - setup.t0Ns) / 1e6 : 0, armed: s.armed, fallback: s.fallback,
+        guard isRunning, let s = liveStatus, setup != nil else { return }
+        let ev = DevPathEvent(tMs: pathEventMs(), armed: s.armed, fallback: s.fallback,
                               latched: s.latched, liveUnavailable: s.liveUnavailable, mappingNote: s.mappingNote)
-        if let last = pathEvents.last,
+        if let last = pathEvents.last(where: { $0.wrote == nil }),
            (last.armed, last.fallback, last.latched, last.liveUnavailable, last.mappingNote)
             == (ev.armed, ev.fallback, ev.latched, ev.liveUnavailable, ev.mappingNote) { return }
         pathEvents.append(ev)
@@ -1012,6 +1119,7 @@ struct DevRunCore {
         status = s
         guard isRunning else { return }
         recordPathEvent()
+        noteHandOverConfirmation()
         switch state {
         case .switching, .betweenPasses:
             checkSwitch(now: clock, a: &a)
@@ -1026,7 +1134,9 @@ struct DevRunCore {
                     return
                 }
             }
-            if phase == .window || phase == .release, let s = after, let base = armedBaseline, s.armed != base {
+            // A step with actions switches the path itself: the changes are expected (they are in pathEvents).
+            let handsOver = !(cur?.schedule.isEmpty ?? true)
+            if phase == .window || phase == .release, !handsOver, let s = after, let base = armedBaseline, s.armed != base {
                 let text = "path changed: the engine went from \(base) to \(s.armed) during the step"
                 closeOpen(.invalid(text), superseded: false, detail: text)
                 enterStep(at: pos + 1, a: &a)
@@ -1218,6 +1328,7 @@ struct DevRunCore {
         cur = nil
         resetPassFlags()
         pathEvents = []
+        handOverValue = nil
         notes.append("Re-run of \(valid.map { s.steps[$0].step.id }.joined(separator: ", ")) merged into the earlier results of this pass.")
         rerunStartedAt = s.startedAt.addingTimeInterval(clock >= s.nowNs ? Double(clock - s.nowNs) / 1e9 : 0)
         lastHighlights = nil
@@ -1284,14 +1395,15 @@ struct DevRunCore {
             return ("Switching to \(name)…", detail, Timing.confirmTimeout, started)
         case .step(_, let phase):
             guard let r = rs, let c = cur else { return ("", "", nil, nil) }
-            let secs = UInt64(r.step.effectiveSeconds * 1e9)
             switch phase {
             case .ready:
                 if c.goNs != nil { return (r.step.title, "Go. " + r.step.detail, nil, nil) }
                 let gate = readyGate(now: now)
                 return ("Let go of everything", gate.why, nil, nil)
             case .window:
-                return (r.step.title, r.step.detail, secs, c.windowStartNs)
+                let total = c.windowStartNs.flatMap { ws in c.windowEndNs.map { $0 >= ws ? $0 - ws : 0 } } ?? UInt64(r.step.windowSeconds * 1e9)
+                if r.step.devKind == .held { return (r.step.title, holdingText(c, r, now: now), total, c.windowStartNs) }
+                return (r.step.title, r.step.detail, total, c.windowStartNs)
             case .release:
                 let nominal = UInt64(r.step.effectiveReleaseSeconds * 1e9)
                 let overdue = c.windowEndNs.map { now >= $0 + nominal } ?? false
@@ -1305,6 +1417,20 @@ struct DevRunCore {
         case .finished:
             return lastFinishedText
         }
+    }
+
+    /// The line under a held step's title: which hand-over is on, and "Keep holding…" for the last 2 s.
+    private func holdingText(_ c: Cur, _ r: DevResolvedStep, now: UInt64) -> String {
+        if let we = c.windowEndNs, now + Timing.holdingTail >= we { return "Keep holding…" }
+        guard let last = c.handOvers.last else { return "Keep holding…" }
+        let who: String
+        switch last.value {
+        case "driver": who = "Driver"
+        case "engine": who = "App"
+        case "shadow": who = "App, driver alongside"
+        default: who = last.value
+        }
+        return "Keep holding — hand-over \(c.handOvers.count) of \(c.schedule.count) (\(who))"
     }
 
     private var lastFinishedText: (title: String, detail: String, total: UInt64?, ringStart: UInt64?) {

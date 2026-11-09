@@ -92,6 +92,41 @@ private final class Rig {
     static let bStep = DevStep(id: "b", kind: .digital, controls: ["b"], title: "Press B twice", seconds: 3, readySeconds: 1)
     static let leftStick = DevStep(id: "left_stick", kind: .stick, controls: ["left_stick"], title: "Roll", seconds: 5, readySeconds: 1, releaseSeconds: 0.5)
 
+    /// RT held, with hand-overs between Driver and App (`count` writes, `intervalMs` apart).
+    static func heldStep(interval: Int = 100, count: Int? = 3, seconds: Double = 45) -> DevStep {
+        var s = DevStep(id: "rt-hold", kind: .held, controls: ["rt"], title: "Pull RT fully and hold it", seconds: seconds, readySeconds: 1)
+        var e = DevExpect(); e.item = "RT"; e.minLevel = 0.5
+        s.expect = e
+        if let count {
+            var t = DevToggleInputPath(); t.values = ["driver", "engine"]; t.intervalMs = interval; t.count = count
+            var a = DevAction(); a.toggleInputPath = t
+            s.actions = [a]
+        }
+        return s
+    }
+
+    var rtDown: (GamepadFrame, PadState) {
+        var f = GamepadFrame.idle; f.rt = 1023
+        var p = PadState(); p.rt = 1.0
+        return (f, p)
+    }
+
+    /// Advances like `advance`, and answers every path write like the engine would: armed follows the written value.
+    /// `follow` false leaves the engine unmoved.
+    func advanceAnswering(_ ms: Double, follow: Bool = true) {
+        var left = ms
+        while left > 0 {
+            advance(5)
+            left -= 5
+            while answered < pathWrites.count {
+                let v = pathWrites[answered]
+                answered += 1
+                if follow { send(.status(Rig.status(armed: v == "driver" ? "live" : "inert", path: v))) }
+            }
+        }
+    }
+    var answered = 0
+
     func setup(_ target: DevTarget = .engine, steps: [DevStep] = [Rig.restStep, Rig.aStep, Rig.bStep],
                paths: [String]? = nil) -> DevRunSetup {
         let t = DevTemplate(id: "test", title: "Test", paths: paths, steps: steps)
@@ -858,6 +893,236 @@ final class DevRunCoreTests: XCTestCase {
         XCTAssertFalse(r.reportsWritten[1].steps[0].attempts[1].superseded)
         XCTAssertEqual(r.restores, 2)
         XCTAssertEqual(r.dones, 2)
+    }
+
+    // MARK: Held steps and actions
+
+    func testHeldWindowOpensWhenRTIsHeldAndHandsOverAtTheCadence() throws {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.heldStep()])
+        r.untilGo()
+        r.advance(200)
+        guard case .step(0, .ready) = r.core.state else { return XCTFail("a held step waits for the hands: \(r.core.state)") }
+        XCTAssertEqual(r.pathWrites, [], "nothing is handed over before RT is held")
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        guard case .step(0, .window) = r.core.state else { return XCTFail("\(r.core.state)") }
+        XCTAssertEqual(r.pathWrites, ["driver"], "the first hand-over comes with the window")
+        r.setPad(p)
+        r.advanceAnswering(600)
+        XCTAssertEqual(r.pathWrites, ["driver", "engine", "driver"], "three writes at 100 ms, alternating; no more")
+        // Cadence: the path events carry the write times.
+        let wrote = r.core.pathEvents.filter { $0.wrote != nil }
+        XCTAssertEqual(wrote.map { $0.wrote! }, ["driver", "engine", "driver"])
+        XCTAssertEqual(wrote[1].tMs - wrote[0].tMs, 100, accuracy: 1)
+        XCTAssertEqual(wrote[2].tMs - wrote[1].tMs, 100, accuracy: 1)
+        // The status changes that followed the writes are recorded too.
+        XCTAssertEqual(r.core.pathEvents.filter { $0.wrote == nil }.map(\.armed), ["inert", "live", "inert", "live"])
+        // The armed changes did not invalidate the step.
+        guard case .step(0, .window) = r.core.state else { return XCTFail("\(r.core.state)") }
+        XCTAssertNil(r.verdict(0))
+    }
+
+    func testHeldWithActionsEndsOneAndAHalfSecondsAfterTheLastActionThenAReleaseTailThenPass() throws {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.heldStep()])
+        r.untilGo()
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        r.setPad(p)
+        let windowStart = r.now
+        r.advanceAnswering(1700)
+        // 3 writes at 100 ms completed at 300 ms; 300 + 1500 = 1800 ms.
+        guard case .step(0, .window) = r.core.state else { return XCTFail("window still open at 1.7 s: \(r.core.state)") }
+        r.advanceAnswering(150)
+        guard case .step(0, .release) = r.core.state else { return XCTFail("release tail after 1.8 s: \(r.core.state)") }
+        XCTAssertEqual(r.lastInstruction?.title, "Let go now")
+        r.releaseAll(hold: 100)
+        r.advanceAnswering(1500)
+        XCTAssertEqual(r.core.state, .finished)
+        XCTAssertEqual(r.verdict(0), .pass, r.core.results[0][0]?.attempts.last?.metrics.detail ?? "")
+        let att = try XCTUnwrap(r.core.results[0][0]?.attempts.last)
+        XCTAssertEqual(Double(att.windowEndNs - att.windowStartNs) / 1e6, 1800, accuracy: 20)
+        XCTAssertEqual(att.windowStartNs, windowStart, "the window opened on the RT frame")
+        XCTAssertEqual(att.metrics.values["held.drops"], 0)
+        XCTAssertEqual(att.metrics.values["held.handOvers"], 3)
+        XCTAssertEqual(att.metrics.values["held.handOversConfirmed"], 3)
+        XCTAssertTrue(att.metrics.detail.contains("RT stayed held for"), att.metrics.detail)
+        XCTAssertTrue(att.metrics.detail.contains("through 3 hand-overs"), att.metrics.detail)
+        XCTAssertTrue(att.metrics.detail.contains("Hand-overs confirmed 3/3 (armed inert 1/1, live 2/2)"), att.metrics.detail)
+        // The release at the end is the tail, not a drop.
+        // The pass ends on the target path: the last hand-over (driver) is undone when the window is over.
+        XCTAssertEqual(r.pathWrites, ["driver", "engine", "driver", "engine"])
+        XCTAssertEqual(r.restores, 1)
+        XCTAssertEqual(r.reportsWritten.count, 1)
+        XCTAssertTrue(r.reportsWritten[0].pathEvents.contains { $0.wrote == "driver" })
+    }
+
+    func testHeldFailsWhenThePadLetsGoOfRTForFiftyMilliseconds() throws {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.heldStep()])
+        r.untilGo()
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        r.setPad(p)
+        r.advanceAnswering(800)
+        r.setPad(PadState())                         // the pad drops RT ...
+        r.advanceAnswering(50)
+        r.setPad(p)                                  // ... and takes it back
+        r.advanceAnswering(1000)
+        r.releaseAll(hold: 100)
+        r.advanceAnswering(1500)
+        XCTAssertEqual(r.core.state, .finished)
+        guard case .fail(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertTrue(why.contains("drops 1"), why)
+        XCTAssertEqual(r.core.results[0][0]?.attempts.last?.metrics.values["held.drops"], 1)
+        XCTAssertEqual(r.core.results[0][0]?.attempts.last?.metrics.values["held.minLevel"] ?? 9, 0, accuracy: 0.001)
+    }
+
+    func testHeldDoesNotCountTheEnginesSlowFollowingAgainstTheVerdict() throws {
+        // The engine never reports the driver's LIVE in time: the hand-overs are not confirmed, the pad held RT.
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.heldStep()])
+        r.untilGo()
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        r.setPad(p)
+        r.advanceAnswering(1900, follow: false)
+        r.releaseAll(hold: 100)
+        r.advanceAnswering(1500, follow: false)
+        XCTAssertEqual(r.verdict(0), .pass)
+        let detail = r.core.results[0][0]?.attempts.last?.metrics.detail ?? ""
+        // Only the write that asked for the state the engine was already in counts (engine, inert); both driver writes do not.
+        XCTAssertTrue(detail.contains("Hand-overs confirmed 1/3"), detail)
+        XCTAssertTrue(detail.contains("not seen following every write"), detail)
+    }
+
+    func testHeldInstructionNamesTheHandOverAndSaysKeepHoldingInTheLastTwoSeconds() throws {
+        let r = Rig()
+        let step = Rig.heldStep(interval: 1000, count: 5)       // writes at 0 .. 4 s, window 5 + 1.5 = 6.5 s
+        r.prepare()
+        r.start(steps: [step])
+        r.untilGo()
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        r.setPad(p)
+        XCTAssertEqual(r.lastInstruction?.title, "Pull RT fully and hold it")
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding — hand-over 1 of 5 (Driver)")
+        r.advanceAnswering(1500)
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding — hand-over 2 of 5 (App)")
+        r.advanceAnswering(2000)
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding — hand-over 4 of 5 (App)")
+        r.advanceAnswering(1000)                                 // 4.5 s in: 2 s left
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding…")
+        XCTAssertEqual(r.pathWrites.count, 5)
+        r.advanceAnswering(2100)
+        XCTAssertEqual(r.lastInstruction?.title, "Let go now")
+        // The ring runs over the whole window.
+        let rings = r.log.compactMap { a -> UInt64? in if case .setInstruction(_, let d, let total, _) = a, d.hasPrefix("Keep holding") { return total } else { return nil } }
+        XCTAssertEqual(rings.first, 6_500_000_000)
+    }
+
+    func testHeldPauseStopsTheCadenceAndPutsThePathBack() throws {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.heldStep(interval: 1000, count: 5)])
+        r.untilGo()
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        r.setPad(p)
+        r.advanceAnswering(2300)                                 // writes: driver, engine, driver
+        XCTAssertEqual(r.pathWrites, ["driver", "engine", "driver"])
+        r.send(.pause)
+        XCTAssertEqual(r.core.state, .paused(index: 0, resumeTo: .step(0)))
+        XCTAssertEqual(r.pathWrites, ["driver", "engine", "driver", "engine"], "paused on driver: the pass's target is written back")
+        r.advanceAnswering(5000)
+        XCTAssertEqual(r.pathWrites.count, 4, "the cadence stopped with the pause")
+        r.send(.resume)
+        XCTAssertEqual(r.core.state, .step(index: 0, phase: .ready), "Resume restarts the step")
+        XCTAssertEqual(r.core.results[0][0]?.attempts.count, 1)
+        XCTAssertTrue(r.core.results[0][0]!.attempts[0].superseded)
+    }
+
+    func testHeldWithoutActionsRunsTheFullWindowAndDoesNotEndEarly() throws {
+        let r = Rig()
+        let step = Rig.heldStep(count: nil, seconds: 2)
+        r.prepare()
+        r.start(steps: [step])
+        r.untilGo()
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        r.setPad(p)
+        let start = r.now
+        r.advance(1900)
+        guard case .step(0, .window) = r.core.state else { return XCTFail("\(r.core.state)") }
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding…")
+        XCTAssertEqual(r.pathWrites, [], "no actions, no writes")
+        r.advance(150)
+        guard case .step(0, .release) = r.core.state else { return XCTFail("\(r.core.state)") }
+        XCTAssertGreaterThanOrEqual(r.now - start, 2_000_000_000)
+        r.releaseAll(hold: 100)
+        r.advance(1500)
+        XCTAssertEqual(r.verdict(0), .pass, r.core.results[0][0]?.attempts.last?.metrics.detail ?? "")
+
+        // Letting go early is a drop, and the window still runs to its end.
+        let early = Rig()
+        early.prepare()
+        early.start(steps: [step])
+        early.untilGo()
+        early.frame = f
+        early.advance(5)
+        early.setPad(p)
+        early.advance(600)
+        early.releaseAll(hold: 100)
+        guard case .step(0, .window) = early.core.state else { return XCTFail("a held step never ends early: \(early.core.state)") }
+        early.advance(2500)
+        guard case .fail(let why)? = early.verdict(0) else { return XCTFail("\(String(describing: early.verdict(0)))") }
+        XCTAssertTrue(why.contains("drops 1"), why)
+    }
+
+    func testStepsWithActionsAreSkippedWithoutTheBackgroundEngine() throws {
+        let r = Rig()
+        r.send(.controllerActive(true)); r.send(.readerMatched(1))
+        r.advance(400)
+        r.start(.inApp, steps: [Rig.heldStep(), Rig.aStep])
+        guard case .skipped(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertEqual(why, "needs the background engine")
+        XCTAssertEqual(r.core.state, .step(index: 1, phase: .ready), "the next step carries on")
+        XCTAssertEqual(r.pathWrites, [])
+        // The same step without actions is fine in-app.
+        let plain = Rig()
+        plain.send(.controllerActive(true)); plain.send(.readerMatched(1))
+        plain.advance(400)
+        plain.start(.inApp, steps: [Rig.heldStep(count: nil)])
+        XCTAssertEqual(plain.core.state, .step(index: 0, phase: .ready))
+    }
+
+    func testStopDuringHandOversRestoresAndTheRestoreHasTheLastWord() throws {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.heldStep(interval: 1000, count: 5)])
+        r.untilGo()
+        let (f, p) = r.rtDown
+        r.frame = f
+        r.advance(5)
+        r.setPad(p)
+        r.advanceAnswering(1200)                                 // driver, engine
+        r.send(.stop)
+        XCTAssertEqual(r.core.state, .finished)
+        XCTAssertEqual(r.pathWrites, ["driver", "engine"], "no write after the finish: restorePath is the last word")
+        XCTAssertEqual(Array(r.log.suffix(2)), [.restorePath, .done])
+        XCTAssertEqual(r.reportsWritten[0].steps[0].verdict, .invalid("stopped"))
     }
 
     // MARK: Whole run

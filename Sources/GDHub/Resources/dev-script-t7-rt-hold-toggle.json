@@ -1,0 +1,35 @@
+{
+  "id" : "t7-rt-hold-toggle",
+  "notes" : "Pull RT all the way down and keep it there. While you hold it the app switches who drives the controller, Driver then App, 12 times (every 3 s, about 40 s in all), and the check is that the virtual pad's RT never drops below 0.5 in that time: no hand-over may let the trigger go. Use it after any change to pad arbitration, pinning or the posting gate. It needs the background engine. Start it with the App path selected; the path is put back to the run's target when the hand-overs are done and to what it was before when the run ends. The result also says how many hand-overs the engine was seen following (armed live / inert). Added 2026-11-09 for the T7 driver check.",
+  "schema" : 1,
+  "steps" : [
+    {
+      "actions" : [
+        {
+          "toggleInputPath" : {
+            "count" : 12,
+            "intervalMs" : 3000,
+            "values" : [
+              "driver",
+              "engine"
+            ]
+          }
+        }
+      ],
+      "controls" : [
+        "rt"
+      ],
+      "detail" : "Keep it held the whole time. The app hands the controller between Driver and App 12 times meanwhile (about 40 s); the pad must never let go of RT. Let go when it says so.",
+      "expect" : {
+        "item" : "RT",
+        "minLevel" : 0.5
+      },
+      "id" : "rt-hold",
+      "kind" : "held",
+      "seconds" : 45,
+      "title" : "Pull RT fully and hold it"
+    }
+  ],
+  "title" : "RT held while the driver is handed over (T7)",
+  "version" : 1
+}
