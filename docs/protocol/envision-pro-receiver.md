@@ -83,3 +83,25 @@ Extra bits (the 13 "vendor padding" bits) are the **physical** paddle / SAX stat
 
 ## Wired identities (from the ShadowUSB daemon log, 2026-11-08)
 When the controller was plugged in by USB-C the Mac enumerated it as **1b1c:0x3a06 "SCUF Envision Pro Controller V2"** (one HID interface, serial `1c637ca3…`) and, in another moment, as **1b1c:0x3a05** (composite: audio control + streaming interfaces + two HID interfaces, the same shape as the linked receiver 0x3a08). Hypothesis: 0x3a06 is a charging / wireless-mode state, 0x3a05 the full wired controller. To be captured in the wired phase.
+
+## Control channel (Corsair "Bragi"), verified on this Mac 2026-11-09 over wireless
+
+Tool: `scuf-envision/tools/bragi.swift` (`bragi <target>:<hex> …`). Transport: the 0xFF42 collection on interface 4.
+
+- **Request:** output report `0x02`, 63 bytes: `<target> <command…>`. Targets: `08` = receiver, `09` = paired controller.
+- **Reply:** input report `0x01`: `01 <00 receiver | 01 controller> <command echo> <status> <value, little-endian>…`. Status `00` = ok, `09` = rejected.
+- **GET property:** `02 <prop>`. **SET property:** `01 <prop> 00 <value LE>`.
+- **SET is rejected (status 9) in hardware mode.** Switch the controller to software mode first (`01 03 00 02`), write, then restore hardware mode (`01 03 00 01`). The gamepad report 0x06 kept streaming at ~1 kHz throughout, and values survive the return to hardware mode.
+
+| Property | Target | Read on this unit | Meaning |
+|---|---|---|---|
+| `03` | 08, 09 | 1 | Mode: 1 hardware, 2 software |
+| `12` | 08 / 09 | 0x3A08 / 0x3A05 | Product ID (receiver / controller) |
+| `13` | 08 | `00 0c 35` | Receiver firmware |
+| `0D` | 09 | 1 | Sleep enabled (0 = never sleep, per OpenLinkHub) |
+| `0E` | 09 | 600000 → set to 3600000 | Sleep timer in ms (factory 10 min; set to 60 min on 2026-11-09) |
+| `0F` | 09 | 490 | Battery, tenths of a percent |
+| `40` | 09 | rises ~1000/s | Uptime since power-on, ms |
+
+Sequence used to change the sleep timer (all acknowledged with status 0, read back correctly):
+`09:01030002` → `09:010e00<ms LE32>` → `09:01030001`. Not yet confirmed: persistence across a controller power cycle, and whether the new timer is honoured without OpenLinkHub's extra `01 03 00 04` step.
