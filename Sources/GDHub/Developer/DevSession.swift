@@ -245,7 +245,7 @@ final class DevSession: ObservableObject {
         guard let template = entry.template else { return entry.errors.first ?? "The template cannot be read" }
         if !entry.errors.isEmpty { return entry.errors[0] }
         if template.paths != nil, driver.mode == .inApp {
-            return "This template switches input paths, which needs the background engine; in-app mode has none."
+            return "This template switches who drives the controller, which needs the background engine; in-app mode has none."
         }
         if device?.layout == nil { return "No controller layout loaded" }
         return nil
@@ -470,7 +470,7 @@ final class DevSession: ObservableObject {
             pathControl.restore(snap)
             restoreNote = wroteAnyPath
                 ? "Path put back to \(snap.restoredDescription)"
-                : "Input path left as it was: \(snap.restoredDescription)"
+                : "Driven-by setting left as it was: \(snap.restoredDescription)"
         }
         pathControl.removeMarker()
         snapshot = nil

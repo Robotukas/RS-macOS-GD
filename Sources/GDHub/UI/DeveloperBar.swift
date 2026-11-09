@@ -167,7 +167,7 @@ struct DeveloperBar: View {
         if let hint = session.hint {
             Text(hint).font(.caption).foregroundStyle(.secondary)
         } else if !session.isRunning && session.startBlockReason == nil && !session.finishedWithResults {
-            Text("The input path is switched for you when the run starts and put back when it ends.")
+            Text("Who drives the controller is switched for you when the run starts and put back when it ends.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         if let error = session.error {
