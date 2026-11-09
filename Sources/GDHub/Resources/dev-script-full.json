@@ -1,8 +1,30 @@
 {
   "id" : "full",
-  "notes" : "Every control, in layout order: one hands-off check, both sticks, both triggers, then every button including the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start. About three minutes. Run it on the Engine path first and on Driver LIVE after that, then compare the two reports.",
+  "notes" : "Every control: both sticks first, then a hands-off check, then the rest in layout order (triggers, every button including the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start). About three minutes. Run it on the Engine path first and on Driver LIVE after that, then compare the two reports. The sticks come before the hands-off check because the pad posts nothing while idle and does not answer GetReport: its state is known only after it has moved once, and a stick step ends at centre.",
   "schema" : 1,
   "steps" : [
+    {
+      "controls" : [
+        "left_stick"
+      ],
+      "detail" : "Push it to the rim and go all the way round, slowly, once or twice, then release it. Leave the right stick alone.",
+      "id" : "left_stick",
+      "kind" : "stick",
+      "releaseSeconds" : 0.5,
+      "seconds" : 5,
+      "title" : "Roll the LEFT stick in one or two slow circles, then let go"
+    },
+    {
+      "controls" : [
+        "right_stick"
+      ],
+      "detail" : "Push it to the rim and go all the way round, slowly, once or twice, then release it. Leave the left stick alone.",
+      "id" : "right_stick",
+      "kind" : "stick",
+      "releaseSeconds" : 0.5,
+      "seconds" : 5,
+      "title" : "Roll the RIGHT stick in one or two slow circles, then let go"
+    },
     {
       "controls" : [
 
@@ -83,17 +105,6 @@
       "kind" : "digital",
       "seconds" : 3,
       "title" : "Press D-pad left twice"
-    },
-    {
-      "controls" : [
-        "left_stick"
-      ],
-      "detail" : "Push it to the rim and go all the way round, slowly, once or twice, then release it. Leave the right stick alone.",
-      "id" : "left_stick",
-      "kind" : "stick",
-      "releaseSeconds" : 0.5,
-      "seconds" : 5,
-      "title" : "Roll the LEFT stick in one or two slow circles, then let go"
     },
     {
       "controls" : [
@@ -234,17 +245,6 @@
       "kind" : "digital",
       "seconds" : 3,
       "title" : "Press Y twice"
-    },
-    {
-      "controls" : [
-        "right_stick"
-      ],
-      "detail" : "Push it to the rim and go all the way round, slowly, once or twice, then release it. Leave the left stick alone.",
-      "id" : "right_stick",
-      "kind" : "stick",
-      "releaseSeconds" : 0.5,
-      "seconds" : 5,
-      "title" : "Roll the RIGHT stick in one or two slow circles, then let go"
     },
     {
       "controls" : [

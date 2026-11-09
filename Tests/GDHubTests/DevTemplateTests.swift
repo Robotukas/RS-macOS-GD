@@ -127,11 +127,16 @@ final class DevTemplateTests: XCTestCase {
 
     func testFullCoversEveryControlOnceWithTheRightKinds() throws {
         let full = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "full" })
-        XCTAssertEqual(full.steps.first?.devKind, .rest)
+        // Sticks first, then the hands-off check, then everything else in layout order: the pad posts nothing while
+        // idle and does not answer GetReport, so its state is known only after it has moved once.
+        let stickIDs: [String] = layout.controlsByOrder.filter { $0.kind == .stick }.map { $0.id }
+        XCTAssertEqual(full.steps.prefix(stickIDs.count).map { $0.controls.first! }, stickIDs)
+        XCTAssertEqual(full.steps[stickIDs.count].devKind, .rest)
         XCTAssertEqual(full.steps.count, 1 + layout.controls.count)
-        XCTAssertEqual(full.steps.dropFirst().map { $0.controls.first! }, layout.controlsByOrder.map(\.id), "layout order, one step each")
+        XCTAssertEqual(full.steps.filter { $0.devKind != .rest }.map { $0.controls.first! },
+                       stickIDs + layout.controlsByOrder.filter { $0.kind != .stick }.map { $0.id }, "one step per control")
         XCTAssertEqual(full.steps.filter { $0.devKind == .rest }.count, 1)
-        for s in full.steps.dropFirst() {
+        for s in full.steps where s.devKind != .rest {
             let c = layout.control(id: s.controls[0])!
             switch c.kind {
             case .stick: XCTAssertEqual(s.devKind, .stick); XCTAssertEqual(s.seconds, 5); XCTAssertEqual(s.releaseSeconds, 0.5)
@@ -147,7 +152,7 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(byID["a"]?.title, "Press A twice")
         XCTAssertEqual(byID["dpad_left"]?.title, "Press D-pad left twice")
         let sticks = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "sticks" })
-        XCTAssertEqual(sticks.steps.map(\.id), ["rest", "left_stick", "right_stick"])
+        XCTAssertEqual(sticks.steps.map(\.id), ["left_stick", "right_stick", "rest"])
         let gkeys = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "gkeys" })
         XCTAssertEqual(gkeys.steps.map(\.id), ["g1", "g2", "g3", "g4", "g5", "profile", "start"])
     }

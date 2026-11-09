@@ -123,14 +123,18 @@ enum DevBuiltins {
         let ordered = layout.controlsByOrder
         let full = DevTemplate(
             id: "full", title: "Full check",
-            notes: "Every control, in layout order: one hands-off check, both sticks, both triggers, then every button including "
-                + "the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start. About three minutes. Run it on the Engine "
-                + "path first and on Driver LIVE after that, then compare the two reports.",
-            steps: [restStep()] + ordered.map(step(for:)))
+            notes: "Every control: both sticks first, then a hands-off check, then the rest in layout order (triggers, every button "
+                + "including the D-pad, the paddles, the SAX buttons, G1-G5, Profile and Start). About three minutes. Run it on the "
+                + "Engine path first and on Driver LIVE after that, then compare the two reports. The sticks come before the "
+                + "hands-off check because the pad posts nothing while idle and does not answer GetReport: its state is known only "
+                + "after it has moved once, and a stick step ends at centre.",
+            steps: ordered.filter { $0.kind == .stick }.map(step(for:)) + [restStep()]
+                + ordered.filter { $0.kind != .stick }.map(step(for:)))
         let sticks = DevTemplate(
             id: "sticks", title: "Sticks check",
-            notes: "A hands-off check, then both sticks. Use it after changing anything in the stick path (dead band, scaling).",
-            steps: [restStep()] + ordered.filter { $0.kind == .stick }.map(step(for:)))
+            notes: "Both sticks, then a hands-off check (after the sticks, so the pad's state is known). Use it after changing "
+                + "anything in the stick path (dead band, scaling).",
+            steps: ordered.filter { $0.kind == .stick }.map(step(for:)) + [restStep()])
         let gkeyIDs = ["g1", "g2", "g3", "g4", "g5", "profile", "start"]
         let gkeys = DevTemplate(
             id: "gkeys", title: "G keys, Profile and Start",

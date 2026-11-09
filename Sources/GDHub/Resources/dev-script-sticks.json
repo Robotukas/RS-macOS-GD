@@ -1,18 +1,8 @@
 {
   "id" : "sticks",
-  "notes" : "A hands-off check, then both sticks. Use it after changing anything in the stick path (dead band, scaling).",
+  "notes" : "Both sticks, then a hands-off check (after the sticks, so the pad's state is known). Use it after changing anything in the stick path (dead band, scaling).",
   "schema" : 1,
   "steps" : [
-    {
-      "controls" : [
-
-      ],
-      "detail" : "Put the controller down and let go of every stick, trigger and button. The pad has to stay completely still.",
-      "id" : "rest",
-      "kind" : "rest",
-      "seconds" : 3,
-      "title" : "Hands off everything"
-    },
     {
       "controls" : [
         "left_stick"
@@ -34,6 +24,16 @@
       "releaseSeconds" : 0.5,
       "seconds" : 5,
       "title" : "Roll the RIGHT stick in one or two slow circles, then let go"
+    },
+    {
+      "controls" : [
+
+      ],
+      "detail" : "Put the controller down and let go of every stick, trigger and button. The pad has to stay completely still.",
+      "id" : "rest",
+      "kind" : "rest",
+      "seconds" : 3,
+      "title" : "Hands off everything"
     }
   ],
   "title" : "Sticks check",
