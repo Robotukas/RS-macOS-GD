@@ -1,0 +1,3332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDHub Receiver Takeover Plan</title>
+<style>
+:root{--bg:#f6f7f9;--surface:#fff;--text:#1b1f24;--muted:#5b6470;--line:#d9dee5;--accent:#0b62d6;
+--code-bg:#eef1f5;--head:#eef2f7;--tag-bg:#e4ecf9;--tag-text:#0b4aa6;--warn-bg:#fff4d6;--warn-text:#6b4a00}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12151a;--surface:#1a1e25;--text:#e6e9ee;
+--muted:#9aa4b2;--line:#2c333d;--accent:#6aa9ff;--code-bg:#232933;--head:#222832;--tag-bg:#1f3050;--tag-text:#a9c8ff;
+--warn-bg:#3a2f10;--warn-text:#ffd98a}}
+:root[data-theme="dark"]{--bg:#12151a;--surface:#1a1e25;--text:#e6e9ee;--muted:#9aa4b2;--line:#2c333d;--accent:#6aa9ff;
+--code-bg:#232933;--head:#222832;--tag-bg:#1f3050;--tag-text:#a9c8ff;--warn-bg:#3a2f10;--warn-text:#ffd98a}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{max-width:900px;margin:0 auto;padding:20px 16px 64px}
+h1{font-size:1.55rem;line-height:1.25;margin:8px 0 12px}
+h2{font-size:1.25rem;margin:36px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+h3{font-size:1.05rem;margin:24px 0 8px}
+p,li{overflow-wrap:anywhere}
+ul,ol{padding-left:1.3em}
+li{margin:3px 0}
+a{color:var(--accent)}
+hr{border:0;border-top:1px solid var(--line);margin:28px 0}
+code{font:0.86em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code-bg);padding:1px 4px;border-radius:4px}
+pre{background:var(--code-bg);padding:12px;border-radius:8px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;font-size:0.82rem;overflow-wrap:normal}
+.tw{overflow-x:auto;margin:12px 0;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:max-content;min-width:100%;font-size:0.92rem}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;min-width:4em;max-width:22em}
+th{background:var(--head);font-weight:600;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px 16px 12px;margin:16px 0}
+.card h2{border-top:0;margin-top:10px;padding-top:0}
+.status{display:inline-block;background:var(--warn-bg);color:var(--warn-text);font-weight:600;font-size:0.88rem;
+padding:4px 10px;border-radius:999px;margin:12px 0 0}
+.tag{display:inline-block;background:var(--tag-bg);color:var(--tag-text);font-size:0.75em;font-weight:700;
+padding:0 5px;border-radius:4px;white-space:nowrap}
+details.toc{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 16px;margin:16px 0}
+details.toc summary{font-weight:600;cursor:pointer}
+details.toc ul{list-style:none;padding-left:0.9em;margin:6px 0}
+details.toc a{text-decoration:none}
+.note{color:var(--muted);font-size:0.88rem}
+</style>
+</head>
+<body>
+<main>
+<p class="note">GDHub · generated from <code>docs/plans/receiver-takeover-plan.md</code>, which is the source of truth</p>
+
+<section class="card" id="plain-summary">
+<p class="status">Status: waiting for approval · nothing installed has changed</p>
+<h2>In plain words</h2>
+<h3>What the plan does</h3>
+<ul>
+<li><b>How it takes over:</b> our driver gets a second part that attaches to the receiver's controller interface in place of Apple's generic handler. It reads the controller data there and drives the virtual Xbox pad itself.</li>
+<li><b>What stays as it is:</b> Apple's USB driver stays underneath, so the app's live view, learn mode, battery and sleep timer keep working. The audio interfaces are not touched.</li>
+<li><b>The background engine:</b> it stops forwarding and becomes the supervisor and automatic fallback. One command switches back to it at any time, and it stays the default until a play test passes.</li>
+</ul>
+<p>Three designs competed; two of three judges picked this one, mainly because it is the easiest to undo. Three reviewers then tried to break the plan and found no blocker; their 26 major points are worked into it.</p>
+<h3>What you get</h3>
+<div class="tw"><table>
+<thead><tr><th></th><th>Today</th><th>After takeover (estimate)</th></tr></thead>
+<tbody>
+<tr><td>Typical delay</td><td>1.19 ms</td><td>0.2–0.35 ms</td></tr>
+<tr><td>99 of 100 updates under</td><td>2.69 ms</td><td>0.5–1.0 ms</td></tr>
+<tr><td>Rare 5–9 ms spikes</td><td>present</td><td>probably still present</td></tr>
+</tbody></table></div>
+<ul>
+<li>About 0.65 ms of that gain comes from a one-line fix to our own rate limiter (step T1), which needs no driver change.</li>
+<li>The main gain is that the controller keeps working if the engine crashes or hangs.</li>
+</ul>
+<h3>What it costs</h3>
+<ul>
+<li><b>Size:</b> about 1,400 lines of driver code and 900 lines of app code (estimate).</li>
+<li><b>Driver replacements:</b> four or five before the play-test gate. Any of them may need a reboot.</li>
+<li><b>Bigger failure:</b> a bug in the new part takes the virtual pad down with it until macOS restarts the driver. The escape is to switch the controller off, then roll back.</li>
+</ul>
+<h3>Steps</h3>
+<ol>
+<li><b>T0, test driver:</b> a throwaway driver, separate from the real one, answers the unproven questions: does macOS load it, does it win the controller interface, do the app's readers still work, what happens after a crash, and can we roll back to an older version.</li>
+<li><b>T1–T2, app only:</b> the limiter fix, then one shared translation core that the engine runs first.</li>
+<li><b>T3–T7, driver:</b> move the pad, add the new part switched off, run it in shadow mode beside the engine, then switch it live.</li>
+<li><b>T8, gate:</b> measurements plus your play test. Only then does the driver path become the default.</li>
+<li><b>T9–T12, later:</b> rumble, macros and running with no app process at all.</li>
+</ol>
+<h3>What T0 needs from you</h3>
+<ul>
+<li>You at the Mac: approve the test driver in System Settings if asked, and switch the controller off and on a few times.</li>
+<li>Up to four reboots.</li>
+<li>A crash drill: you hold View + Menu + both stick clicks for 2 seconds, at most three times.</li>
+<li>The controller's sleep timer is changed briefly to see what the receiver does, then restored to the value it had.</li>
+</ul>
+<p>If T0 shows macOS refuses the driver or games lose the pad, the plan stops there.</p>
+</section>
+
+<details class="toc"><summary>Contents of the full plan</summary><div class="toc">
+<ul>
+<li><a href="#phases">Phases</a></li>
+<li><a href="#1-goal-and-measured-justification">1. Goal and measured justification</a></li>
+<li><a href="#2-chosen-mechanism-and-why">2. Chosen mechanism and why</a><ul>
+<li><a href="#21-choosing-between-the-judged-designs">2.1 Choosing between the judged designs</a></li>
+<li><a href="#22-mechanism-a-hid-tap-on-interface-3s-iohidinterface">2.2 Mechanism: a HID tap on interface 3's IOHIDInterface</a></li>
+<li><a href="#23-rejected-alternatives">2.3 Rejected alternatives</a></li>
+<li><a href="#24-documented-decisions-this-reverses-or-amends">2.4 Documented decisions this reverses or amends</a></li>
+<li><a href="#25-assumptions-to-prove">2.5 Assumptions to prove</a></li>
+</ul>
+</li>
+<li><a href="#3-personalities-and-entitlements-exact">3. Personalities and entitlements (exact)</a><ul>
+<li><a href="#31-root-production-changed-in-t3-and-t4">3.1 Root (production): changed in T3 and T4</a></li>
+<li><a href="#32-tap-production-new-in-t4">3.2 Tap (production): new in T4</a></li>
+<li><a href="#33-probe-throwaway-t0-only-deleted-in-t05">3.3 Probe (throwaway): T0 only, deleted in T0.5</a></li>
+<li><a href="#34-plan-c-variant-only-if-a4-fails-while-nothing-is-seized">3.4 Plan C variant: only if A4 fails while nothing is seized</a></li>
+<li><a href="#35-entitlements">3.5 Entitlements</a></li>
+<li><a href="#36-build-checks-scriptsbuild-xcodesh">3.6 Build checks (scripts/build-xcode.sh)</a></li>
+</ul>
+</li>
+<li><a href="#4-classes-queues-and-the-report-path">4. Classes, queues and the report path</a><ul>
+<li><a href="#41-classes">4.1 Classes</a></li>
+<li><a href="#42-call-order-invariant-checked-in-every-build">4.2 Call-order invariant (checked in every build)</a></li>
+<li><a href="#43-registry-process-global">4.3 Registry (process-global)</a></li>
+<li><a href="#44-report-path-and-userkernel-crossings">4.4 Report path and user/kernel crossings</a></li>
+<li><a href="#45-pool-buffers-and-open">4.5 Pool buffers and Open</a></li>
+<li><a href="#46-t9-option-shared-hot-queue-only-if-g11-or-g12-fails">4.6 T9 option: shared Hot queue (only if G11 or G12 fails)</a></li>
+</ul>
+</li>
+<li><a href="#5-translation-and-config-protocol">5. Translation and config protocol</a><ul>
+<li><a href="#51-one-shared-c-translator">5.1 One shared C translator</a></li>
+<li><a href="#52-canonical-behaviour-decisions">5.2 Canonical behaviour decisions</a></li>
+<li><a href="#53-mapping-blob-gdhm-v1-little-endian-1024-b-read-with-memcpy-never-cast">5.3 Mapping blob "GDHM" v1 (little-endian, ≤ 1024 B, read with memcpy, never cast)</a></li>
+<li><a href="#54-protocol-additions-gdhubprotocolh">5.4 Protocol additions (GDHubProtocol.h)</a></li>
+<li><a href="#55-gdhubstatus2-v1-512-b-little-endian">5.5 GDHubStatus2 v1 (≤ 512 B, little-endian)</a></li>
+<li><a href="#56-how-mapping-revisions-are-applied-atomically">5.6 How mapping revisions are applied atomically</a></li>
+<li><a href="#57-compatibility">5.7 Compatibility</a></li>
+</ul>
+</li>
+<li><a href="#6-pad-ownership-arbitration-watchdogs-fallback">6. Pad ownership, arbitration, watchdogs, fallback</a><ul>
+<li><a href="#61-states">6.1 States</a></li>
+<li><a href="#62-arbitration-the-pad-is-the-only-arbiter">6.2 Arbitration (the pad is the only arbiter)</a></li>
+<li><a href="#63-ownership">6.3 Ownership</a></li>
+<li><a href="#64-watchdog-semantics-per-slot">6.4 Watchdog semantics (per slot)</a></li>
+<li><a href="#65-crash-fuse-and-crash-loop-defence">6.5 Crash fuse and crash-loop defence</a></li>
+<li><a href="#66-engine-fallback-automatic-and-forced">6.6 Engine fallback: automatic and forced</a></li>
+</ul>
+</li>
+<li><a href="#7-lifecycle">7. Lifecycle</a><ul>
+<li><a href="#71-upgrade-procedure-every-dext-changing-phase">7.1 Upgrade procedure (every dext-changing phase)</a></li>
+<li><a href="#72-rollback-procedure-l9">7.2 Rollback procedure (L9)</a></li>
+</ul>
+</li>
+<li><a href="#8-what-changes-file-by-file">8. What changes, file by file</a><ul>
+<li><a href="#81-dext">8.1 Dext</a></li>
+<li><a href="#82-engine-swift">8.2 Engine (Swift)</a></li>
+<li><a href="#83-gui">8.3 GUI</a></li>
+<li><a href="#84-package-and-tests">8.4 Package and tests</a></li>
+<li><a href="#85-scripts">8.5 Scripts</a></li>
+<li><a href="#86-docs">8.6 Docs</a></li>
+</ul>
+</li>
+<li><a href="#9-measurement">9. Measurement</a><ul>
+<li><a href="#91-in-dext-stamps-dext-only">9.1 In-dext stamps (dext only)</a></li>
+<li><a href="#92-how-the-numbers-are-read">9.2 How the numbers are read</a></li>
+<li><a href="#93-gate-t8">9.3 Gate (T8)</a></li>
+</ul>
+</li>
+<li><a href="#10-test-plan">10. Test plan</a><ul>
+<li><a href="#101-unit-tests-swift-test">10.1 Unit tests (swift test)</a></li>
+<li><a href="#102-live-check-toolkit">10.2 Live check toolkit</a></li>
+</ul>
+</li>
+<li><a href="#11-phased-implementation">11. Phased implementation</a><ul>
+<li><a href="#t0-probe-dext-production-untouched">T0: Probe dext (production untouched)</a></li>
+<li><a href="#t1-engine-limiter-fix-and-new-baseline">T1: Engine limiter fix and new baseline</a></li>
+<li><a href="#t2-one-shared-c-translator-the-engine-runs-it">T2: One shared C translator; the engine runs it</a></li>
+<li><a href="#t3-root-owns-the-pad-registry-fixed-length-buffers-dextclient-matching">T3: Root owns the pad; registry; fixed-length buffers; DextClient matching</a></li>
+<li><a href="#t4-tap-in-production-inert-and-count-only">T4: Tap in production, INERT and COUNT only</a></li>
+<li><a href="#t5-translator-inside-the-dext-shadow-only">T5: Translator inside the dext, SHADOW only</a></li>
+<li><a href="#t6-engine-supervisor-in-shadow-app-only">T6: Engine supervisor in SHADOW (app only)</a></li>
+<li><a href="#t7-live-dext-and-engine-together">T7: LIVE (dext and engine together)</a></li>
+<li><a href="#t8-gate-and-play-test-live-becomes-the-default">T8: Gate and play test; LIVE becomes the default</a></li>
+<li><a href="#t9-shared-hot-queue-only-if-g11-or-g12-fails">T9: Shared Hot queue (only if G11 or G12 fails)</a></li>
+<li><a href="#t10-rumble">T10: Rumble</a></li>
+<li><a href="#t11-macro-overlay-and-d8-slots">T11: Macro overlay and D8 slots</a></li>
+<li><a href="#t12-autoarm-optional-last">T12: AutoArm (optional, last)</a></li>
+</ul>
+</li>
+<li><a href="#12-risks-symptom-action">12. Risks (symptom → action)</a></li>
+<li><a href="#13-open-questions">13. Open questions</a></li>
+<li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
+<li><a href="#review-resolution">Review resolution</a></li>
+</ul>
+</div>
+</details>
+<h1 id="receiver-takeover-controller-input-translated-inside-the-dext">Receiver takeover: controller input translated inside the dext</h1>
+<p><em>File: docs/plans/receiver-takeover-plan.md · Revision 2, 2026-11-09 · Status: planning, not approved · Decision: owner, 2026-11-09 ("take it over anyway")</em></p>
+<p><em>Revision 2 applies the api-truth, failure-modes and scope-and-proof reviews. No blocker showed that the HID-tap mechanism cannot work, so the mechanism is unchanged. The main changes:</em>
+- <em>INERT now means "attached, interface not opened".</em>
+- <em>The pad is the only arbiter, and nothing waits on the tap.</em>
+- <em>T0 uses one probe build with run-time steps, and every T0 build runs with <code>--same-build</code>.</em>
+- <em>The LIVE dext code ships in T7, together with the engine code that uses it.</em>
+- <em>Upgrade and rollback are exact command lists.</em></p>
+<p><em>The "Review resolution" section at the end lists each review issue and what was done.</em></p>
+<p>Evidence tags: <span class="tag">M</span> = measured on this Mac. <span class="tag">R</span> = read (file:line, SDK header or URL). <strong>G·Tn</strong> = guess, to be proven or refuted in phase Tn.</p>
+<p><strong>Summary</strong>
+- What changes for you: the dext reads the controller's interface 3 and drives the virtual Xbox pad itself. The background engine stops posting reports and becomes the supervisor and the automatic fallback.
+- Expected latency (<span class="tag">G·T8</span>): p50 from 1.19 ms to about 0.2–0.35 ms, p99 from 2.69 ms to about 0.5–1.0 ms.
+    - About 0.65 ms of the p50 gain is GDHub's own rate limiter, and T1 also removes that from today's path.
+    - Only the takeover gives the rest: about 0.2–0.35 ms at p50 (less if the in-dext hop goes through the kernel, <span class="tag">G·T3</span>) and about 1 ms at p99.
+- The rare 5–9 ms spikes will probably stay, because a bare reader saw them too (<span class="tag">M</span>). No game running at 60–144 fps will feel the latency change.
+- The real gains: input keeps working when the engine crashes or hangs, and the 220–360 IOConnect posts per second go away. The engine still reads about 955 reports/s as a hot standby.
+- What stays in the app: live view, learn mode, mappings, battery and sleep timer (interface 4) and the Driver menu. Apple's USB HID driver stays on the receiver.
+- Cost:
+    - About 1,400 lines of dext C/C++ and 900 lines of Swift (<span class="tag">G</span>).
+    - 4–5 production dext replacements before the gate, plus 4 probe operations in T0. Any of them may need a reboot.
+    - A bug in the tap code now takes the pad down with it.
+- The engine path stays the default until the T8 gate passes. <code>defaults write com.interlinked.gdhub inputPath -string engine</code> forces it at any time.</p>
+<h2 id="phases">Phases</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Title</th>
+<th>Needs dext replacement?</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T0</td>
+<td>Probe dext: does it load, does it win the match, one process, raw reads intact, reports in-driver, crash relaunch, downgrade</td>
+<td>Probe dext only (4 probe operations; production untouched)</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T1</td>
+<td>Engine limiter fix (rank 5) and the new baseline</td>
+<td>No</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T2</td>
+<td>One shared C translator; the engine runs it</td>
+<td>No</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T3</td>
+<td>Root owns the pad; registry; fixed-length post buffers; DextClient matching fix</td>
+<td>Yes</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T4</td>
+<td>Tap in production, INERT and COUNT only; soak; upgrade and rollback drills</td>
+<td>Yes</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T5</td>
+<td>Translator inside the dext, SHADOW only; mapping blob</td>
+<td>Yes</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T6</td>
+<td>Engine supervisor in SHADOW; input-path switch</td>
+<td>No (app only)</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T7</td>
+<td>LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together)</td>
+<td>Yes (+1 fix replacement allowed)</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T8</td>
+<td>Gate and play test; LIVE becomes the default</td>
+<td>No</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T9</td>
+<td>Shared Hot queue (only if G11 or G12 fails)</td>
+<td>Yes (conditional)</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T10</td>
+<td>Rumble (after the 0x09 capture)</td>
+<td>Yes</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T11</td>
+<td>Macro overlay (MERGE with TTL) and D8 slots under the root</td>
+<td>Yes</td>
+<td>pending</td>
+</tr>
+<tr>
+<td>T12</td>
+<td>AutoArm: pad with no user process (optional; needs a measured relaunch signal)</td>
+<td>Yes</td>
+<td>pending</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="1-goal-and-measured-justification">1. Goal and measured justification</h2>
+<p><strong>Goal.</strong> Move the per-report work (parse, map, deadband/hysteresis, build, post) from the engine process into the dext. Anything that changes often (mappings, profiles, macros) stays as data or stays in user space.</p>
+<p><strong>Today (all M, engine-agent-plan.md §8.4, under Game Mode):</strong>
+- Total delay: p50 1.19 ms, p99 2.69 ms, worst max 8.88 ms.
+- Stages at p50: kernel→callback 0.12 ms, rate limiter ("cap") about 0.65 ms, IOConnect 0.36 ms.
+- Posts: median 217 Hz, peak 363 Hz. About 21 % of changed frames are coalesced.
+- Thread priorities: dext 63, engine 37, GUI 46 (<span class="tag">M</span> <code>ps -axo pid,pri,comm</code> today).
+- The receiver sends 946–961 reports/s while the controller is awake (<span class="tag">M</span>).</p>
+<p><strong>Removed from the critical path</strong> (detail in §4.4):
+- the engine wake;
+- the limiter;
+- two engine queue hops;
+- the IOConnect call;
+- the per-post <code>SetLength</code> RPC (non-LOCAL: <span class="tag">R</span> IOBufferMemoryDescriptor.iig:93; called on every post: <span class="tag">R</span> GDHubVirtualHIDUserClient.cpp:135).</p>
+<p><strong>Honest gain</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comparison</th>
+<th>p50</th>
+<th>p99</th>
+<th>Tag</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Today, engine path</td>
+<td>1.19 ms</td>
+<td>2.69 ms</td>
+<td><span class="tag">M</span></td>
+</tr>
+<tr>
+<td>After the T1 limiter fix, engine path</td>
+<td>about 0.5 ms</td>
+<td>unknown</td>
+<td><span class="tag">G·T1</span> (simulated, <span class="tag">R</span> other-controller-drivers.md:221-228)</td>
+</tr>
+<tr>
+<td>After the takeover, in-dext total</td>
+<td>0.15–0.35 ms</td>
+<td>0.5–1.0 ms</td>
+<td><span class="tag">G·T8</span></td>
+</tr>
+<tr>
+<td>Unique to the takeover (against T1)</td>
+<td>about 0.2–0.35 ms; less if the hop is a kernel round trip</td>
+<td>about 1 ms</td>
+<td><span class="tag">G·T3, T8</span></td>
+</tr>
+<tr>
+<td>5–9 ms spikes</td>
+<td>probably unchanged</td>
+<td>—</td>
+<td><span class="tag">G</span> (a bare reader saw them, <span class="tag">M</span>)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Non-latency gains</strong>
+- Input survives an engine hang. It also survives an engine crash while launchd restarts the engine (KeepAlive true, ThrottleInterval 2 s: <span class="tag">R</span> Xcode/Engine/com.interlinked.gdhub.engine.plist:21-24) and the new engine adopts the pad.
+- No IOConnect traffic at 220–360 posts/s.
+- The post path no longer depends on Game Mode demoting user processes (<span class="tag">M</span> engine-agent-plan.md:28-35).
+- This is <strong>not</strong> a gain: in LIVE the engine still wakes about 955 times a second. Its reader is the hot standby and feeds stall checks F1 and F6 (§6.6).</p>
+<p><strong>Costs</strong>
+- The dext now contains code that knows the receiver's report format.
+- Production dext replacements: T3, T4, T5 and T7 (plus one fix build allowed in T7), then T9–T12 if they are done. Any of them may force a reboot (<span class="tag">R</span> driverkit-dext-design.md:1316-1320).
+- Larger blast radius. The root, the user client, the pad and the tap share one process. A crash in any tap code (Start, Stop, SetPowerState, the timer, pool handling) kills the pad, and the engine fallback with it, until the dext relaunches (§7).
+- macOS may reboot the Mac when a driver crashes too often (<span class="tag">R</span> DriverKit IOKitKeys.h:134-136). The opt-out entitlement <code>com.apple.private.driverkit.test-driver</code> is private. Whether this policy applies here is <span class="tag">G·T0.3</span>.</p>
+<hr />
+<h2 id="2-chosen-mechanism-and-why">2. Chosen mechanism and why</h2>
+<h3 id="21-choosing-between-the-judged-designs">2.1 Choosing between the judged designs</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Judge</th>
+<th>safest-path</th>
+<th>hid-tap</th>
+<th>usb-claim</th>
+<th>Winner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>driverkit-correctness</td>
+<td>8</td>
+<td>7.5</td>
+<td>5</td>
+<td>safest-path</td>
+</tr>
+<tr>
+<td>safety-and-rollback</td>
+<td>8.5</td>
+<td>7.5</td>
+<td>4.5</td>
+<td>safest-path</td>
+</tr>
+<tr>
+<td>product-fit</td>
+<td>7</td>
+<td>8</td>
+<td>5</td>
+<td>hid-tap</td>
+</tr>
+<tr>
+<td><strong>driverkit + safety</strong></td>
+<td><strong>16.5</strong></td>
+<td>15.0</td>
+<td>9.5</td>
+<td><strong>safest-path</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>The rule is to take the design that driverkit-correctness and safety-and-rollback rate highest together. That is <strong>safest-path</strong>. Product-fit's preferences are kept as grafts:
+- an always-attached tap that does not open the interface until armed;
+- a 250 ms silence neutral;
+- getpid() as the one-process proof;
+- <code>com.apple.kpi.iokit</code> as the kernel bundle for the tap personality;
+- devTerminate terminates the tap first;
+- a shared queue only if measurements call for it;
+- a MERGE overlay for macros.</p>
+<h3 id="22-mechanism-a-hid-tap-on-interface-3s-iohidinterface">2.2 Mechanism: a HID tap on interface 3's IOHIDInterface</h3>
+<ul>
+<li>A new service, <code>GDHubReceiverTap</code>, matches only interface 3's <code>IOHIDInterface</code>: VendorID 6940, ProductID 14856, PrimaryUsagePage 65368, PrimaryUsage 1. Interface 3 carries these values today (<span class="tag">M</span> ioreg).</li>
+<li>It competes with <code>AppleUserHIDEventDriver</code>, which scores 1201 on that interface (<span class="tag">M</span>). With IOProbeScore 1000 the tap should score about 8200 (<span class="tag">G·T0</span>). The score increments are VendorID +5000, ProductID +1000, page/usage +1100/+100 (<span class="tag">R</span> IOHIDFamily IOHIDFamilyPrivate.cpp, via review).</li>
+<li>Apple's stack stays: <code>IOUSBHostInterface@3 → AppleUserUSBHostHIDDevice → IOHIDDevice</code>. User-space readers (engine, GUI, padlat) attach an <code>IOHIDLibUserClient</code> to that IOHIDDevice, beside IOHIDInterface (<span class="tag">M</span> ioreg). They keep their data source whatever the tap does.</li>
+<li>Only one client can open an IOHIDInterface (<span class="tag">R</span> MacOSX27 Kernel IOService.h:655-664, single-owner handleOpen). The tap must therefore <strong>win</strong> the match.</li>
+<li>Opening IOHIDInterface also opens the owning IOHIDDevice. That open fails while a user-space client has seized the device (<span class="tag">R</span> MacOSX27 Kernel IOKit/hid/IOHIDDevice.h:255; upstream IOHIDInterface.cpp, via review). An Open failure can therefore mean "seized" rather than "not allowed" (§4.5).</li>
+<li>Reports arrive through <code>Open(this, 0, action TYPE(ReportAvailable))</code> (<span class="tag">R</span> HIDDriverKit IOHIDInterface.iig:110-115, 149-151).</li>
+<li>The kernel already delivers these reports today, to Apple's event driver: ReportAvailableCalls 31,483,360 against InputReportCount 31,483,370 (<span class="tag">M</span>).</li>
+<li>The tap attaches at every 3A08 enumeration but stays INERT until the engine arms it (§6.1). INERT means the interface is not opened.</li>
+<li>The pad moves from the user client to the root, so it survives 3A08↔3A09 re-enumeration and an engine crash.</li>
+</ul>
+<h3 id="23-rejected-alternatives">2.3 Rejected alternatives</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Alternative</th>
+<th>Why rejected</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>USB claim</strong>: an IOUserUSBHostHIDDevice subclass on IOUSBHostInterface@3</td>
+<td>It removes only Apple's dext leg, about 0.05–0.15 ms (<span class="tag">G</span>). In exchange, a crash, a failed load or a stuck replacement leaves interface 3 without a driver, so the controller and the engine fallback are both dead. It relies on unverified base-class internals (<span class="tag">R</span> IOUserUSBHostHIDDevice.iig:224-227 documents only the completion). It needs transport.usb. A forum case shows a 90000-score personality losing to Apple's 50001 (<span class="tag">R</span> developer.apple.com/forums/thread/717364). <strong>Kept as the last resort</strong> if neither Plan A nor Plan C can Open the IOHIDInterface.</td>
+</tr>
+<tr>
+<td>Plain USB claim (CopyPipe/AsyncIO)</td>
+<td>It removes the 0xFF58 IOHIDDevice from user space. The live view, learn mode, battery gating, padlat and the engine fallback would all go dead.</td>
+</tr>
+<tr>
+<td>A tap that refuses Start until armed</td>
+<td>After every boot or relaunch, the tap would be missing until the controller is power-cycled. An attached tap that does not open the interface runs no per-frame code and is just as safe (§6.1).</td>
+</tr>
+<tr>
+<td>Subclassing IOUserHIDEventDriver</td>
+<td>It parses game-controller elements on every report (<span class="tag">R</span> IOUserHIDEventDriver.iig:39-126).</td>
+</tr>
+<tr>
+<td>The tap in a separate dext, with IPC to the pad</td>
+<td>It adds a kernel round trip, which defeats the purpose.</td>
+</tr>
+<tr>
+<td>Integer-only translator</td>
+<td>Integers precomputed in raw units cannot reproduce Swift's Double results for learned asymmetric ranges (§5.1).</td>
+</tr>
+<tr>
+<td>OVERRIDE lease for macros</td>
+<td>Extra state that invites stuck inputs, and it puts user space back in the hot path. Macros use a MERGE overlay (T11).</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Plan B.</strong> Used if T0 shows the root and the tap in different processes. The tap hosts its own pad and the engine connects to the tap. The pad then disappears whenever the controller powers off. Stop and review the plan before going on.</p>
+<p><strong>Plan C.</strong> Used if a plain IOService cannot Open the interface while nothing has seized it (§4.5). The tap becomes an <code>IOUserHIDEventService</code> subclass (§3.4).</p>
+<h3 id="24-documented-decisions-this-reverses-or-amends">2.4 Documented decisions this reverses or amends</h3>
+<p>Each document is updated in the phase named.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Change</th>
+<th>Phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G5 "Failure is safe": an app crash removes the devices (<span class="tag">R</span> driverkit-dext-design.md:30)</td>
+<td>In LIVE, the pad survives an engine crash or hang. An unowned pad is removed after 30 s (orphan timer, §6.3). LEGACY keeps G5 exactly.</td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Dext design: the user client is the provider of every HID child</td>
+<td>The root becomes the provider.</td>
+<td>T3</td>
+</tr>
+<tr>
+<td>Dext design D5 output path: <code>GDHubUCDeliverOutput(uc, …)</code> through the pad's <code>ivars-&gt;uc</code> (<span class="tag">R</span> GDHubInternal.h:22; GDHubVirtualPad.cpp:31-37)</td>
+<td>The pad looks up the current owner user client through the registry (+1 retained copy) when it delivers output.</td>
+<td>T3</td>
+</tr>
+<tr>
+<td>Dext design §4.2: nothing in the dext is identity-specific</td>
+<td>Softened. The output layout stays data (placements in the blob). The input parser is specific to the Envision Pro's report 0x06.</td>
+<td>T5</td>
+</tr>
+<tr>
+<td>Output-layer decision 5: no seizing of FF58 (<span class="tag">R</span> output-layer-plan.md:84)</td>
+<td>Kept in intent. GDHub never seizes the IOHIDDevice; it takes only the IOHIDInterface away from Apple's event driver.</td>
+<td>T4</td>
+</tr>
+<tr>
+<td>Output-layer §3.1 Swift pipeline: EchoResolver, LayerStack, ActivatorMachine, MacroPlayer (<span class="tag">R</span> output-layer-plan.md:93-101)</td>
+<td>Kept. The dext runs only what GDHM v1 can express: stateless rules with at most 2 OR'ed sources per output item. Anything else, including the done-check remap "paddle_outer_right → Y" with echo suppression (<span class="tag">R</span> output-layer-plan.md:515), runs on the engine path. The Driver menu then shows "Input path: App (mapping needs GDHM v2: <reason>)". Each new in-dext primitive costs one dext replacement.</td>
+<td>T6</td>
+</tr>
+<tr>
+<td>Engine-agent R14: the engine reads defaults only at start (<span class="tag">R</span> engine-agent-plan.md:900)</td>
+<td>Reversed for <code>inputPath</code> and <code>tapDrill</code> only, which are polled once per second.</td>
+<td>T6</td>
+</tr>
+<tr>
+<td>Research ranks 6–7: rumble through the engine (<span class="tag">R</span> other-controller-drivers.md:235-276)</td>
+<td>Superseded by T10, in-dext rumble. The engine writes only a single stop-only zero-rumble (T10).</td>
+<td>T10</td>
+</tr>
+<tr>
+<td>Research §3 rejected in-dext forwarding (<span class="tag">R</span> other-controller-drivers.md:370)</td>
+<td>Overridden by the owner's decision. A pointer to this plan is added.</td>
+<td>with this plan</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="25-assumptions-to-prove">2.5 Assumptions to prove</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Assumption</th>
+<th>Proven in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td>With <code>IOUserServerOneProcess</code> and the same <code>IOUserServerName</code>, the root (on IOUserResources) and the tap (on IOHIDInterface) run in one process. Apple's own dext does this across providers (<span class="tag">M</span>: 21 services in pid 607); ours is untested.</td>
+<td>T0.2, T4</td>
+</tr>
+<tr>
+<td>A2</td>
+<td>AMFI loads a development-signed dext that carries <code>transport.hid</code>. The profile grants it (<span class="tag">M</span> signing probe); loading is untested.</td>
+<td>T0.2</td>
+</tr>
+<tr>
+<td>A3</td>
+<td>The tap personality wins on interface 3 only. Interfaces 0–2, interface 4 and 3A09 are untouched.</td>
+<td>T0.2, T4</td>
+</tr>
+<tr>
+<td>A4</td>
+<td>A plain IOService may Open the IOHIDInterface and receive ReportAvailable. Success is judged by frames arriving at 940–970/s, never by Open's return code (§4.5).</td>
+<td>T0.2</td>
+</tr>
+<tr>
+<td>A5</td>
+<td>Report 0x06 arrives as reportID 6 with length 16, ID byte first, and 0x58 reports can be told apart.</td>
+<td>T0.2</td>
+</tr>
+<tr>
+<td>A6</td>
+<td>With a per-report <code>AddReportToPool</code> re-add (strategy B), CreatedBuffers stays flat. Without it (strategy A), CreatedBuffers grows by about one per report (<span class="tag">R</span> upstream IOHIDInterface.cpp handleReportGated, via review).</td>
+<td>T0.2</td>
+</tr>
+<tr>
+<td>A7</td>
+<td>The ReportAvailable timestamp is in mach absolute time, close to USB completion.</td>
+<td>T0.2</td>
+</tr>
+<tr>
+<td>A8</td>
+<td>When the tap's Start fails, IOKit attaches the next candidate, Apple's event driver.</td>
+<td>T0.2</td>
+</tr>
+<tr>
+<td>A9</td>
+<td>After a crash, the dext is relaunched and interface 3 is matched again. To be recorded: by whom, after what delay, with what throttling, and any OS reboot response.</td>
+<td>T0.3</td>
+</tr>
+<tr>
+<td>A10</td>
+<td>A new personality takes interface 3 only at the next 3A08 enumeration.</td>
+<td>T0.2, every phase</td>
+</tr>
+<tr>
+<td>A11</td>
+<td>Removing Apple's event driver from interface 3 changes nothing games use. GameController does not see the raw receiver today (<span class="tag">R</span> envision-pro-receiver.md:35).</td>
+<td>T0.2, T4</td>
+</tr>
+<tr>
+<td>A12</td>
+<td>Whether the controller's sleep timer re-enumerates the receiver (to 3A09) or only stops the stream.</td>
+<td>T0.1</td>
+</tr>
+<tr>
+<td>A13</td>
+<td>Mac sleep: which SetPowerState flags reach the tap (Off, On, Low or LPW, <span class="tag">R</span> IOService.h:58-61), and whether the receiver re-enumerates.</td>
+<td>T0.2, T7</td>
+</tr>
+<tr>
+<td>A14</td>
+<td>No other personality competes for 1B1C on IOHIDInterface. Partly <span class="tag">M</span> today: 2,863 personalities scanned; the only 6940 entry is USB mass storage 6940:6659.</td>
+<td>T0.1, after every macOS update</td>
+</tr>
+<tr>
+<td>A15</td>
+<td>The root can Create the pad with <code>GDHubPadProperties</code> at root level (<span class="tag">R</span> IOService.iig:296-312).</td>
+<td>T3</td>
+</tr>
+<tr>
+<td>A16</td>
+<td>handleReport works with buffers whose length was set once, with no SetLength per post.</td>
+<td>T3</td>
+</tr>
+<tr>
+<td>A17</td>
+<td>Double-precision math in the shared C core runs correctly inside the dext. It compiles (<span class="tag">M</span> scratch); the in-dext self-test checks the results.</td>
+<td>T5</td>
+</tr>
+<tr>
+<td>A18</td>
+<td>devTerminate lets the process exit with the tap attached, and a new tap attaches after a power cycle.</td>
+<td>T4</td>
+</tr>
+<tr>
+<td>A19</td>
+<td>Cost and routing of the cross-queue hop (user client or tap queue → pad queue). The iig stub builds an IORPC message and calls <code>Invoke()</code>, and no header documents an in-process short cut (<span class="tag">R</span> generated stub, via review).</td>
+<td>T3</td>
+</tr>
+<tr>
+<td>A20</td>
+<td>The engine sees a change to the <code>inputPath</code> defaults key, made by another process, within 1 s.</td>
+<td>T6</td>
+</tr>
+<tr>
+<td>A21</td>
+<td>The engine LaunchAgent gets SIGTERM on logout and keeps running during fast user switching.</td>
+<td>T6</td>
+</tr>
+<tr>
+<td>A22</td>
+<td>A user-space seize of the 0xFF58 device starves IOHIDInterface delivery (<span class="tag">R</span> upstream IOHIDDevice.cpp <code>!_seizedClient</code>, via review).</td>
+<td>T6</td>
+</tr>
+<tr>
+<td>A23</td>
+<td>sysextd accepts activating a <strong>lower</strong> CFBundleVersion; the rollback depends on it.</td>
+<td>T0.4</td>
+</tr>
+<tr>
+<td>A24</td>
+<td><code>IODispatchQueue::DispatchAsync</code> (LOCALONLY, <span class="tag">R</span> IODispatchQueue.iig:133) onto another service's queue in the same process runs the block on that queue.</td>
+<td>T4</td>
+</tr>
+<tr>
+<td>A25</td>
+<td><code>IODEXTMatchCount</code> (<span class="tag">R</span> IOKitKeys.h:109; IOUserResources shows 4 today, via review) changes when a crashed dext relaunches. This would be the T12 relaunch signal.</td>
+<td>T0.3</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="3-personalities-and-entitlements-exact">3. Personalities and entitlements (exact)</h2>
+<p>All edits go in <code>project.yml</code>. xcodegen regenerates Info.plist and .entitlements from it (<span class="tag">R</span> project.yml:31-58; build-xcode.sh:33).</p>
+<h3 id="31-root-production-changed-in-t3-and-t4">3.1 Root (production): changed in T3 and T4</h3>
+<pre><code class="language-yaml">GDHubVirtualHID:
+  CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+  CFBundleIdentifierKernel: com.apple.kpi.iokit
+  IOClass: IOUserService
+  IOMatchCategory: $(PRODUCT_BUNDLE_IDENTIFIER)         # unchanged: own category on IOUserResources
+  IOProviderClass: IOUserResources
+  IOResourceMatch: IOKit
+  IOUserClass: GDHubVirtualHID
+  IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+  IOUserServerOneProcess: true                          # T4 (R IOKitKeys.h:193)
+  GDHubPadProperties: {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualPad}   # T3: moved up (today R project.yml:52)
+  # T11: GDHubKeyboardProperties / GDHubPointerProperties move up the same way
+  UserClientProperties:
+    IOClass: IOUserUserClient
+    IOUserClass: GDHubVirtualHIDUserClient
+</code></pre>
+<h3 id="32-tap-production-new-in-t4">3.2 Tap (production): new in T4</h3>
+<pre><code class="language-yaml">GDHubReceiverTap:
+  CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+  CFBundleIdentifierKernel: com.apple.kpi.iokit         # same as the root (R project.yml:42)
+  IOClass: IOUserService
+  IOProviderClass: IOHIDInterface
+  IOUserClass: GDHubReceiverTap
+  IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+  IOUserServerOneProcess: true
+  VendorID: 6940          # integer
+  ProductID: 14856        # integer; 3A08 only. 3A09 (14857) and wired 3A05/3A06 never match
+  PrimaryUsagePage: 65368 # integer; interface 4 is page 0x0C and cannot match (M)
+  PrimaryUsage: 1         # integer
+  IOProbeScore: 1000      # about 8200 in total (G·T0). Leaves a margin over a future Apple VID/PID
+                          # personality on IOHIDInterface, which would score about 7000 (R AppleGameControllerPersonality
+                          # pattern 1000+VID+PID, via review). It changes nothing else.
+  # no IOMatchCategory: competes in IODefaultMatchCategory. Never com.apple.null.driver.
+</code></pre>
+<ul>
+<li><code>Transport</code> is left out on purpose. The score is already far above 1201, and every extra key is one more way to miss the match.</li>
+<li>DextClient matches services by <code>IOUserServerName</code> (<span class="tag">R</span> DextClient.swift:93-97). The tap carries the same server name, because OneProcess needs it. T3 therefore adds <code>IOUserClass = GDHubVirtualHID</code> to DextClient's match before the tap exists (§8.2).</li>
+</ul>
+<h3 id="33-probe-throwaway-t0-only-deleted-in-t05">3.3 Probe (throwaway): T0 only, deleted in T0.5</h3>
+<ul>
+<li>New target <code>GDHubTapProbe</code> (type driver-extension, <code>scheme: {}</code> as on the app target, <span class="tag">R</span> project.yml:9). Bundle ID <code>com.interlinked.gdhub.TapProbe</code>. It is a dependency of the app target only during T0.</li>
+<li><code>CFBundleVersion: $(PROBE_BUILD)</code>, never <code>$(CURRENT_PROJECT_VERSION)</code>. build-xcode.sh passes <code>CURRENT_PROJECT_VERSION=$BUILD</code> on the xcodebuild command line, which overrides that setting for every target (<span class="tag">R</span> build-xcode.sh:34-35). The number lives in <code>Xcode/probe-build</code>.</li>
+<li><code>GCC_PREPROCESSOR_DEFINITIONS: GDHUB_PROBE_CRASH=$(PROBE_CRASH)</code>. Default 0; build-xcode.sh passes <code>PROBE_CRASH</code>.</li>
+<li><code>GDHubProbeRoot</code>: the root keys from §3.1, with IOUserClass <code>GDHubProbeRoot</code>, IOMatchCategory set to the probe's bundle ID, and <code>IOUserServerOneProcess: true</code>.</li>
+<li><code>GDHubProbeTap</code>: the tap keys from §3.2, with IOUserClass <code>GDHubProbeTap</code> and <strong><code>IOProbeScore: 50</code></strong>. If a probe lingers, the production tap (1000) still wins.</li>
+<li>Behaviour, in one build:<ul>
+<li>The <strong>first</strong> tap Start in a process logs and declines with <code>kIOReturnUnsupported</code>.</li>
+<li>Every <strong>later</strong> Start in that process runs (§11 T0.2).</li>
+<li>With <code>GDHUB_PROBE_CRASH=1</code>, the tap never declines and crashes only on the owner's chord (§11 T0.3).</li>
+</ul>
+</li>
+<li>Every log line starts <code>GDHubProbe: build=N crash=C pid=P</code>. Results count only when N matches the build under test.</li>
+</ul>
+<h3 id="34-plan-c-variant-only-if-a4-fails-while-nothing-is-seized">3.4 Plan C variant: only if A4 fails while nothing is seized</h3>
+<ul>
+<li>Tap keys: <code>IOClass: AppleUserHIDEventService</code>, <code>CFBundleIdentifierKernel: com.apple.iokit.IOHIDFamily</code>.</li>
+<li>The class subclasses <code>IOUserHIDEventService</code>. In handleStart it calls <code>SetProperties({IOHIDEventDriverHandlesReport: true})</code> (<span class="tag">R</span> IOUserHIDEventService.iig:159-182; key <span class="tag">R</span> IOHIDEventServiceKeys.h:147).</li>
+<li><code>handleReport</code> receives raw bytes (<span class="tag">R</span> IOUserHIDEventService.iig:575-579). The §4.5 pool code does not apply.</li>
+<li>The fuse is weaker. Reports reach handleReport whether or not the tap is armed, so INERT becomes "return at the first line".</li>
+</ul>
+<h3 id="35-entitlements">3.5 Entitlements</h3>
+<pre><code class="language-yaml"># production dext, from T4
+com.apple.developer.driverkit: true
+com.apple.developer.driverkit.family.hid.device: true
+com.apple.developer.driverkit.allow-any-userclient-access: true
+com.apple.developer.driverkit.transport.hid: true      # R IOKitKeys.h:149; IOHIDInterface requires it (M IOServiceDEXTEntitlements)
+# Plan C only: com.apple.developer.driverkit.family.hid.eventservice: true
+# probe (T0): com.apple.developer.driverkit + com.apple.developer.driverkit.transport.hid only
+</code></pre>
+<ul>
+<li>transport.usb is <strong>not</strong> needed.</li>
+</ul>
+<h3 id="36-build-checks-scriptsbuild-xcodesh">3.6 Build checks (scripts/build-xcode.sh)</h3>
+<p><strong>T4: production checks.</strong> <code>$DEXT</code> is defined at build-xcode.sh:38 (<span class="tag">R</span>). The script runs with <code>set -u</code> (<span class="tag">R</span> :10).
+- Add <code>com.apple.developer.driverkit.transport.hid</code> to the <code>need</code> call for the dext (<span class="tag">R</span> :55-56).
+- Add after the <code>need</code> calls:</p>
+<pre><code>    P="$DEXT/Info.plist"
+    for k in VendorID ProductID PrimaryUsagePage PrimaryUsage IOProbeScore; do
+      plutil -extract "IOKitPersonalities.GDHubReceiverTap.$k" xml1 -o - "$P" | grep -q '&lt;integer&gt;' \
+        || { echo "tap $k is not an integer"; exit 2; }
+    done
+    for p in GDHubVirtualHID GDHubReceiverTap; do
+      plutil -extract "IOKitPersonalities.$p.IOUserServerOneProcess" xml1 -o - "$P" | grep -q '&lt;true/&gt;' \
+        || { echo "$p lacks IOUserServerOneProcess"; exit 2; }
+    done
+</code></pre>
+<p><strong>T0: <code>--probe</code> mode</strong> (removed in T0.5):
+- While <code>Xcode/probe-build</code> exists, the script refuses to run without <code>--probe</code>. <code>--probe</code> is refused when the file is missing.
+- <code>--probe</code> forces <code>SAME=1</code>, so the production version cannot be bumped (<span class="tag">R</span> :24).
+- It passes <code>PROBE_BUILD=$(cat Xcode/probe-build) PROBE_CRASH=${PROBE_CRASH:-0}</code> to xcodebuild.
+- It asserts that the embedded production dext's CFBundleVersion equals <code>$installed</code> (<span class="tag">R</span> :14), and stops otherwise. If they differed, the next GUI launch would replace the production dext (<span class="tag">R</span> DriverManager.swift:521-545).
+- It asserts that the probe's CFBundleVersion equals <code>Xcode/probe-build</code> and is greater than the installed probe version, unless <code>--probe-downgrade</code> is passed. The installed probe version is read from <code>systemextensionsctl list</code>, as at :14.
+- It runs <code>need</code> on the probe dext: driverkit, transport.hid and this Mac's UDID.</p>
+<hr />
+<h2 id="4-classes-queues-and-the-report-path">4. Classes, queues and the report path</h2>
+<h3 id="41-classes">4.1 Classes</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Provider</th>
+<th>Queue</th>
+<th>Runs there</th>
+<th>Phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GDHubVirtualHID</code> (root)</td>
+<td>IOUserResources</td>
+<td>root default + 30 s orphan timer</td>
+<td>Start/Stop, NewUserClient, <code>CreatePad</code>/<code>DestroyPad</code>, orphan expiry, devTerminate sequence, pid log</td>
+<td>T3, T4, T7</td>
+</tr>
+<tr>
+<td><code>GDHubVirtualHIDUserClient</code></td>
+<td>root</td>
+<td>UC default + 250 ms watchdog (<span class="tag">R</span> .iig:15)</td>
+<td>selectors 0–12, GDHM validation, registry writes for arbitration</td>
+<td>T3, T5, T7</td>
+</tr>
+<tr>
+<td><code>GDHubVirtualPad</code></td>
+<td><strong>root</strong> (today the UC, <span class="tag">R</span> GDHubVirtualPad.cpp:31-37)</td>
+<td>pad default</td>
+<td>handleStart; <code>submitInput(source, tSrc, md, len)</code> and <code>postNeutralFrom(source, reason)</code>, the only callers of handleReport; setReport/getReport</td>
+<td>T3, T7</td>
+</tr>
+<tr>
+<td><code>GDHubReceiverTap</code></td>
+<td>IOHIDInterface (interface 3, 3A08)</td>
+<td>tap default + 50 ms timer</td>
+<td>Start, Stop, SetPowerState, ReportAvailable, timer (silence, Open retry, state backstop), <code>applyDesired</code> (reached by DispatchAsync)</td>
+<td>T4, T5, T7</td>
+</tr>
+<tr>
+<td><code>GDHubRegistry</code> (plain C++)</td>
+<td>—</td>
+<td>none: private IOLock + atomic words</td>
+<td>§4.3</td>
+<td>T3</td>
+</tr>
+<tr>
+<td><code>GDHubXlate</code> (C99)</td>
+<td>—</td>
+<td>caller's</td>
+<td>eval, snap, hysteresis, build, byte dedupe</td>
+<td>T2</td>
+</tr>
+</tbody>
+</table></div>
+<p>Notes:
+- Each IOService gets its own default queue (<span class="tag">R</span> IOService.iig:171-175).
+- A queue runs one block at a time (<span class="tag">R</span> IODispatchQueue.iig:69).
+- <code>handleReport</code> is LOCALONLY and ends in the <code>_HandleReport</code> RPC (<span class="tag">R</span> IOHIDDevice.iig:60, 139).</p>
+<h3 id="42-call-order-invariant-checked-in-every-build">4.2 Call-order invariant (checked in every build)</h3>
+<ul>
+<li>Only these synchronous cross-object calls exist:<ul>
+<li>UC → root (<code>CreatePad</code>, <code>DestroyPad</code>);</li>
+<li>UC → pad;</li>
+<li>root → pad (orphan expiry neutral);</li>
+<li>tap → pad.</li>
+</ul>
+</li>
+<li>The pad calls no GDHub object.</li>
+<li><strong>Nothing calls the tap synchronously.</strong> Control reaches the tap only through registry writes plus <code>tapQueue-&gt;DispatchAsync(...)</code> (A24), with the tap's 50 ms timer as a backstop.</li>
+<li>Ranks: UC 1 → root 2 → tap 3 → pad 4. Calls go only toward a higher rank. Kernel-initiated callbacks (Start, Stop, ReportAvailable, SetPowerState) are not calls.</li>
+<li><strong>Creation path.</strong> UC calls <code>root-&gt;CreatePad</code>. The root blocks in <code>Create</code> while the kernel runs the pad's Start on the pad queue. The pad reads its spec from the registry and calls nothing. This is today's proven pattern with the UC (<span class="tag">R</span> GDHubVirtualPad.cpp:31-59; GDHubVirtualHIDUserClient.cpp:193-212).</li>
+<li><strong>Registry lock.</strong> The IOLock is private to <code>GDHubRegistry.cpp</code>. Its functions copy values in and out, and release objects only after unlocking. No other code can hold the lock, so no RPC ever runs under it. This carries over today's rule "Do not hold the lock across Create" (<span class="tag">R</span> GDHubVirtualHIDUserClient.cpp:193). A build grep fails if <code>GDHubRegistry.cpp</code> calls a method of any GDHub class.</li>
+<li><strong>GDH_SYNC(rank)</strong> wraps every cross-object call in every build. It is not DEBUG-gated, and it only logs. It counts <code>syncViolations</code> and logs the call when the current queue belongs to an object of equal or higher rank (<code>IODispatchQueue::OnQueue()</code>, <span class="tag">R</span> IODispatchQueue.iig:105).</li>
+<li>Result: the UC queue can block only on Create or on the pad queue, the same exposure as today's postReport. It never waits on the tap.</li>
+</ul>
+<h3 id="43-registry-process-global">4.3 Registry (process-global)</h3>
+<ul>
+<li><code>gdh_registry()</code> returns a static struct. Its IOLock is installed by compare-and-swap (<code>__atomic_compare_exchange_n</code>), and the loser frees its own lock.</li>
+<li>Hot words use the <code>__atomic_load_n</code>/<code>__atomic_store_n</code> builtins. The DriverKit SDK does ship <code>&lt;atomic&gt;</code> and <code>math.h</code> (<span class="tag">M</span> <code>ls</code> of DriverKit27.0.sdk/System/DriverKit/usr/include). The builtins are a style choice that keeps the file free of libc++, and they compile with no undefined symbols (<span class="tag">M</span> scratch).</li>
+<li><strong>Under the lock:</strong><ul>
+<li>retained <code>root</code>, <code>pad</code>, <code>tap</code> and <code>tapQueue</code>;</li>
+<li>the owner UC (for D5 output delivery);</li>
+<li>the accepted map: OSData holding a validated <code>gdx_map</code>, plus <code>acceptedRevision</code> and <code>acceptedSpecCRC</code>;</li>
+<li><code>padSpecCRC</code>;</li>
+<li><code>instanceNonce</code>: <code>mach_absolute_time()</code> at root Start, used only as an identity. Its origin is arbitrary (<span class="tag">R</span> IOLib.h:177-188).</li>
+<li><code>selfTest</code>.</li>
+</ul>
+</li>
+<li><strong>Atomic words:</strong><ul>
+<li><code>padSource</code>: NONE / UC / TAP;</li>
+<li><code>desiredState</code>: INERT / COUNT / SHADOW / LIVE. It starts INERT on every launch; this is the fuse.</li>
+<li><code>appliedState</code> and <code>appliedRevision</code>, written only by the tap queue;</li>
+<li><code>holdNeutral</code>;</li>
+<li><code>mapGen</code>;</li>
+<li><code>pauseUntil</code>.</li>
+</ul>
+</li>
+<li><strong>Accessors return +1 retained objects:</strong> <code>gdh_copy_pad()</code>, <code>gdh_copy_owner_uc()</code>, <code>gdh_copy_map(&amp;gen)</code>. The caller releases after its call.</li>
+<li><code>gdh_register_tap(tap, queue, &amp;desired)</code> sets the pointer and reads <code>desiredState</code> in <strong>one</strong> critical section, so no state change can be lost between the two.</li>
+<li>Whichever service starts first (root or tap) initialises the registry. The tap never dereferences the root.</li>
+</ul>
+<h3 id="44-report-path-and-userkernel-crossings">4.4 Report path and user/kernel crossings</h3>
+<p><strong>Today (engine path)</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Step</th>
+<th>Crossing</th>
+<th>Critical path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>USB interrupt-IN completion reaches Apple's HID dext</td>
+<td>K→U</td>
+<td>yes (shared)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Apple's dext handleReport into the IOHIDDevice</td>
+<td>U→K</td>
+<td>yes (shared)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>The IOHIDLibUserClient queue wakes the engine callback (priority 37, <span class="tag">M</span>)</td>
+<td>K→U</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Mailbox → vhidQueue; limiter wait 0.65 ms p50 (<span class="tag">M</span>)</td>
+<td>in-process ×2</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>5</td>
+<td>IOConnectCallMethod postReport</td>
+<td>U→K</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>6</td>
+<td>GDHub dext ExternalMethod on the UC queue</td>
+<td>K→U</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>SetLength</code> on the post buffer (non-LOCAL, <span class="tag">R</span>; cost <span class="tag">G</span>)</td>
+<td>U→K</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>8</td>
+<td>UC queue → pad queue (routing <span class="tag">G·T3</span>)</td>
+<td>none, or U→K + K→U</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>_HandleReport</code></td>
+<td>U→K</td>
+<td>yes: end</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Replies to the dext and the engine</td>
+<td>K→U ×2</td>
+<td>no</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Critical path today: 7 crossings (2 of them shared), or 9 if step 8 goes through the kernel, plus the limiter.</strong></p>
+<p><strong>Takeover, LIVE</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Step</th>
+<th>Crossing</th>
+<th>Critical path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1–2</td>
+<td>Same as today</td>
+<td>K→U, U→K</td>
+<td>yes (shared)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>IOHIDInterface → tap ReportAvailable (today this goes to Apple's event driver, <span class="tag">M</span>)</td>
+<td>K→U</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>gdx_step</code> on the tap queue (&lt; 0.01 ms, <span class="tag">G·T5</span>)</td>
+<td>none</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>5</td>
+<td>tap queue → pad queue, <code>submitInput</code> (routing and cost <span class="tag">G·T3</span>, histogram <code>hop</code>)</td>
+<td>none, or U→K + K→U</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>_HandleReport</code> from a fixed-length buffer</td>
+<td>U→K</td>
+<td>yes: end</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>AddReportToPool</code> re-add, once per frame (strategy B, non-LOCAL <span class="tag">R</span> IOHIDInterface.iig:129)</td>
+<td>U→K</td>
+<td>not for this frame, but it occupies the tap queue (G12)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Critical path after: 4 crossings (2 shared), or 6 if the hop goes through the kernel; no limiter.</strong>
+- T3's <code>hop</code> histogram decides the routing. A hop p50 in the tens of µs, similar to IOConnect, means a kernel round trip. T9 is the remedy.
+- T3 also removes the <code>SetLength</code> crossing from the engine path.</p>
+<h3 id="45-pool-buffers-and-open">4.5 Pool buffers and Open</h3>
+<ul>
+<li>On entering COUNT (the first Open in this tap instance):<ol>
+<li>Allocate 8 × 64 B <code>IOBufferMemoryDescriptor</code> (64 = MaxInputReportSize, <span class="tag">M</span>).</li>
+<li>Map each one once with <code>GetAddressRange</code> (LOCALONLY, <span class="tag">R</span> IOBufferMemoryDescriptor.iig:83).</li>
+<li><code>AddReportToPool</code> each buffer.</li>
+<li><code>Open</code>.</li>
+</ol>
+</li>
+<li>In ReportAvailable, find the bytes:<ul>
+<li>If <code>report</code> is pointer-equal to one of our buffers, use its pre-mapped address (<span class="tag">G·T0</span>).</li>
+<li>Otherwise use <code>OSDynamicCast(IOBufferMemoryDescriptor)</code> + GetAddressRange, and count <code>poolMiss</code>.</li>
+<li>Otherwise use CreateMapping, and count <code>slowMap</code>.</li>
+</ul>
+</li>
+<li><strong>After handling the frame</strong> (after the post in LIVE), re-add our buffer with <code>AddReportToPool</code>. This is the baseline (strategy B).<ul>
+<li>Upstream IOHIDInterface removes a buffer from the pool for each report and never returns it (<span class="tag">R</span> upstream IOHIDInterface.cpp, via review).</li>
+<li>Apple's event driver shows CreatedBuffers 3 over 31.5 M reports (<span class="tag">M</span>), which fits re-adding.</li>
+<li>Kernel temporary buffers (<code>poolMiss</code>) are not re-added.</li>
+<li>Strategy A (no re-add) runs only in the T0 probe, for 10 s, as a confirmation.</li>
+</ul>
+</li>
+<li><strong>Open failure:</strong><ul>
+<li>The tap logs <code>GDHub: tap open failed 0x… try n</code> and retries from its timer every 500 ms. Start never fails because of it.</li>
+<li>The engine and <code>receiver-check.sh</code> report the 0xFF58 device's seize-related state: its DebugState and IOUserClientCreator list (<span class="tag">M</span> both present in ioreg today).</li>
+<li>Plan C applies only if Open fails while nothing has seized the device.</li>
+</ul>
+</li>
+<li><strong>Success is gated on frames arriving at 940–970/s, never on Open's return code.</strong> A second Open on an already-open interface returns success without installing the action (<span class="tag">R</span> upstream IOHIDInterface.cpp openGated, via review).</li>
+</ul>
+<h3 id="46-t9-option-shared-hot-queue-only-if-g11-or-g12-fails">4.6 T9 option: shared Hot queue (only if G11 or G12 fails)</h3>
+<ol>
+<li>The root creates <code>Hot</code> with <code>IODispatchQueue::Create("GDHubHot", 0, 0, &amp;q)</code> in Start, on its default queue. The priority must be 0 (<span class="tag">R</span> IODispatchQueue.iig:76-90).</li>
+<li>The pad (in <code>handleStart</code>) and the tap (in <code>Start</code>) each get <code>Hot</code> from the registry (+1, no RPC). Each calls <code>SetDispatchQueue("Hot", q)</code> on itself before any <code>QUEUENAME(Hot)</code> method can run. Until then, methods fall back to the default queue (<span class="tag">R</span> IOService.iig:171-175).</li>
+<li><strong>On Hot</strong> runs every method that touches translator state or arbitration state:<ul>
+<li><code>ReportAvailable</code>;</li>
+<li>the tap timer (created on Hot);</li>
+<li><code>applyDesired</code> (the DispatchAsync target becomes Hot);</li>
+<li><code>submitInput</code>;</li>
+<li><code>postNeutralFrom</code>, which covers UC postReport, UC postNeutral, setForwarding switch neutrals and orphan neutrals;</li>
+<li>hold and resync handling.</li>
+</ul>
+</li>
+<li>Kernel-invoked tap <code>Stop</code> and <code>SetPowerState</code> stay on the default queue. They <code>DispatchSync</code> onto Hot (<span class="tag">R</span> IODispatchQueue.iig:164) for their state changes, then continue. This is safe because Hot never calls out synchronously.</li>
+<li>On Hot, the tap calls the pad through a plain C++ function, <code>GDHubPadPostLocal(pad, …)</code>, which calls the LOCALONLY <code>handleReport</code>.</li>
+<li>New invariant: <strong>Hot is the only caller of handleReport</strong> and the only reader or writer of gdx state and the map pointer.</li>
+<li><code>Create</code> and <code>Terminate</code> run only on the root's default queue.</li>
+<li>Check: 1000 inputPath toggles and 1000 mapping pushes at 50 Hz while frames flow. Pass: 0 stuck inputs (in the padlat CSV, the first 02E0 report after each switch neutral follows the new source's state), and no crash (same dext pid).</li>
+</ol>
+<hr />
+<h2 id="5-translation-and-config-protocol">5. Translation and config protocol</h2>
+<h3 id="51-one-shared-c-translator">5.1 One shared C translator</h3>
+<p><strong>Files:</strong> <code>Dext/GDHubVirtualHID/Shared/GDHubXlate.{h,c}</code>.
+- C99, no allocation, no DriverKit headers.
+- Compiled into the dext (from T5), into a SwiftPM C target <code>GDHubXlate</code> (from T2) and into the Xcode app target (from T2).</p>
+<p><strong>Double precision in Swift's operation order:</strong>
+- Swift computes in Double (<span class="tag">R</span> ControlMapping.swift:141-165; PadReportBuilders.swift:14-21).
+- Doing the same in C gives byte-identical output for any learned range, including asymmetric ones. An integer precompute does not.</p>
+<p><strong>Exactness rules:</strong>
+- Compile with <code>-ffp-contract=off</code> everywhere.
+- Round half away from zero, matching Swift's <code>.rounded(.toNearestOrAwayFromZero)</code> (<span class="tag">R</span> PadReportBuilders.swift:14-21). The core may use C <code>round()</code>: math.h is in the SDK and libsystem_m exports <code>_round</code> (<span class="tag">M</span> DriverKit27.0.sdk/…/libsystem_m.tbd). v1 uses a hand-written version to keep the dext free of libm. The golden vectors decide in either case.
+- Clamp and abs are written by hand.</p>
+<p><strong>What is guaranteed:</strong>
+- Stateless output (<code>gdx_eval</code> + <code>gdx_build</code>) is identical in the engine and the dext, because it is the same C code.
+- Posted sequences are identical only when the engine does not coalesce. The dext has no rate cap. The engine caps at 1 kHz and coalesces (<span class="tag">R</span> VirtualPadSink.swift:392-404, 448), so its hysteresis state can diverge (§10.1 sequence test).</p>
+<p><strong>API:</strong></p>
+<pre><code class="language-c">int      gdx_validate(const uint8_t *blob, size_t len, const uint8_t *spec, size_t specLen, gdx_map *out); /* 0 = ok, else reason code */
+void     gdx_reset(gdx_state *s);                                              /* next step posts full state */
+int      gdx_eval(const gdx_map *m, const uint8_t *in, size_t len, gdx_pad *p); /* parse + map + snap; &lt;0 = bad frame */
+int      gdx_unchanged(const gdx_map *m, const gdx_pad *now, const gdx_pad *lastSent);  /* VirtualPadSink.unchanged */
+void     gdx_build(const gdx_map *m, const gdx_pad *p, gdx_out *o);              /* placements -&gt; report bytes */
+uint32_t gdx_step(gdx_state *s, const gdx_map *m, const uint8_t *in, size_t len, gdx_out *o); /* mask of reports to post */
+</code></pre>
+<p><strong>v1 scope</strong> is today's live semantics:
+- 15 button rules, 4 axis rules, 2 triggers;
+- deadband and hysteresis 0.002, with the end-stop rule (<span class="tag">R</span> VirtualPadSink.swift:537-560);
+- per-report byte dedupe;
+- xboxBT16 placements (0x01/16, 0x02/2).</p>
+<p>Up to 2 OR'ed sources per output item are allowed, for the first remaps (§2.4). Echo suppression, overlay, and keyboard/pointer slots are reserved but not implemented. The dext has no rate cap.</p>
+<h3 id="52-canonical-behaviour-decisions">5.2 Canonical behaviour decisions</h3>
+<p>Both are made before the parity tests can pass.
+- <strong>Paddles and SAX.</strong> Today there is no explicit paddle/SAX → pad-button remap and no echo suppression (<span class="tag">R</span> PassthroughPadMapper.swift:5-37; PassthroughPadMapperTests.swift:94-116). Today's paddle behaviour relies on the onboard-profile echo, which changes between profiles (<span class="tag">R</span> host-identity-matrix.md:51,56). The blob applies <code>physMask</code> precedence to any control, as <code>ControlMapping.isActive</code> does (<span class="tag">R</span> ControlMapping.swift:105-133). Echo masks are reserved (<code>nEcho = 0</code>).
+- <strong>The "−1" quirk.</strong> Without ranges, negative axis values come out one lower (<span class="tag">M</span> scratch axis.py). v1 reproduces this byte for byte. The live mapping has full int16 ranges, so the owner is not affected (<span class="tag">M</span>). A later fix is a deliberate change to the single core, with new golden vectors.</p>
+<h3 id="53-mapping-blob-gdhm-v1-little-endian-1024-b-read-with-memcpy-never-cast">5.3 Mapping blob "GDHM" v1 (little-endian, ≤ 1024 B, read with memcpy, never cast)</h3>
+<p><strong>Header (64 B)</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Off</th>
+<th>Type</th>
+<th>Field</th>
+<th>v1 value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>u32</td>
+<td>magic</td>
+<td>bytes <code>G D H M</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>u16</td>
+<td>version</td>
+<td>1</td>
+</tr>
+<tr>
+<td>6</td>
+<td>u16</td>
+<td>length</td>
+<td>total bytes</td>
+</tr>
+<tr>
+<td>8</td>
+<td>u32</td>
+<td>revision</td>
+<td>engine-assigned, monotonic</td>
+</tr>
+<tr>
+<td>12</td>
+<td>u32</td>
+<td>specCRC32</td>
+<td>CRC32 of the pad spec it targets</td>
+</tr>
+<tr>
+<td>16</td>
+<td>u16</td>
+<td>sourceKind</td>
+<td>1 = Envision Pro report 0x06, 16 B</td>
+</tr>
+<tr>
+<td>18</td>
+<td>u16</td>
+<td>flags</td>
+<td>0</td>
+</tr>
+<tr>
+<td>20</td>
+<td>u16</td>
+<td>silenceNeutralMs</td>
+<td><strong>250</strong></td>
+</tr>
+<tr>
+<td>22</td>
+<td>u8 ×6</td>
+<td>nReports ≤ 4, nButtons ≤ 32, nAxes ≤ 4, nTriggers ≤ 2, nPlacements ≤ 32, nEcho = 0</td>
+<td></td>
+</tr>
+<tr>
+<td>28</td>
+<td>u32</td>
+<td>reserved</td>
+<td>0</td>
+</tr>
+<tr>
+<td>32</td>
+<td>f64</td>
+<td>deadband</td>
+<td>0.002</td>
+</tr>
+<tr>
+<td>40</td>
+<td>f64</td>
+<td>hysteresis</td>
+<td>0.002</td>
+</tr>
+<tr>
+<td>48</td>
+<td>f64</td>
+<td>stickActive</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td>56</td>
+<td>i32</td>
+<td>triggerActiveRaw</td>
+<td>100</td>
+</tr>
+<tr>
+<td>60</td>
+<td>i32</td>
+<td>axisActiveRaw</td>
+<td>16000</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Sections</strong> follow in this order, each 8-aligned:
+- reports: <code>{u8 reportID, u8 length, u16 0}</code> × nReports
+- buttons: <code>{u8 item, u8 kind, u8 arg, i8 sign, u16 physMask, u8 stickRef, u8 outSlot}</code> × nButtons (8 B each)
+- axes: <code>{u8 stick, u8 component, u8 field, i8 sign, u8 hasRange, u8 pad[3], i32 min, i32 max}</code> × nAxes (16 B each)
+- triggers: <code>{u8 item, u8 field (0 lt, 1 rt, 0xFF none), u16 0}</code> × nTriggers
+- placements: <code>{u8 reportIndex, u8 item, u16 bitOffset, u8 bits, u8 encoding, u16 0}</code> × nPlacements
+- echo: reserved</p>
+<p>The maximum is about 670 B.</p>
+<p><strong>Enumerations:</strong>
+- Items: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 VIEW, 7 MENU, 8 LS, 9 RS, 10 GUIDE, 11–14 DPAD U/R/D/L, 16 LX, 17 LY, 18 RX, 19 RY, 20 LT, 21 RT (<span class="tag">R</span> PassthroughPadMapper.swift:13-37).
+- Kinds:
+    - 0 NONE;
+    - 1 BUTTON (arg = bit index);
+    - 2 HAT (arg = direction; an even direction also accepts its adjacent diagonals);
+    - 3 TRIGGER_GT;
+    - 4 AXIS_GT;
+    - 5 STICK_MAG.
+    - A non-zero <code>physMask</code> overrides the kind (<span class="tag">R</span> ControlMapping.swift:105-133).
+- Encodings (<span class="tag">R</span> PadReportBuilders.swift:44-68):
+    - 1 AXIS16 = round((clamp(v)+1)·32767.5);
+    - 2 AXIS16_NEG;
+    - 3 TRIG10_U16 = round(clamp(t,0,1)·1023);
+    - 4 HAT8;
+    - 5 BIT.
+- <code>outSlot</code>: 0 = pad. Other values are reserved.</p>
+<p><strong>Validation</strong> (<code>gdx_validate</code>, shared by the dext and the Swift encoder):
+- magic, version and lengths are correct;
+- kinds and encodings are known;
+- each button item has 1 or 2 rules (OR'ed), and each axis and trigger item has exactly 1;
+- placements fit their report;
+- every <code>(reportID, length)</code> passes <code>GDHubSpecIsDeclaredInput</code> against the live pad spec (<span class="tag">R</span> GDHubSpec.cpp:154-163);
+- <code>specCRC32</code> equals the live pad's spec CRC;
+- <code>sourceKind</code> is 1.</p>
+<p>Any failure returns <code>kIOReturnBadArgument</code> with a reason code, and the old table stays.</p>
+<p><strong>Unsupported mappings.</strong> <code>MapBlobEncoder</code> returns <code>.unsupported(reason)</code> when ControlMapping needs more than v1 can express. The engine then keeps the engine path (§6.6).</p>
+<p><strong>Generated header.</strong> A Swift test generates <code>Shared/GDHubDefaults.h</code> with:
+- the factory GDHM (from <code>ControlMapping.default</code> + <code>xbox-bt16-02e0</code>);
+- the default spec;
+- 64 golden vectors <code>{frame[16], out01[16], out02[2]}</code>.</p>
+<p>The test fails if the checked-in file differs.</p>
+<h3 id="54-protocol-additions-gdhubprotocolh">5.4 Protocol additions (<code>GDHubProtocol.h</code>)</h3>
+<pre><code class="language-c">#define GDHUB_PROTOCOL_VERSION    1          /* unchanged: hello stays an exact match (R GDHubProtocol.h:4) */
+#define GDHUB_SPEC_VERSION        1          /* T3: spec validation checks this, not the protocol (R GDHubSpec.cpp:41) */
+#define GDHUB_CAP_ROOT_PAD        (1u &lt;&lt; 8)  /* T3; bits 0-2 stay the slot bits */
+#define GDHUB_CAP_TAP             (1u &lt;&lt; 9)  /* T4 */
+#define GDHUB_CAP_XLATE           (1u &lt;&lt; 10) /* T5 */
+#define GDHUB_CAP_LIVE            (1u &lt;&lt; 11) /* T7 */
+#define GDHUB_SEL_SET_FORWARDING  9   /* scalars in: state, flags, argMs. out: appliedState, tapPresent, padSource, lastError */
+#define GDHUB_SEL_SET_MAPPING     10  /* struct in: GDHM (&lt;= 1024 B). scalar out: accepted revision, reason. T5 */
+#define GDHUB_SEL_GET_STATUS2     11  /* struct out: GDHubStatus2 (&lt;= 512 B) */
+#define GDHUB_SEL_CREATE_DEVICE2  12  /* T7. struct in: spec. scalar out: adopted, padSource */
+#define GDHUB_SEL_COUNT           13  /* was 9 */
+#define GDHUB_FWD_INERT  0   /* tap attached, interface NOT opened: no per-frame code */
+#define GDHUB_FWD_COUNT  1   /* T4: opened; counts frames, k2d; no translation */
+#define GDHUB_FWD_SHADOW 2   /* T5: translates, parity sample, no posts */
+#define GDHUB_FWD_LIVE   3   /* T7: translates and posts */
+#define GDHUB_FWD_FLAG_STAMP_SOURCE_TIME (1u &lt;&lt; 0)  /* pad timestamp = ReportAvailable timestamp; default off */
+#define GDHUB_FWD_FLAG_DEV_PAUSE_TAP     (1u &lt;&lt; 8)  /* every build, owner-only: tap ignores frames for argMs (&lt;= 10000) */
+#define GDHUB_FWD_FLAG_RELEASE_PAD       (1u &lt;&lt; 9)  /* T7, owner-only: INERT, source UC, neutral, destroy the pad even if unowned */
+</code></pre>
+<ul>
+<li>A state the dext does not support yet returns <code>kIOReturnUnsupported</code>. T3 accepts INERT only; T4 adds COUNT, T5 SHADOW and T7 LIVE.</li>
+<li><code>CREATE_DEVICE2</code> exists because selector 1 has no scalar output (<span class="tag">R</span> GDHubVirtualHIDUserClient.cpp:340), and adding one would break old apps.</li>
+<li>Rule, written into the header: selectors are only ever added, each behind a capability bit. Blobs carry their own versions. <code>GDHUB_PROTOCOL_VERSION</code> changes only for a breaking change.</li>
+<li><code>DextProtocolTests</code> checks every <code>#define</code> against the Swift mirror. Both are updated in the same commit.</li>
+<li>All new selectors are owner-only, behind the existing hello, team check and claim (<span class="tag">R</span> GDHubVirtualHIDUserClient.cpp:28-59, 76-88).</li>
+</ul>
+<h3 id="55-gdhubstatus2-v1-512-b-little-endian">5.5 <code>GDHubStatus2</code> v1 (≤ 512 B, little-endian)</h3>
+<ul>
+<li><strong>Identity:</strong><ul>
+<li><code>u16 version, u16 size, u32 build, u64 instanceNonce</code>;</li>
+<li><code>u32 rootPid, tapPid</code> (getpid(): <span class="tag">R</span> IOLib.h:224-230).</li>
+</ul>
+</li>
+<li><strong>State:</strong><ul>
+<li><code>u8 tapPresent, opened, desiredState, appliedState, padSource, padLive, holdNeutral, powered, selfTest</code>;</li>
+<li><code>u32 lastPowerFlags</code>;</li>
+<li><code>u32 acceptedRevision, appliedRevision, padSpecCRC, acceptedSpecCRC</code>.</li>
+</ul>
+</li>
+<li><strong>Counters (u64):</strong> <code>framesIn, framesIgnored, framesBad, framesUnchanged, tapPosts, ucPosts, ucRejected, silenceNeutrals, stopNeutrals, switchNeutrals, powerNeutrals, holdNeutrals, poolMiss, slowMap, openFailures, adopts, orphanDestroys, syncViolations, parityChecks</code>.</li>
+<li><strong>Ages:</strong> <code>u32 maxGapUs, lastFrameAgeMs, tapStartAgeMs</code>.</li>
+<li><strong>Parity sampler:</strong> <code>u8 lastFrame[16], lastEval01[16], lastEval02[2]</code> (the stateless <code>gdx_eval</code> + <code>gdx_build</code> result for that frame), plus <code>u32 lastFrameRevision</code>.</li>
+<li><strong>Histograms stay inside the dext.</strong> They reach the owner only through the meter log line (§9.1). That keeps them out of the ABI and out of the Swift mirror.</li>
+</ul>
+<h3 id="56-how-mapping-revisions-are-applied-atomically">5.6 How mapping revisions are applied atomically</h3>
+<ol>
+<li>The engine's <code>MappingWatcher</code> sees a change (<span class="tag">R</span> MappingWatcher.swift). <code>MapBlobEncoder</code> emits GDHM with <code>revision + 1</code>, or <code>.unsupported(reason)</code>, in which case the engine path stays.</li>
+<li><code>setMapping</code> runs on the UC queue. It calls <code>gdx_validate</code> into a freshly allocated <code>gdx_map</code>; allocation is fine here because this is not the hot path. It refuses when <code>specCRC32</code> differs from the live pad's CRC.</li>
+<li>The UC stores <code>{OSData(map), revision, specCRC}</code> in the registry, increments <code>mapGen</code> and pokes the tap with <code>DispatchAsync</code>. There is no synchronous call.</li>
+<li>On the tap queue, at the next frame or apply: if <code>mapGen</code> changed, the tap calls <code>gdh_copy_map</code> (+1), swaps its private pointer and releases the old map. Only the tap queue reads that pointer, so the swap falls between two frames by construction.</li>
+<li>The next frame is translated with the new map. Byte dedupe posts only if the output differs. Frames keep arriving at about 955/s even at rest (<span class="tag">R</span> envision-pro-receiver.md:33).</li>
+<li><code>appliedRevision</code> in status2 changes when the first frame is translated with the new map.</li>
+<li>A tap that starts later loads the registry's map in Start.</li>
+</ol>
+<h3 id="57-compatibility">5.7 Compatibility</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>App</th>
+<th>Dext</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>old</td>
+<td>new</td>
+<td>Selectors 9–12 are never called. The tap stays INERT; this is today's behaviour.</td>
+</tr>
+<tr>
+<td>new</td>
+<td>old (build 17)</td>
+<td>No cap bits. The engine path is used.</td>
+</tr>
+<tr>
+<td>new</td>
+<td>T3–T6 dext (no CAP_LIVE)</td>
+<td>The engine path is used. COUNT or SHADOW follows <code>inputPath</code>.</td>
+</tr>
+<tr>
+<td>new, in-app mode (engine crash-looped, <span class="tag">R</span> DriverManager.swift:191-209)</td>
+<td>dext pinned LIVE</td>
+<td>After hello, every DextClient that does not run TapSupervisor calls <code>setForwarding(INERT)</code> when CAP_TAP is set. Its posts then go out (DriverManagerModeTests case).</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="6-pad-ownership-arbitration-watchdogs-fallback">6. Pad ownership, arbitration, watchdogs, fallback</h2>
+<h3 id="61-states">6.1 States</h3>
+<p><strong>Tap state.</strong> The registry holds <code>desiredState</code>; the tap applies it and reports <code>appliedState</code>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>State</th>
+<th>What runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>INERT</td>
+<td>The tap is attached but the interface is <strong>not opened</strong>. Only the 50 ms timer runs, and it compares two atomic words. No per-frame code. <strong>Every dext launch starts here.</strong></td>
+</tr>
+<tr>
+<td>COUNT</td>
+<td>Opened. Counts frames, k2d histogram, maxGap, pool re-add. No translation.</td>
+</tr>
+<tr>
+<td>SHADOW</td>
+<td>Translates and samples parity. Does not post.</td>
+</tr>
+<tr>
+<td>LIVE</td>
+<td>Translates and posts with <code>pad-&gt;submitInput(TAP, …)</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Pad source</strong> (<code>padSource</code>): NONE (no pad), UC or TAP. It is TAP exactly when the state is LIVE. Only the UC queue writes it (setForwarding, create, destroy), plus the root at orphan expiry and DestroyPad.</p>
+<h3 id="62-arbitration-the-pad-is-the-only-arbiter">6.2 Arbitration (the pad is the only arbiter)</h3>
+<ul>
+<li>The pad queue is the only caller of <code>handleReport</code>. For every submission, the pad compares the submitter's source with <code>padSource</code> <strong>on its own queue</strong>. That check is authoritative.</li>
+<li>Source <code>UC</code>: user-client posts go out. TAP submissions are dropped and counted.</li>
+<li>Source <code>TAP</code>:<ul>
+<li>UC <code>postReport</code> returns <code>kIOReturnBusy</code> and counts <code>ucRejected</code>.</li>
+<li>UC <code>postNeutral</code> posts neutral and sets <code>holdNeutral = 1</code> (<code>holdNeutrals++</code>). While the hold is set, the tap translates but does not submit.</li>
+<li>The hold clears on tap <code>SetPowerState(On)</code>, on a new tap Start, or on <code>setForwarding(LIVE)</code>. This makes the engine's willSleep neutral a real guard.</li>
+</ul>
+</li>
+<li><strong>Switch to LIVE</strong> (UC queue):<ol>
+<li>Check the preconditions: CAP_LIVE, <code>selfTest == pass</code>, <code>acceptedSpecCRC == padSpecCRC</code>, <code>tapPresent</code>, <code>appliedState == SHADOW</code>. Otherwise return an error.</li>
+<li>Store <code>padSource = TAP</code>.</li>
+<li><code>pad-&gt;postNeutralFrom(SWITCH)</code>.</li>
+<li>Store <code>desiredState = LIVE</code> and <code>holdNeutral = 0</code>.</li>
+<li>Poke the tap. On its queue the tap runs <code>gdx_reset</code>, so its next frame posts the full state.</li>
+</ol>
+</li>
+<li><strong>Switch from LIVE to any other state</strong> (UC queue):<ol>
+<li>Store <code>padSource = UC</code>.</li>
+<li><code>pad-&gt;postNeutralFrom(SWITCH)</code>.</li>
+<li>Store <code>desiredState = X</code>.</li>
+<li>Poke the tap.
+- It never waits on the tap.</li>
+</ol>
+</li>
+<li><strong>Invariant:</strong> after a switch neutral, nothing from the old source is posted. Any submission still queued on the pad queue is checked after the atomic store and dropped.</li>
+<li><strong>Engine side:</strong> whenever <code>padSource</code> changes from TAP to UC, the sink calls <code>resetDeliveryState()</code> (made internal; <span class="tag">R</span> VirtualPadSink.swift:331-340). The next frame then posts the full state, so an input held across the switch is not lost.</li>
+<li>The test pattern needs source UC (INERT, COUNT or SHADOW).</li>
+</ul>
+<h3 id="63-ownership">6.3 Ownership</h3>
+<ul>
+<li>The root owns the pad.</li>
+<li><strong>Pinned</strong> means <code>desiredState == LIVE</code> when the UC stops. Only the pad slot can be pinned.</li>
+<li><strong>UC Stop:</strong><ul>
+<li>Pinned: the pad stays, the tap keeps posting, the claim is released, and the 30 s <strong>orphan timer</strong> starts.</li>
+<li>Not pinned: <code>padSource = UC</code>, neutral, INERT, <code>DestroyPad</code>. This is G5 exactly as today.</li>
+<li>Keyboard and pointer slots (T11) are never pinned and are always destroyed.</li>
+</ul>
+</li>
+<li><strong><code>createDevice2</code> (T7):</strong><ul>
+<li><strong>Adopt:</strong> if a pad exists with a byte-identical spec (CRC, length and memcmp) and has no owner, the call returns <code>adopted = 1</code>. The caller now owns the slot, and the orphan timer is cancelled.</li>
+<li><strong>Otherwise:</strong> an existing pad with another spec is switched to UC, neutralised, set INERT and destroyed; then comes the 300 ms gap (<span class="tag">R</span> driverkit-dext-design.md §3.11) and the create.</li>
+<li>A new pad starts with <code>padSource = UC</code> and <code>desiredState = INERT</code>.</li>
+<li>A different spec CRC clears the accepted GDHM.</li>
+</ul>
+</li>
+<li><strong><code>destroyDevice</code></strong> always runs: <code>padSource = UC</code> → neutral → INERT → DestroyPad. Pinning applies only to UC Stop, never to an explicit destroy. This covers the sink's identity switch and unpublish (<span class="tag">R</span> VirtualPadSink.swift:238-262).</li>
+<li><strong>Orphan timer</strong> (root queue): 30 s after a pinned UC Stop with no adopting owner, it runs <code>padSource = UC</code> → neutral → INERT → DestroyPad, and counts <code>orphanDestroys</code>.<ul>
+<li>It covers an unclean logout and a dead engine.</li>
+<li>A launchd restart of the engine after about 2 s (<span class="tag">R</span> plist:21-24) is well inside 30 s (<span class="tag">G·T7</span>).</li>
+<li>T12 AutoArm pads are exempt.</li>
+</ul>
+</li>
+<li><strong>DestroyPad order:</strong> <code>padSource = NONE</code> (atomic), clear the registry pad pointer, then Terminate. The pad's Stop sets <code>stopping</code> first, and every later submission returns NotReady.</li>
+<li><strong>No orphans:</strong></li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Clean engine exit (SIGTERM, logout, <code>engine-agent.sh uninstall</code>)</td>
+<td><code>setForwarding(INERT)</code>, then <code>destroyDevice</code></td>
+</tr>
+<tr>
+<td>Uninstall after a crash</td>
+<td><code>engine-agent.sh uninstall</code> runs <code>GDHub --engine --engine-foreground --release-pad</code> after bootout. It sends hello, then <code>setForwarding(INERT, RELEASE_PAD)</code>, then exits. The <code>--engine-foreground</code> flag is required (<span class="tag">R</span> EngineMain.swift:18-22).</td>
+</tr>
+<tr>
+<td>devTerminate</td>
+<td>Destroys the pad first</td>
+</tr>
+<tr>
+<td>Anything else</td>
+<td>Orphan timer, 30 s</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>The single-owner claim, the team check and the InertDext GUI rule are unchanged (<span class="tag">R</span> DextControlling.swift:25-49).</li>
+</ul>
+<h3 id="64-watchdog-semantics-per-slot">6.4 Watchdog semantics (per slot)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Guard</th>
+<th>Pad slot, source UC</th>
+<th>Pad slot, source TAP</th>
+<th>Keyboard/pointer slots (T11)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UC heartbeat watchdog (250 ms period, 2 s timeout, <span class="tag">R</span> GDHubInternal.h:9-10)</td>
+<td>Neutral (G5)</td>
+<td>No effect; counted</td>
+<td>Neutral, always</td>
+</tr>
+<tr>
+<td>Tap silence (50 ms tick on the tap queue)</td>
+<td>—</td>
+<td>No frame for 250 ms (<code>silenceNeutralMs</code>): neutral + <code>gdx_reset</code>. The next frame reposts the full state. The longest measured gap is about 9 ms (<span class="tag">M</span>).</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Tap Stop (3A08 disappears)</td>
+<td>—</td>
+<td>Order: set <code>stopping</code> → Close (<span class="tag">R</span> IOHIDInterface.iig:168) → neutral (if source is TAP) → cancel the timer → the cancel handler runs <code>Stop(SUPERDISPATCH)</code> (today's crash fix, <span class="tag">R</span> GDHubVirtualHIDUserClient.cpp:442-454). ReportAvailable and the timer return at once when <code>stopping</code> is set. The pad stays.</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Tap <code>SetPowerState</code> (rule from the header: make the driver safe, then pass the call to super, <span class="tag">R</span> IOService.iig:253-262)</td>
+<td>—</td>
+<td><strong>Off:</strong> <code>powered = 0</code>; neutral if TAP; <code>return SetPowerState(powerFlags, SUPERDISPATCH)</code>. <strong>On:</strong> <code>powered = 1</code>, clear <code>holdNeutral</code>, <code>gdx_reset</code>, super. <strong>Low or LPW</strong> (<span class="tag">R</span> IOService.h:58-61): log, keep processing frames, super. Frames that arrive while <code>powered == 0</code> count as <code>framesIgnored</code>.</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Orphan timer (30 s)</td>
+<td>—</td>
+<td>Destroys an unowned pinned pad</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Presence (2 s, engine ControllerPresence)</td>
+<td>UI only</td>
+<td>UI only</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="65-crash-fuse-and-crash-loop-defence">6.5 Crash fuse and crash-loop defence</h3>
+<ol>
+<li><strong>In-dext fuse.</strong> <code>desiredState</code> lives only in process memory and starts INERT. INERT does not open the interface, so no per-frame code runs. Only an owner's <code>setForwarding</code> can arm COUNT or higher.</li>
+<li><strong>Self-test.</strong> The first move to SHADOW in a process runs the 64 golden vectors through <code>gdx_step</code>. A mismatch sets <code>selfTest = fail</code> for the life of the process, and SHADOW and LIVE are refused.</li>
+<li><strong>Engine breaker.</strong> 3 or more <code>instanceNonce</code> changes within 120 s mean the engine stops arming: the tap stays INERT and the engine stays LEGACY. The engine writes <code>tapBreakerTrippedAt</code>, logs <code>breaker: tripped</code>, and clears it only when the owner re-selects "Input path: Driver" in the Driver menu.</li>
+<li><strong>Fallback limiter.</strong> 3 fallbacks (§6.6) within 10 min have the same effect as the breaker.</li>
+<li><strong>What the fuse does not cover.</strong> Tap Start, Stop, SetPowerState and the timer run in every state. Pool handling runs from COUNT up. A crash there kills the pad (one process) and comes back at every 3A08 enumeration.<ul>
+<li><strong>Loop-breaker:</strong> switch the controller off (3A09 never matches, §3.2). Then roll back (§7.2) with the controller still off. Then power-cycle.</li>
+<li>macOS may reboot the Mac when a driver crashes too often (<span class="tag">R</span> IOKitKeys.h:134-136). T0.3 records whether and when that happens.</li>
+</ul>
+</li>
+<li><strong>T12 AutoArm guard:</strong> see §11 T12.</li>
+</ol>
+<h3 id="66-engine-fallback-automatic-and-forced">6.6 Engine fallback: automatic and forced</h3>
+<p><strong>Automatic.</strong> The engine's <code>TapSupervisor</code> runs a 100 ms tick whenever <code>inputPath</code> is <code>count</code>, <code>shadow</code> or <code>driver</code>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Trigger</th>
+<th>Condition</th>
+<th>Falls back to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F1 stall</td>
+<td>COUNT, SHADOW or LIVE: the engine reader counted ≥ 50 frames in the last 200 ms, and <code>status2.framesIn</code> did not increase</td>
+<td>COUNT</td>
+</tr>
+<tr>
+<td>F2 tap absent</td>
+<td>The engine's 3A08 0xFF58 device is matched and <code>tapPresent == 0</code> for longer than the grace period: max(1 s, 3 × the p99 of interfaceUp→tapPresent measured in T4)</td>
+<td>COUNT</td>
+</tr>
+<tr>
+<td>F3 dext lost</td>
+<td>Connection lost or nonce changed. After reconnect: LEGACY, and the breaker counts.</td>
+<td>INERT</td>
+</tr>
+<tr>
+<td>F4 errors</td>
+<td>A <code>setMapping</code> or <code>setForwarding</code> error, or <code>selfTest = fail</code></td>
+<td>INERT</td>
+</tr>
+<tr>
+<td>F5 parity</td>
+<td>3 or more stateless parity mismatches in 10 s (the 4 Hz sampler re-runs <code>gdx_eval</code>/<code>gdx_build</code> on <code>lastFrame</code>)</td>
+<td>INERT</td>
+</tr>
+<tr>
+<td>F6 output stall</td>
+<td>LIVE only. The engine's own <code>gdx_step</code>, the same C core fed by its reader, would have posted ≥ 3 reports in 200 ms and <code>status2.tapPosts</code> did not increase. Or <code>appliedState ≠ desiredState</code> for more than 300 ms. Or <code>padSource ≠ TAP</code>. Or <code>framesIgnored</code> rises while <code>powered == 1</code>.</td>
+<td>COUNT</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Action:</strong> call <code>setForwarding</code>. This flips <code>padSource</code> to UC at once (§6.2). The engine calls <code>resetDeliveryState()</code>, posts again and logs <code>fallback: &lt;reason&gt;</code>.</li>
+<li><strong>Return to LIVE:</strong> the trigger has been clear for 1 s, the breaker and the limiter have not tripped, and SHADOW then runs for 2 s with at least 100 frames and 0 mismatches. Then LIVE.</li>
+<li><strong>Engine startup in LIVE</strong> (glitch-free restart): if status2 shows <code>padSource == TAP</code>, <code>appliedState == LIVE</code>, <code>selfTest == pass</code>, and the accepted revision has the same CRC as the engine's encoded GDHM, the engine stays LIVE without SHADOW. <code>createDevice2</code> returns <code>adopted = 1</code>, so the sink skips its post-create <code>postNeutral</code> (<span class="tag">R</span> VirtualPadSink.swift:312).</li>
+<li><strong>Seize:</strong> when both the engine reader and the tap see nothing while 3A08 is present, the status says <code>silent: asleep or if3 seized by &lt;IOUserClientCreator names on the 0xFF58 device&gt;</code>. There is no fallback loop, because the engine path is starved too (A22). GDHub itself never seizes interface 3.</li>
+</ul>
+<p><strong>Forced:</strong>
+- <code>defaults write com.interlinked.gdhub inputPath -string engine</code> → <code>setForwarding(INERT)</code> and engine posting within about 1 s (the engine polls the key once per second, A20).
+    - Values: <code>engine</code> (default until T8), <code>count</code> (T4+), <code>shadow</code> (T5+), <code>driver</code> (T7+; on a dext without CAP_LIVE it runs as <code>shadow</code> and logs why).
+    - Precedent: the engine already reads <code>vpadMaxRateHz</code> from this domain (<span class="tag">R</span> VirtualPadSink.swift:125-133).
+- The Driver menu "Input path: App / Driver" writes the key.
+- There is no launch argument. The agent's arguments are fixed in its plist (<span class="tag">R</span> plist:7-11).
+- <strong>Drill:</strong> <code>defaults write com.interlinked.gdhub tapDrill -string pause5</code>. The engine sends <code>setForwarding(LIVE, DEV_PAUSE_TAP, 5000)</code> once and deletes the key. The flag works in every build.</p>
+<hr />
+<h2 id="7-lifecycle">7. Lifecycle</h2>
+<p>"LIVE" means <code>inputPath = driver</code> and armed. "LEGACY" covers INERT, COUNT and SHADOW.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Event</th>
+<th>LIVE</th>
+<th>LEGACY</th>
+<th>Proven in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Boot, before login</td>
+<td>The root starts with no pad. At 3A08 enumeration the tap attaches INERT. No pad until the engine starts (unless T12).</td>
+<td>Same</td>
+<td>T4</td>
+</tr>
+<tr>
+<td>Login, engine starts</td>
+<td>hello → status2 → <code>createDevice2</code> (adopt or create) → setMapping → SHADOW 2 s → LIVE. Or stay LIVE at once (§6.6 startup rule).</td>
+<td>hello → create → engine posts; tap per <code>inputPath</code></td>
+<td>T6, T7</td>
+</tr>
+<tr>
+<td>Controller off (3A08→3A09)</td>
+<td>Tap Stop (§6.4 order). Neutral; the pad stays (dext design failure table: "Controller switched off → pad stays, reports neutral"). 3A09 stays with Apple. Engine presence → receiverIdle.</td>
+<td>Engine neutral (today)</td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Controller on (3A09→3A08)</td>
+<td>New tap Start: <code>gdh_register_tap</code> reads <code>desiredState</code> in the same critical section; LIVE → Open, <code>gdx_reset</code>, <code>holdNeutral</code> cleared. Same pad registry ID.</td>
+<td>Tap per <code>desiredState</code></td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Controller sleep timer</td>
+<td>If the stream only stops: silence neutral at 250 ms. If it re-enumerates: as controller off (A12).</td>
+<td>Engine neutral after 2 s</td>
+<td>T0.1, T7</td>
+</tr>
+<tr>
+<td>Mac sleep/wake</td>
+<td>Engine willSleep → <code>postNeutral</code> → neutral + <code>holdNeutral</code>. Tap <code>SetPowerState(Off)</code> → neutral, frames ignored, super. On → hold cleared, <code>gdx_reset</code>, super. Engine didWake → <code>setForwarding(LIVE)</code>. PowerObserver waits at most 1 s for the dext call (§8.2).</td>
+<td>Today</td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Logout, clean</td>
+<td>The agent gets SIGTERM (A21) → INERT + destroyDevice → pad removed (G5)</td>
+<td>Today</td>
+<td>T6, T7</td>
+</tr>
+<tr>
+<td>Logout, unclean (crash during the 2 s throttle, or SIGKILL after ExitTimeOut 5 s, <span class="tag">R</span> plist:23-26)</td>
+<td>The pinned pad stays at most 30 s, then the orphan timer destroys it</td>
+<td>UC Stop destroys it</td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Fast user switch</td>
+<td>User A's agent keeps running (A21; LimitLoadToSessionType Aqua, <span class="tag">R</span> plist:27-28). The pad stays. User B's hello gets <code>kIOReturnExclusiveAccess</code> (<span class="tag">R</span> GDHubVirtualHIDUserClient.cpp:76-88).</td>
+<td>Same</td>
+<td>T6</td>
+</tr>
+<tr>
+<td>Engine crash (SIGKILL)</td>
+<td>The pinned pad stays and the tap keeps posting. launchd restarts the engine about 2 s later (<span class="tag">R</span> plist:21-24). The new engine adopts with no neutral and stays LIVE.</td>
+<td>UC Stop destroys the pad (G5)</td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Engine crash loop → GUI takes over in-app</td>
+<td>The GUI's DextClient (not supervised) sends <code>setForwarding(INERT)</code> after hello; GUI posts go out</td>
+<td>Same</td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Engine hang (SIGSTOP)</td>
+<td>Input unaffected. The watchdog has no effect on the TAP pad; keyboard and pointer go neutral.</td>
+<td>Neutral after 2 s (G5)</td>
+<td>T3, T7</td>
+</tr>
+<tr>
+<td>GUI quit</td>
+<td>No effect. The GUI is not in the data path and holds InertDext in engine mode.</td>
+<td>Same</td>
+<td>T6</td>
+</tr>
+<tr>
+<td>Identity switch or unpublish in LIVE</td>
+<td>destroyDevice: INERT → UC → neutral → destroy. The new pad starts UC/INERT. The supervisor re-arms through SHADOW if GDHM can express the new identity.</td>
+<td>Today</td>
+<td>T7</td>
+</tr>
+<tr>
+<td>Dext upgrade</td>
+<td>§7.1 U1–U7</td>
+<td>Same</td>
+<td>T3, T4</td>
+</tr>
+<tr>
+<td>Dext crash</td>
+<td>Root, UC, pad and tap all die (one process); games see a disconnect. Relaunch and re-match are A9. If relaunched: tap INERT, engine F3, LEGACY, re-arm unless the breaker tripped. If not: no pad until reboot. A crash loop at enumeration: switch the controller off first (§6.5).</td>
+<td>Same</td>
+<td>T0.3, T7</td>
+</tr>
+<tr>
+<td>ShadowUSB auto-forward</td>
+<td>Interfaces disappear, as on unlink. The engine labels UsbExclusiveOwner (<span class="tag">R</span> host-identity-matrix.md:62).</td>
+<td>Same</td>
+<td>—</td>
+</tr>
+<tr>
+<td>User-space seize of 0xFF58</td>
+<td>A tap Open fails and retries; frames starve; the status labels it (§6.6)</td>
+<td>Same</td>
+<td>T6</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="71-upgrade-procedure-every-dext-changing-phase">7.1 Upgrade procedure (every dext-changing phase)</h3>
+<p>The build script does not replace the dext. The GUI submits the replacement when it launches (<span class="tag">R</span> build-xcode.sh:81; DriverManager.swift:521-545). The engine mode ignores <code>--dev-terminate-driver</code> (<span class="tag">R</span> DriverManager.swift:126-127), so the swap runs with the GUI in in-app mode.</p>
+<ul>
+<li><strong>U1</strong> <code>scripts/engine-agent.sh uninstall</code>. The engine exits cleanly (INERT + destroyDevice). The GUI starts in in-app mode from its next launch (<span class="tag">R</span> engine-agent.sh:7, 97-100).</li>
+<li><strong>U2</strong> <code>osascript -e 'quit app "GDHub"'</code></li>
+<li><strong>U3</strong> <code>scripts/build-xcode.sh --release --no-open</code>. This bumps the build to N+1 (<span class="tag">R</span> :24) and installs the app.</li>
+<li><strong>U4</strong> <code>open /Applications/GDHub.app --args --dev-terminate-driver</code>. The in-app GUI connects to N and calls devTerminate after 1 s, then submits the replacement (<span class="tag">R</span> DriverManager.swift:212-223, 532-543). In the dext, devTerminate destroys the pad, then the tap (Close + Terminate), then the root.</li>
+<li>
+<p><strong>U5</strong> Wait until both of these match:</p>
+<ul>
+<li><code>systemextensionsctl list | grep -E 'gdhub\.VirtualHID \(0\.1\.0/&lt;N+1&gt;\).*activated enabled'</code></li>
+<li><code>/usr/bin/log show --last 3m --predicate 'eventMessage CONTAINS "GDHub: root start build &lt;N+1&gt;"'</code> (log text <span class="tag">R</span> GDHubVirtualHID.cpp:33)</li>
+</ul>
+<p>If they do not match within 2 min, reboot (common rules).
+- <strong>U6</strong> Power-cycle (PC, §10.2) so the new tap attaches, then run L1. Record whether the tap attached before the power cycle.
+- <strong>U7</strong> <code>osascript -e 'quit app "GDHub"'</code>; <code>scripts/engine-agent.sh install</code>; <code>open /Applications/GDHub.app</code>.</p>
+</li>
+</ul>
+<h3 id="72-rollback-procedure-l9">7.2 Rollback procedure (L9)</h3>
+<ul>
+<li><strong>RB1</strong> <code>scripts/engine-agent.sh uninstall</code></li>
+<li><strong>RB2</strong> <code>osascript -e 'quit app "GDHub"'</code></li>
+<li><strong>RB3</strong> <code>rm -rf /Applications/GDHub.app &amp;&amp; ditto ~/GDHub-rollback/&lt;phase&gt;-pre/GDHub.app /Applications/GDHub.app</code>. <code>rm -rf</code> does not uninstall the dext (<span class="tag">R</span> driverkit-dext-design.md:1322-1323).</li>
+<li><strong>RB4</strong> <code>open /Applications/GDHub.app --args --dev-terminate-driver</code>. DriverManager answers <code>.replace</code> whatever the versions (<span class="tag">R</span> DriverManager.swift:484-490), and it replaces whenever the embedded build differs from the enabled one (<span class="tag">R</span> :521-545). That a <strong>lower</strong> version is accepted is A23, proven in T0.4.</li>
+<li><strong>RB5</strong> Check both:<ul>
+<li><code>/usr/bin/log show --last 3m --predicate 'subsystem == "com.interlinked.gdhub" AND category == "vhid"' | grep 'replacing dext'</code> shows <code>N -&gt; N-1</code>;</li>
+<li><code>systemextensionsctl list</code> shows N-1 as <code>activated enabled</code>.</li>
+</ul>
+</li>
+<li><strong>RB6</strong> PC, then L1 shows the previous phase's binding.</li>
+<li><strong>RB7</strong> If that phase used the agent: quit the GUI, then <code>scripts/engine-agent.sh install</code>.</li>
+<li>If a tap crash loop is the reason for rolling back: switch the controller off before RB1 and keep it off until RB6.</li>
+</ul>
+<hr />
+<h2 id="8-what-changes-file-by-file">8. What changes, file by file</h2>
+<h3 id="81-dext">8.1 Dext</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+<th>Phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>project.yml</code></td>
+<td>T0: probe target (§3.3) + app dependency; removed in T0.5. T2: dext <code>excludes: [Shared/**]</code>; app sources, bridging header, cflags. T3: <code>GDHubPadProperties</code> to root level. T4: OneProcess on the root, tap personality (IOProbeScore 1000), transport.hid, <code>GDHUB_TAP_DECLINE=0</code> define. T5: excludes removed; <code>-ffp-contract=off</code> on the dext.</td>
+<td>T0–T5</td>
+</tr>
+<tr>
+<td><code>GDHubProtocol.h</code></td>
+<td>§5.4 defines, <code>GDHubStatus2</code>, GDHM constants, the additive rule</td>
+<td>T3, T4, T5, T7</td>
+</tr>
+<tr>
+<td><code>GDHubRegistry.{h,cpp}</code> (new)</td>
+<td>§4.3: private lock, atomics, +1 accessors, <code>gdh_register_tap</code></td>
+<td>T3 (tap fields T4, arbitration words T7)</td>
+</tr>
+<tr>
+<td><code>GDHubVirtualHID.{iig,cpp}</code></td>
+<td><code>CreatePad</code>/<code>DestroyPad</code> (DestroyPad order §6.3); nonce; pid log; Stop terminates the pad; devTerminate order pad → tap → root; orphan timer (T7)</td>
+<td>T3, T4, T7</td>
+</tr>
+<tr>
+<td><code>GDHubVirtualHIDUserClient.{iig,cpp}</code></td>
+<td>createDevice through the root; one fixed-length <code>IOBufferMemoryDescriptor</code> per input-table entry (SetLength once); selectors 9–12; GDHM validation; arbitration writes and pokes; watchdog per slot; adopt; pinning; <code>GDH_SYNC</code></td>
+<td>T3, T5, T7</td>
+</tr>
+<tr>
+<td><code>GDHubVirtualPad.{iig,cpp}</code></td>
+<td>Provider = root; spec from the registry; <code>submitInput</code> and <code>postNeutralFrom</code> replace <code>postReport</code>; source check; <code>stopping</code>; hop/hr stamps; output delivery to the owner UC through the registry</td>
+<td>T3, T7</td>
+</tr>
+<tr>
+<td><code>GDHubReceiverTap.{iig,cpp}</code> (new)</td>
+<td>T4: Start/Stop/SetPowerState, register, INERT/COUNT, pool B, Open retry, timer, counters, pid log, <code>GDHUB_TAP_DECLINE</code>. T5: SHADOW, map handoff, self-test, parity sampler, histograms, meter line. T7: LIVE, silence, hold, neutral paths, pause flag.</td>
+<td>T4, T5, T7</td>
+</tr>
+<tr>
+<td><code>GDHubInternal.h</code></td>
+<td><code>GDH_SYNC</code> (every build); <code>GDHUB_TAP_DECLINE</code> (a build define, not DEBUG-gated, like <code>GDHUB_DEV_TERMINATE</code>, <span class="tag">R</span> :11-13)</td>
+<td>T3, T4</td>
+</tr>
+<tr>
+<td><code>GDHubSpec.cpp</code></td>
+<td>Check <code>GDHUB_SPEC_VERSION</code> (<span class="tag">R</span> :41); CRC32 helper</td>
+<td>T3</td>
+</tr>
+<tr>
+<td><code>Shared/GDHubXlate.{h,c}</code>, <code>Shared/GDHubDefaults.h</code> (new)</td>
+<td>§5.1, §5.3</td>
+<td>T2</td>
+</tr>
+<tr>
+<td><code>Dext/GDHubTapProbe/*</code> (new, then deleted)</td>
+<td>Probe root + probe tap</td>
+<td>T0</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="82-engine-swift">8.2 Engine (Swift)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+<th>Phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Output/VirtualPad/VirtualPadSink.swift</code></td>
+<td><code>lastPostAt = tS</code> (T1). Uses the C core through <code>XlateCore</code> unless <code>xlateCore = swift</code> (T2). T7: posting gate off while <code>padSource == TAP</code>; <code>resetDeliveryState()</code> made internal and called on TAP→UC; post-create <code>postNeutral</code> skipped when adopted.</td>
+<td>T1, T2, T7</td>
+</tr>
+<tr>
+<td><code>Output/VirtualPad/XlateCore.swift</code> (new)</td>
+<td>Swift wrapper over GDHubXlate; also the engine's F6 shadow step</td>
+<td>T2, T7</td>
+</tr>
+<tr>
+<td><code>Mapping/MapBlobEncoder.swift</code> (new)</td>
+<td>ControlMapping + PadIdentity → GDHM, or <code>.unsupported(reason)</code></td>
+<td>T2, T6</td>
+</tr>
+<tr>
+<td><code>Output/VirtualHID/DextProtocol.swift</code>, <code>DextClient.swift</code>, <code>DextControlling.swift</code></td>
+<td>Mirror. <code>matching()</code> adds <code>IOUserClass = GDHubVirtualHID</code> (T3). <code>setForwarding</code>/<code>setMapping</code>/<code>getStatus2</code>/<code>createDevice2</code>, caps. <code>supervised</code> flag: an unsupervised client sends INERT after hello when CAP_TAP is set (T4).</td>
+<td>T3–T7</td>
+</tr>
+<tr>
+<td><code>Engine/EngineCore.swift</code></td>
+<td>Control-plane sequence (§7 login row); pushes GDHM on every mapping change</td>
+<td>T5, T7</td>
+</tr>
+<tr>
+<td><code>Engine/TapSupervisor.swift</code> (new)</td>
+<td>100 ms tick, F1–F6, breaker, fallback limiter, re-arm, startup stay-LIVE, <code>inputPath</code> and <code>tapDrill</code> polling, interfaceUp→tapPresent timing</td>
+<td>T4 (timing), T6, T7</td>
+</tr>
+<tr>
+<td><code>Engine/EngineService.swift</code></td>
+<td>Meter line gains <code>dext: state framesIn tapPosts ucRejected parity</code>; T7 clean-exit order (INERT before destroyDevice)</td>
+<td>T5, T7</td>
+</tr>
+<tr>
+<td><code>Engine/EngineOptions.swift</code>, <code>EngineMain.swift</code></td>
+<td><code>--release-pad</code> (only with <code>--engine-foreground</code>)</td>
+<td>T7</td>
+</tr>
+<tr>
+<td><code>Engine/PowerObserver.swift</code></td>
+<td><code>willSleep</code>: <code>vhidQueue.async</code> + semaphore wait of at most 1 s before <code>IOAllowPowerChange</code> (today <code>vhidQueue.sync</code>, <span class="tag">R</span> :49-52). didWake → <code>setForwarding(LIVE)</code> when LIVE is wanted.</td>
+<td>T7</td>
+</tr>
+<tr>
+<td><code>Engine/GamepadHIDReader.swift</code>, <code>ControllerPresence.swift</code>, <code>MappingWatcher.swift</code></td>
+<td>Unchanged</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>PassthroughPadMapper.swift</code>, <code>PadReportBuilders.swift</code></td>
+<td>Unchanged; test oracle</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>Control-plane selectors stay on <code>vhidQueue</code>, because DextClient is confined to it (<span class="tag">R</span> DextClient.swift:6). With the dext no longer waiting on the tap (§4.2), a call can block only on the pad queue, exactly as today's postReport.</p>
+<h3 id="83-gui">8.3 GUI</h3>
+<ul>
+<li><code>Output/VirtualHID/ProbeExtensionRequester.swift</code> (new in T0, deleted in T0.5): handles <code>--dev-probe-dext activate|deactivate</code>.<ul>
+<li>It sends activation and deactivation requests for <code>com.interlinked.gdhub.TapProbe</code> through its <strong>own</strong> delegate object, answers <code>.replace</code> and logs <code>probe: …</code>.</li>
+<li>It never touches DriverManager state. DriverManager's delegate ignores the request identifier (<span class="tag">R</span> DriverManager.swift:492-519).</li>
+</ul>
+</li>
+<li><code>DriverManager.swift</code>: wires the probe flag (T0). In-app mode builds its DextClient with <code>supervised = false</code> (T4).</li>
+<li><code>UI/DriverCommands.swift</code> (T6):<ul>
+<li>"Input path: App / Driver" writes <code>inputPath</code>.</li>
+<li>It shows <code>Input path: App (mapping needs GDHM v2: &lt;reason&gt;)</code> when the encoder refuses a mapping.</li>
+<li>It shows whether <code>GDHubReceiverTap</code> exists, through an IORegistry name lookup with no user client, so InertDext holds.</li>
+</ul>
+</li>
+<li><code>Xcode/App/GDHub-Bridging-Header.h</code> (new, T2): includes <code>GDHubXlate.h</code> for the Xcode app target. Swift uses <code>#if canImport(GDHubXlate)</code> (<span class="tag">G·T2</span>).</li>
+<li>Live view, input monitor, learn mode, event log and battery strip are unchanged. Interface 3's IOHIDDevice stays (<span class="tag">M</span>).</li>
+</ul>
+<h3 id="84-package-and-tests">8.4 Package and tests</h3>
+<ul>
+<li><code>Package.swift</code> (T2): <code>.target(name: "GDHubXlate", path: "Dext/GDHubVirtualHID/Shared", publicHeadersPath: ".", cSettings: [.unsafeFlags(["-ffp-contract=off"])])</code>. The GDHub target depends on it.</li>
+<li>New tests: §10.1.</li>
+</ul>
+<h3 id="85-scripts">8.5 Scripts</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Script</th>
+<th>Change</th>
+<th>Phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scripts/receiver-check.sh</code> (new)</td>
+<td>For the node <code>SCUF Envision Pro Wireless USB Receiver V2</code> (<span class="tag">M</span> ioreg), using <code>ioreg -rw0 -l -n …</code> (registry names only, the vhid-check convention, <span class="tag">R</span> vhid-check.sh:3). It prints: interfaces 0–4 with their bound children; interface 3's IOHIDInterface child (GDHubReceiverTap, GDHubProbeTap, AppleUserHIDEventDriver or none); interface 3's DebugState (Created/ReleasedBuffers, ReportAvailableCalls, and the rate from two samples 5 s apart); the 0xFF58 device's DebugState and <code>IOUserClientCreator</code> list; the interface 4 child (positive control); and the 3A09 device if present.</td>
+<td>T0</td>
+</tr>
+<tr>
+<td><code>scripts/tools/personality-scan.py</code> (new)</td>
+<td>Lists every kext/dext personality with VendorID/idVendor 6940: system kexts and their plugins, /System/Library/DriverExtensions, /Library/SystemExtensions, /Library/Extensions. Run with <code>python3 -I</code>.</td>
+<td>T0</td>
+</tr>
+<tr>
+<td><code>scripts/build-xcode.sh</code></td>
+<td><code>--probe</code>, <code>--probe-downgrade</code>, <code>PROBE_CRASH</code> (§3.6, T0; removed T0.5). transport.hid in <code>need</code>, plus the plutil assertions (T4).</td>
+<td>T0, T4</td>
+</tr>
+<tr>
+<td><code>scripts/dext-log.sh</code></td>
+<td>Adds the probe process (T0) and <code>--meter</code> (the <code>GDHub: tap meter</code> lines, T5)</td>
+<td>T0, T5</td>
+</tr>
+<tr>
+<td><code>scripts/engine-agent.sh</code></td>
+<td><code>uninstall</code> runs <code>GDHub --engine --engine-foreground --release-pad</code> after bootout</td>
+<td>T7</td>
+</tr>
+<tr>
+<td><code>scripts/vhid-check.sh</code></td>
+<td>The pad's parent must be GDHubVirtualHID</td>
+<td>T3</td>
+</tr>
+</tbody>
+</table></div>
+<p>L5 uses the existing tools <code>scuf-envision/tools/gcprobe</code> (GameController list, <span class="tag">R</span> gcprobe.swift:4-5) and <code>scuf-envision/tools/sdlmatch</code> (SDL matching emulation, <span class="tag">R</span> sdlmatch.swift:1). No new list tool is written.</p>
+<h3 id="86-docs">8.6 Docs</h3>
+<ul>
+<li><code>driverkit-dext-design.md</code>: provider rule and D5 lookup (T3); G5 amendment and §4.2 note (T7, T5).</li>
+<li><code>output-layer-plan.md</code>: decision 5 note (T4); §3.1 GDHM-expressible note (T6).</li>
+<li><code>engine-agent-plan.md</code>: R14 exception (T6); E2–E4 retargeting (T7).</li>
+<li><code>other-controller-drivers.md</code>: §3 pointer (with this plan); ranks 6–7 superseded (T10).</li>
+<li><code>envision-pro-receiver.md</code>: T0 facts.</li>
+<li><code>HANDOFF.md</code>: T8.</li>
+</ul>
+<hr />
+<h2 id="9-measurement">9. Measurement</h2>
+<h3 id="91-in-dext-stamps-dext-only">9.1 In-dext stamps (dext only)</h3>
+<p>All stamps are <code>mach_absolute_time()</code> (<span class="tag">R</span> IOLib.h:177-188) unless noted.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Stamp</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>t0</td>
+<td>ReportAvailable <code>timestamp</code> argument (mach units: A7)</td>
+</tr>
+<tr>
+<td>t1</td>
+<td>Tap entry</td>
+</tr>
+<tr>
+<td>t2</td>
+<td>After <code>gdx_step</code></td>
+</tr>
+<tr>
+<td>tPin</td>
+<td>Pad <code>submitInput</code> entry</td>
+</tr>
+<tr>
+<td>tPout</td>
+<td>After <code>handleReport</code> returns</td>
+</tr>
+<tr>
+<td>t3</td>
+<td>Tap, after <code>submitInput</code> returns</td>
+</tr>
+<tr>
+<td>t4</td>
+<td>Tap, after <code>AddReportToPool</code> returns</td>
+</tr>
+</tbody>
+</table></div>
+<p>Histograms, each with 55 buckets (40 × 25 µs, 10 × 100 µs, then 2/3/5/10/20 ms), an overflow, max and count, in 10 s windows:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Histogram</th>
+<th>Formula</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>k2d</code></td>
+<td>t1−t0</td>
+</tr>
+<tr>
+<td><code>xlate</code></td>
+<td>t2−t1</td>
+</tr>
+<tr>
+<td><code>hop</code></td>
+<td>tPin−t2. For UC posts, from T3: tPin minus the UC stamp before the call.</td>
+</tr>
+<tr>
+<td><code>hr</code></td>
+<td>tPout−tPin</td>
+</tr>
+<tr>
+<td><code>addPool</code></td>
+<td>t4−t3</td>
+</tr>
+<tr>
+<td><code>total</code></td>
+<td>t3−t0</td>
+</tr>
+<tr>
+<td><code>occ</code> (tap-queue occupancy)</td>
+<td>t4−t1</td>
+</tr>
+</tbody>
+</table></div>
+<p>Nothing is logged per report (<span class="tag">R</span> design rule §3.12). Every 10 s while frames flow, the dext writes one <code>.notice</code> line:</p>
+<p><code>GDHub: tap meter build=N state=S frames=… posts=… k2d p50/p99 … xlate … hop … hr … addPool … total p50/p99/max … occ p99 … poolMiss … ignored … unchanged …</code></p>
+<h3 id="92-how-the-numbers-are-read">9.2 How the numbers are read</h3>
+<ul>
+<li>
+<p><strong>Dext:</strong></p>
+<pre><code>/usr/bin/log show --start '&lt;start&gt;' --end '&lt;end&gt;' --info --predicate 'eventMessage BEGINSWITH "GDHub: tap meter"'
+</code></pre>
+<p>or <code>scripts/dext-log.sh --meter</code>.
+- <strong>Engine:</strong> <code>scripts/engine-agent.sh latency</code> (<span class="tag">R</span> engine-agent.sh:108-110). It shows <code>cb(all frames) n=… NNNHz</code> (<span class="tag">R</span> CallbackStat.swift:25) and, from T5, the <code>dext:</code> fields.
+- <strong>End to end:</strong> padlat (<span class="tag">R</span> scuf-envision/tools/latency/README.md). Run <code>./padlat 20 /abs/path/run-&lt;path&gt;.csv</code> while doing its gesture script. Named metrics: <code>digital-&gt;virt (kernel ts)</code> and <code>stick onset-&gt;virt (kernel ts)</code> (<span class="tag">R</span> padlat.swift:122, 141). The CSV carries raw report bytes per row (<span class="tag">R</span> padlat.swift:189-191). The pad timestamp stays <code>mach_absolute_time()</code> at post by default (<code>STAMP_SOURCE_TIME</code> off), so padlat stays comparable before and after.
+- <strong>Game Mode confirmation.</strong> gamepolicyd logs mostly <code>Game mode status is now on|paused|off</code> (<span class="tag">M</span>: 76 × paused, 63 × on, 13 × off, 26 × enabled, 28 × disabled in 24 h).
+1. Note the session start and end: <code>date '+%Y-%m-%d %H:%M:%S'</code>.
+2. Before the session:</p>
+<pre><code>    /usr/bin/log show --start '&lt;start − 12 h&gt;' --end '&lt;start&gt;' --style compact --predicate 'process == "gamepolicyd"' \
+      | grep -E 'Game mode (enabled|disabled)|status is now (on|paused|off)' | tail -1
+
+The last line must be `status is now on` or `Game mode enabled`.
+</code></pre>
+<ol start="3">
+<li>
+<p>During the session:</p>
+<pre><code>/usr/bin/log show --start '&lt;start&gt;' --end '&lt;end&gt;' --style compact --predicate 'process == "gamepolicyd"' \
+  | grep -E 'status is now (paused|off)|Game mode disabled'
+</code></pre>
+<p>This must print nothing. Otherwise drop every 10 s window that overlaps a paused or off interval.</p>
+</li>
+</ol>
+</li>
+</ul>
+<h3 id="93-gate-t8">9.3 Gate (T8)</h3>
+<p><strong>Conditions:</strong>
+- Game Mode confirmed (§9.2);
+- 3 sessions × 10 min of real play;
+- 10 s windows with at least 30 changed frames;
+- a same-session padlat A/B: 3 × 20 s with <code>inputPath = driver</code>, then 3 × 20 s with <code>engine</code>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Criterion</th>
+<th>Pass</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G1</td>
+<td>Dext <code>total</code>, median of the window p50s</td>
+<td>≤ 0.40 ms</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>Dext <code>total</code>, median of the window p99s</td>
+<td>≤ 1.5 ms</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>Worst <code>total</code> max</td>
+<td>&lt; 20 ms</td>
+</tr>
+<tr>
+<td>G4a</td>
+<td>padlat <code>digital-&gt;virt (kernel ts)</code> p50, driver</td>
+<td>≤ 0.5 ms</td>
+</tr>
+<tr>
+<td>G4b</td>
+<td>Same-session A/B, driver against engine (both after T1 and T3): <code>digital-&gt;virt (kernel ts)</code> p50 and <code>stick onset-&gt;virt (kernel ts)</code> p50</td>
+<td>Driver at least 0.2 ms lower on <strong>both</strong>. The T0.1 and T1 baselines are reported for context only.</td>
+</tr>
+<tr>
+<td>G5g</td>
+<td>tapPosts / changed frames (meter)</td>
+<td>≥ 98 %</td>
+</tr>
+<tr>
+<td>G6</td>
+<td>Parity mismatches; framesBad</td>
+<td>0; 0</td>
+</tr>
+<tr>
+<td>G7</td>
+<td>poolMiss + slowMap</td>
+<td>&lt; 0.1 % of frames</td>
+</tr>
+<tr>
+<td>G8</td>
+<td>ucRejected outside drills</td>
+<td>0</td>
+</tr>
+<tr>
+<td>G9</td>
+<td>Neutral after the stream stops. Controller switched off during padlat: time from the last <code>phys</code> CSV row to the first all-neutral <code>virt</code> 0x01 row.</td>
+<td>≤ 300 ms</td>
+</tr>
+<tr>
+<td>G10</td>
+<td><code>tapDrill pause5</code>: from the dext log line <code>tap pause start</code> to the engine log <code>fallback: tap stalled</code></td>
+<td>≤ 300 ms</td>
+</tr>
+<tr>
+<td>G11</td>
+<td><code>hop</code> p50</td>
+<td>≤ 50 µs, else T9</td>
+</tr>
+<tr>
+<td>G12</td>
+<td><code>occ</code> p99 (frame interval is 1 ms)</td>
+<td>≤ 0.5 ms, else T9</td>
+</tr>
+<tr>
+<td>PC1</td>
+<td>Positive control: engine <code>cb(all frames)</code> rate</td>
+<td>940–970 Hz</td>
+</tr>
+<tr>
+<td>PC2</td>
+<td>Positive control: engine <code>total</code> p50 in the A/B</td>
+<td>within ±0.15 ms of the T1 baseline</td>
+</tr>
+<tr>
+<td>PC3</td>
+<td>Pad count</td>
+<td>1 (vhid-check)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Play test:</strong>
+- all 15 controls;
+- stick corners at 0 and 65535;
+- triggers 0–1023;
+- Guide;
+- controller sleep → neutral, then wake;
+- power off/on → same pad registry ID;
+- hold RT at full while running <code>kill -9 $(pgrep -f 'GDHub --engine$')</code> twice. The padlat CSV must have no 02E0 row with RT = 0 during the hold, and status2 <code>switchNeutrals</code> must be unchanged.
+- <code>engine-agent.sh uninstall</code> → pad removed;
+- Mac sleep/wake ×2;
+- GUI learn running at the same time;
+- the interface 4 battery strip works;
+- receiver audio works.</p>
+<p><strong>Result table</strong> (filled in at T8):</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Session</th>
+<th>Game Mode</th>
+<th>p50 total</th>
+<th>p99 total</th>
+<th>max</th>
+<th>digital p50 (drv/eng)</th>
+<th>stick p50 (drv/eng)</th>
+<th>posts %</th>
+<th>parity</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="10-test-plan">10. Test plan</h2>
+<h3 id="101-unit-tests-swift-test">10.1 Unit tests (<code>swift test</code>)</h3>
+<ul>
+<li><strong><code>GDHubXlateParityTests</code>.</strong> The Swift oracle is <code>GamepadFrame.parse</code> (<span class="tag">R</span> EnvisionProReport.swift:31-49) → PassthroughPadMapper → snapped/unchanged → PadReportBuilders. It runs against <code>gdx_*</code> on <strong>raw 16-byte reports</strong> and must be byte-identical. Cases:<ul>
+<li>every int16 value per axis × {full range, no range, asymmetric learned ranges (−28000/31000, −32768/20000, −100/100, −1/1)} × sign ±1;</li>
+<li>every trigger raw value 0–1023;</li>
+<li>hat 0–15 × D-pad rules, including the diagonals;</li>
+<li>every button bit, and <code>physMask</code> precedence on every control (1- and 2-bit masks);</li>
+<li>2 OR'ed sources per item;</li>
+<li>wrong report IDs and lengths: the C core counts them as framesBad, and <code>parse</code> returns nil;</li>
+<li>hysteresis and end-stop sequences;</li>
+<li>10⁶ seeded random frames × {factory mapping, live-file fixture, 3 random learned mappings};</li>
+<li>the −1 quirk reproduced exactly.</li>
+</ul>
+</li>
+<li><strong><code>GDHubXlateSequenceTests</code>.</strong> The Swift sink on <code>ManualScheduler</code> (<span class="tag">R</span> VirtualPadSinkTests.swift:8), fed with frames spaced at least one cap interval apart, against <code>gdx_step</code>. 10⁵ random-walk frames; the posted bytes must be identical.</li>
+<li><strong><code>GoldenVectorTests</code>.</strong> Regenerates the <code>GDHubDefaults.h</code> content (factory GDHM, default spec, 64 vectors) and fails on drift. It also runs the 64 vectors through the SwiftPM C target. The <strong>same</strong> 64 vectors run inside the dext as the self-test (§6.5), which proves on the device that the dext's C translation equals the Swift one.</li>
+<li><strong><code>MapBlobEncoderTests</code>.</strong> Round trip; each validator rejection (§5.3); <code>specCRC32</code> mismatch; <code>.unsupported</code> for an echo/layer mapping.</li>
+<li><strong><code>DextProtocolTests</code>.</strong> Every new define, <code>GDHUB_SPEC_VERSION</code>, the status2 version and size, the GDHM magic, and that <code>DextClient.matching()</code> contains <code>IOUserClass = GDHubVirtualHID</code>.</li>
+<li><strong><code>TapSupervisorTests</code></strong> (fake status source and clock):<ul>
+<li>F1–F6 each fall back within 2 ticks;</li>
+<li>re-arm only after 1 s clear plus SHADOW;</li>
+<li>the breaker trips on the 3rd nonce change in 120 s;</li>
+<li>the fallback limiter;</li>
+<li><code>inputPath</code> and <code>tapDrill</code> polling;</li>
+<li>startup stay-LIVE only when every condition holds;</li>
+<li>the clean-exit order (INERT before destroyDevice);</li>
+<li><code>resetDeliveryState</code> on TAP→UC: hold LT = 1.0 across LIVE → fallback, and expect LT = 1023 to be posted on the next frame.</li>
+</ul>
+</li>
+<li><strong><code>DriverManagerModeTests</code>.</strong> An in-app DextClient sends <code>setForwarding(INERT)</code> after hello when CAP_TAP is set; engine mode sends nothing (existing fake).</li>
+<li><strong><code>VirtualPadSinkTests</code>.</strong> The rank-5 change; adopt skips <code>postNeutral</code>; the posting gate. All 42 existing tests stay green (<span class="tag">M</span> <code>grep -c 'func test'</code>).</li>
+<li><strong>Oracle tests stay green:</strong> GamepadFrameTests (4), ControlMappingTests (4), PadReportBuilderTests (8), PassthroughPadMapperTests (11) (<span class="tag">M</span>).</li>
+</ul>
+<h3 id="102-live-check-toolkit">10.2 Live check toolkit</h3>
+<p>Run these exactly as written. Positive controls are included.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Check</th>
+<th>Command and pass</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PC</td>
+<td>Power cycle</td>
+<td>Run <code>scripts/receiver-check.sh</code> before the power cycle (record). Switch the controller off. Wait until <code>ioreg -p IOUSB -w0 -l \| grep -E '"idProduct" = 1485[67]'</code> shows 14857. Switch it on and wait for 14856. Run <code>scripts/receiver-check.sh</code> again (record).</td>
+</tr>
+<tr>
+<td>L1</td>
+<td>Binding</td>
+<td><code>scripts/receiver-check.sh</code>: interface 3's child is what the phase expects; interface 4's child is <code>AppleUserHIDEventDriver</code> (positive control); interfaces 0–2 match the T0.1 snapshot.</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>One process</td>
+<td><code>pgrep -lf 'com.interlinked.gdhub.VirtualHID$'</code> prints exactly one line (<span class="tag">M</span> the pattern matches only the dext today); in T0 use <code>'com.interlinked.gdhub.TapProbe$'</code>. <code>/usr/bin/log show --last 10m --info --predicate 'eventMessage BEGINSWITH "GDHub" AND eventMessage CONTAINS "pid="'</code> shows root and tap with the same pid.</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>Rate and pool</td>
+<td>receiver-check rate 940–970/s; <code>CreatedBuffers</code> unchanged across two runs 60 s apart (tap in COUNT or higher).</td>
+</tr>
+<tr>
+<td>L4</td>
+<td>Raw readers intact</td>
+<td><code>scripts/engine-agent.sh latency</code> shows <code>cb(all frames)</code> 940–970 Hz; the GUI live view moves; the battery strip shows a value; padlat runs.</td>
+</tr>
+<tr>
+<td>L5</td>
+<td>Device lists</td>
+<td><code>hidutil list &gt; ~/GDHub-rollback/lists/hidutil-&lt;phase&gt;.txt</code>; <code>scuf-envision/tools/gcprobe &gt; …/gc-&lt;phase&gt;.txt</code>; <code>scuf-envision/tools/sdlmatch &gt; …/sdl-&lt;phase&gt;.txt</code>; diff against T0.1. <strong>Accept:</strong> unchanged, or only the raw SCUF entry is gone, with the 02E0 pad (and its synthetic copy) present exactly once. <strong>Reject:</strong> the 02E0 pad missing or duplicated, or the owner's test game losing the controller.</td>
+</tr>
+<tr>
+<td>L6</td>
+<td>Latency</td>
+<td>Game Mode check (§9.2), engine meter 3 × 10 min, padlat 3 × 20 s.</td>
+</tr>
+<tr>
+<td>L7</td>
+<td>Pad</td>
+<td><code>scripts/vhid-check.sh</code> (pad count 1); <code>ioreg -rw0 -n GDHubVirtualHID -d 3</code> shows GDHubVirtualPad under the root.</td>
+</tr>
+<tr>
+<td>L8</td>
+<td>Upgrade drill</td>
+<td>§7.1 U1–U7 twice in a row without a reboot. Each time U5 shows the new build. Record whether the tap attached before the power cycle.</td>
+</tr>
+<tr>
+<td>L9</td>
+<td>Rollback drill</td>
+<td>§7.2 RB1–RB7 to the phase's <code>-pre</code> archive, then §7.1 forward again.</td>
+</tr>
+<tr>
+<td>L10</td>
+<td>Fallback drill</td>
+<td><code>defaults write com.interlinked.gdhub tapDrill -string pause5</code>. The engine log shows <code>fallback: tap stalled</code> within 300 ms of the dext's <code>tap pause start</code>, and padlat keeps seeing 02E0 reports.</td>
+</tr>
+<tr>
+<td>S1</td>
+<td>Soak</td>
+<td>Before: <code>pgrep -lf 'com.interlinked.gdhub.VirtualHID$'</code> and <code>ls ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports \| grep -c 'com.interlinked.gdhub.VirtualHID'</code>. Then 20 controller off/on cycles (PC each), 10 sleep-timer cycles, 3 Mac sleep/wake cycles. After: the same pid, no new crash report, status2 <code>openFailures</code> 0 outside seizes, and L1 passes.</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="11-phased-implementation">11. Phased implementation</h2>
+<p><strong>Common rules for every phase:</strong>
+- Archive the current app before a dext-changing phase: <code>ditto /Applications/GDHub.app ~/GDHub-rollback/&lt;phase&gt;-pre/GDHub.app</code>.
+- Builds:
+    - App-only: <code>scripts/build-xcode.sh --release --same-build</code>.
+    - Dext-changing: §7.1 U1–U7.
+    - T0: <code>scripts/build-xcode.sh --release --probe</code>, which forces <code>--same-build</code>.
+- Release builds only. No drill and no check depends on DEBUG: DEBUG=1 is set only in the Debug configuration (<span class="tag">R</span> build-xcode.sh:19, project via review). Drills are runtime, owner-only flags.
+- Uninstall the engine agent before a dext-changing build (<span class="tag">R</span> build-xcode.sh:26-29).
+- Never kill a dext process. Never run <code>systemextensionsctl uninstall|reset</code>.
+- Reboot only when:
+    - U5 or RB5 do not match within 2 min;
+    - the request reports <code>.willCompleteAfterReboot</code>;
+    - "terminated waiting to uninstall on reboot" appears;
+    - sysextd wedges, or "terminating_for_upgrade" hangs (<span class="tag">R</span> driverkit-dext-design.md:1316-1320; engine-agent-plan.md:894).</p>
+<pre><code>Budget one reboot per dext or probe replacement.
+</code></pre>
+<ul>
+<li>Order of work: implement → <code>swift build &amp;&amp; swift test</code> → build or upgrade → live checks → commit → update the ledger. The commit body holds the results, the test count, "Not yet verified:" and Co-Authored-By.</li>
+<li>Implementer models, always set explicitly:<ul>
+<li>Sonnet high for dext C++ and threading;</li>
+<li>Sonnet medium for Swift and scripts;</li>
+<li>Haiku low for mechanical steps, builds, test runs and log greps;</li>
+<li>Opus high only for a dext bug Sonnet cannot fix.</li>
+<li>No multi-agent fan-out.</li>
+</ul>
+</li>
+</ul>
+<h3 id="t0-probe-dext-production-untouched">T0: Probe dext (production untouched)</h3>
+<p><strong>Scope</strong></p>
+<ul>
+<li><strong>T0.1 Facts and a sign-only probe build (no install).</strong><ol>
+<li><code>ditto /Applications/GDHub.app ~/GDHub-rollback/build17/GDHub.app</code>. Build 17 is live (<span class="tag">M</span> systemextensionsctl).</li>
+<li>L6 → the "today" baseline (engine meter + padlat).</li>
+<li>Snapshots into <code>~/GDHub-rollback/T0-facts/</code>:<ul>
+<li><code>scripts/receiver-check.sh</code></li>
+<li><code>ioreg -rw0 -l -n "SCUF Envision Pro Wireless USB Receiver V2"</code></li>
+<li><code>hidutil list</code></li>
+<li><code>scuf-envision/tools/gcprobe</code></li>
+<li><code>scuf-envision/tools/sdlmatch</code></li>
+</ul>
+</li>
+<li>Sleep timer (A12):<ul>
+<li>Set the shortest timer in the battery strip and leave the controller idle.</li>
+<li>Run <code>while sleep 1; do date +%T; ioreg -p IOUSB -w0 -l | grep -E '"idProduct" = 1485[67]'; done</code>.</li>
+<li>Read the current timer value in the strip <strong>before</strong> changing it and write it down. Afterwards <strong>restore that same value</strong> and read it back. It was set to 3,600,000 ms (60 min) on 2026-11-09 (<span class="tag">R</span> envision-pro-receiver.md:102), but the value read at the start of the test is the one to restore.</li>
+</ul>
+</li>
+<li>Competing personalities (A14): <code>python3 -I scripts/tools/personality-scan.py</code>. Expected: one hit, USB mass storage 6940:6659 (<span class="tag">M</span> today).</li>
+<li>Profile:<ul>
+<li>Add the probe target.</li>
+<li><code>print 1 &gt; Xcode/probe-build</code></li>
+<li><code>scripts/build-xcode.sh --release --probe --no-install</code></li>
+<li>This builds with the probe embedded, runs every §3.6 check on both dexts and installs nothing (<span class="tag">R</span> build-xcode.sh:71).</li>
+</ul>
+</li>
+</ol>
+</li>
+<li><strong>T0.2 Probe build 1.</strong> Decline first, then run, in one process.<ol>
+<li><code>scripts/build-xcode.sh --release --probe --no-open</code>. The production version stays 17, which the script asserts.</li>
+<li><code>ditto /Applications/GDHub.app ~/GDHub-rollback/T0-probe/GDHub.app</code></li>
+<li><code>open /Applications/GDHub.app --args --dev-probe-dext activate</code>. Approve in System Settings if asked (<span class="tag">G·T0</span>). Wait for <code>systemextensionsctl list | grep 'gdhub.TapProbe (0.1.0/1).*activated enabled'</code>.</li>
+<li>L1 <strong>before</strong> any power cycle. Record whether the probe took interface 3 (A10).</li>
+<li><strong>PC #1</strong> → first Start: <code>tap start #1 rootSeen=1 rootPid=P vid=6940 pid=14856 page=65368 → decline</code>. Then L1 shows AppleUserHIDEventDriver on interface 3 (A8).</li>
+<li><strong>PC #2</strong> → second Start runs:<ul>
+<li>Open with the pool.</li>
+<li>Strategy B for 30 s, strategy A for 10 s, then B again. Run receiver-check in each window.</li>
+<li>Log the first 3 frames once: reportID, length, bytes, and whether the descriptor is one of ours.</li>
+<li>Every 10 s: count, k2d p50/p99/max, poolMiss, maxGap.</li>
+<li>Log every SetPowerState with its flags and every Stop/Start time.</li>
+</ul>
+</li>
+<li>One sleep-timer cycle and one Mac sleep/wake (A12, A13).</li>
+<li>L2 (probe pattern), L3, L4, L5.</li>
+</ol>
+</li>
+<li><strong>T0.3 Crash drill (mandatory). Probe build 2.</strong><ol>
+<li><code>print 2 &gt; Xcode/probe-build; PROBE_CRASH=1 scripts/build-xcode.sh --release --probe --no-open</code></li>
+<li><code>open /Applications/GDHub.app --args --dev-probe-dext activate</code>. This replaces build 1 with build 2. Reboot if the log never shows <code>build=2</code> after a power cycle.</li>
+<li>The tap runs and calls <code>__builtin_trap()</code> only after report 0x06 has held buttons 7, 8, 9 and 10 together for 2 s (View, Menu, L3, R3: <span class="tag">R</span> envision-pro-receiver.md:63-64). One crash per owner action. <strong>At most 3 crashes, at least 2 min apart.</strong></li>
+<li>Within 60 s of each crash, record:<ul>
+<li>relaunch and new pid (<code>pgrep -lf 'com.interlinked.gdhub.TapProbe$'</code>) and the delay;</li>
+<li>who holds interface 3 (receiver-check), and whether the probe re-matched without a power cycle;</li>
+<li><code>ioreg -rw0 -l -n IOUserResources -d1 | grep IODEXTMatchCount</code> and the same key on interface 3's IOHIDInterface (A25);</li>
+<li><code>ls -t ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports | grep -i TapProbe</code>;</li>
+<li><code>/usr/bin/log show --last 5m --predicate 'eventMessage CONTAINS[c] "TapProbe"'</code>.</li>
+</ul>
+</li>
+<li><strong>Loop-breaker:</strong> switch the controller off (no frames means no chord).</li>
+<li><strong>Stop the drill at once</strong> on any reboot, panic, or "crashed too often" message. Record it.</li>
+</ol>
+</li>
+<li><strong>T0.4 Downgrade (A23).</strong><ol>
+<li><code>print 1 &gt; Xcode/probe-build; scripts/build-xcode.sh --release --probe --probe-downgrade --no-open</code></li>
+<li><code>open /Applications/GDHub.app --args --dev-probe-dext activate</code></li>
+<li>The log shows <code>probe: replacing 2 -&gt; 1</code>, and <code>systemextensionsctl list</code> shows 1 as <code>activated enabled</code>.</li>
+</ol>
+</li>
+<li><strong>T0.5 Remove the probe.</strong><ol>
+<li><code>open /Applications/GDHub.app --args --dev-probe-dext deactivate</code>. Reboot if the list shows "terminated waiting to uninstall on reboot".</li>
+<li><code>systemextensionsctl list | grep -c TapProbe</code> must print 0.</li>
+<li>Then remove the probe target, the app dependency, <code>Xcode/probe-build</code>, <code>ProbeExtensionRequester.swift</code> and <code>--probe</code> from the build script.</li>
+<li><code>scripts/build-xcode.sh --release --same-build</code></li>
+<li>PC; L1 shows Apple on interface 3.
+- <strong>Never restore build 17 while the count is not 0.</strong> Build 17 cannot deactivate the probe, and trashing the app in Finder also uninstalls production (<span class="tag">R</span> driverkit-dext-design.md:1321).</li>
+</ol>
+</li>
+</ul>
+<p><strong>Files:</strong>
+- <code>Dext/GDHubTapProbe/{GDHubProbeRoot,GDHubProbeTap}.{iig,cpp}</code>
+- <code>project.yml</code>
+- <code>ProbeExtensionRequester.swift</code>, <code>DriverManager.swift</code>
+- <code>scripts/receiver-check.sh</code> (kept)
+- <code>scripts/tools/personality-scan.py</code> (kept)
+- <code>scripts/build-xcode.sh</code>
+- <code>scripts/dext-log.sh</code>
+- <code>docs/protocol/envision-pro-receiver.md</code> (facts)</p>
+<p><strong>Do NOT:</strong>
+- change the production dext or bump its version;
+- port translation code;
+- change the engine;
+- leave the probe installed;
+- crash the probe more than 3 times.</p>
+<p><strong>Live checks and pass criteria:</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Pass</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T0.1</td>
+<td>Baseline recorded. A12 answered. The sleep timer reads its pre-test value again. Personality scan recorded. The probe build passes <code>need</code> (transport.hid + UDID).</td>
+</tr>
+<tr>
+<td>T0.2</td>
+<td>The probe is enabled (A2). <code>tap start #1</code> has <code>rootSeen=1</code> and pids equal to the root's, with one probe process (A1). After PC #1, Apple holds interface 3 (A8). After PC #2, the probe tap holds interface 3 only (A3). Frames arrive at 940–970/s (A4). Framing is ID 6, length 16 (A5). k2d is small and positive (A7). CreatedBuffers is flat under B and grows under A (A6). L4 is unchanged. L5 accepts (A11). Power flags and Stop/Start are logged (A13).</td>
+</tr>
+<tr>
+<td>T0.3</td>
+<td>A9 and A25 recorded for each crash. Either no OS reboot response, or its threshold is recorded.</td>
+</tr>
+<tr>
+<td>T0.4</td>
+<td>A23 holds.</td>
+</tr>
+<tr>
+<td>T0.5</td>
+<td>The probe count is 0 and Apple is back on interface 3.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Stop rules:</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AMFI refuses</td>
+<td>Stop; report.</td>
+</tr>
+<tr>
+<td>The probe never wins interface 3</td>
+<td>Check the integer types and the scores in ioreg; stop.</td>
+</tr>
+<tr>
+<td>pids differ, or <code>rootSeen=0</code></td>
+<td>Plan B review.</td>
+</tr>
+<tr>
+<td>Open fails while nothing is seized, in both Plan A and Plan C</td>
+<td>USB-claim last-resort review.</td>
+</tr>
+<tr>
+<td>L4 or L5 fail</td>
+<td>Stop: the takeover would break the GUI or games.</td>
+</tr>
+<tr>
+<td>A23 fails (a lower version is refused)</td>
+<td>Stop. Redesign rollback before any production phase: an "N+1 that equals N-1" build.</td>
+</tr>
+<tr>
+<td>The OS reboots or throttles after 1–2 crashes</td>
+<td>Record. R9 becomes high severity. The owner decides whether to continue.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>T0-alt</strong> (if T0.1.6 fails because a new bundle ID gets no transport.hid profile):
+- Skip T0.2–T0.5.
+- Do T3, then T4 as the first live test. T4 first ships a <code>GDHUB_TAP_DECLINE=1</code> build, which proves A2, A8 and A10 in production, and then the INERT/COUNT build.
+- A9 stays unknown. R9 is treated as high severity.
+- Keep the build17 and T3-pre archives.</p>
+<p><strong>Rollback:</strong> <code>open /Applications/GDHub.app --args --dev-probe-dext deactivate</code>, then PC, and reboot if needed. Production is never touched.</p>
+<p><strong>Reboot budget:</strong> up to 4: after each probe activation or replacement (T0.2, T0.3, T0.4) and after the deactivation (T0.5).</p>
+<p><strong>Commits:</strong>
+- <code>Takeover: probe dext answers load, match, one-process, pool and relaunch questions (T0)</code>
+- <code>Takeover: remove the T0 probe dext (T0)</code></p>
+<p><strong>Models:</strong> Sonnet high (probe C++); Sonnet medium (probe requester, scripts); Haiku low (builds, log greps).</p>
+<h3 id="t1-engine-limiter-fix-and-new-baseline">T1: Engine limiter fix and new baseline</h3>
+<ul>
+<li><strong>Scope:</strong> <code>lastPostAt = tS</code> (<span class="tag">R</span> other-controller-drivers.md:221-228; VirtualPadSink.swift:448, 491). Then L6 → the "T1 baseline".</li>
+<li><strong>Files:</strong> <code>VirtualPadSink.swift</code>, <code>VirtualPadSinkTests.swift</code>.</li>
+<li><strong>Do NOT:</strong> make other sink changes; touch the dext.</li>
+<li><strong>Live checks:</strong><ul>
+<li>L6 under confirmed Game Mode. <strong>Pass:</strong> the meter's <code>cap</code> stage p50 ≤ 0.05 ms (<span class="tag">R</span> LatencyMeter.swift:22, 53) and coalesced &lt; 20 %.</li>
+<li>Record total p50, p99 and max.</li>
+<li>L4.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> revert, then <code>scripts/build-xcode.sh --release --same-build</code>.</li>
+<li><strong>Reboot:</strong> no.</li>
+<li><strong>Commit:</strong> <code>Engine: rate cap measured from post start (T1, rank 5)</code>.</li>
+<li><strong>Models:</strong> Sonnet medium; Haiku low for the runs.</li>
+</ul>
+<h3 id="t2-one-shared-c-translator-the-engine-runs-it">T2: One shared C translator; the engine runs it</h3>
+<ul>
+<li><strong>Scope:</strong> the §5.1–§5.3 core, the encoder (including <code>.unsupported</code>), the generated header, the parity, sequence and golden tests. The engine uses the core by default. <code>defaults write com.interlinked.gdhub xlateCore -string swift</code> selects the old path.</li>
+<li><strong>Files:</strong> <code>Shared/GDHubXlate.{h,c}</code>, <code>Shared/GDHubDefaults.h</code>, <code>Package.swift</code>, <code>project.yml</code> (app sources, bridging header, cflags, dext <code>excludes</code>), <code>XlateCore.swift</code>, <code>MapBlobEncoder.swift</code>, <code>VirtualPadSink.swift</code>, the new tests.</li>
+<li><strong>Do NOT:</strong> change the dext binary (Shared is excluded); delete the Swift mapper; implement echo, overlay or D8.</li>
+<li><strong>Live checks:</strong><ul>
+<li><code>swift test</code> green, including the exhaustive and 10⁶-frame tests.</li>
+<li>A per-frame microbenchmark (XCTest <code>measure</code>): C core ≤ Swift mapper + builder.</li>
+<li>Same-session A/B, default against <code>xlateCore = swift</code>: engine total p50 within ±0.15 ms.</li>
+<li>10 min of play.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> the <code>xlateCore = swift</code> key (runtime), or revert.</li>
+<li><strong>Reboot:</strong> no.</li>
+<li><strong>Commit:</strong> <code>Engine: one C translator shared with the dext; engine runs it (T2)</code>.</li>
+<li><strong>Models:</strong> Sonnet high (C core, numerics); Sonnet medium (Swift); Haiku low (test runs).</li>
+</ul>
+<h3 id="t3-root-owns-the-pad-registry-fixed-length-buffers-dextclient-matching">T3: Root owns the pad; registry; fixed-length buffers; DextClient matching</h3>
+<ul>
+<li><strong>Scope:</strong><ul>
+<li>registry (§4.3);</li>
+<li><code>CreatePad</code>/<code>DestroyPad</code>; pad provider = root;</li>
+<li><code>submitInput</code> and <code>postNeutralFrom</code> (source UC only);</li>
+<li>fixed-length per-entry post buffers;</li>
+<li><code>GDHUB_SPEC_VERSION</code>; <code>CAP_ROOT_PAD</code>;</li>
+<li>selector 9 (INERT only) and selector 11 (identity, counters);</li>
+<li><code>hop</code>/<code>hr</code> stamps for UC posts in the meter line;</li>
+<li><code>GDH_SYNC</code> in every build;</li>
+<li>root Stop terminates the pad;</li>
+<li>D5 output lookup through the registry;</li>
+<li>DextClient <code>IOUserClass</code> match + unit test.</li>
+</ul>
+</li>
+<li><strong>Files:</strong> the §8.1 rows marked T3; <code>DextProtocol.swift</code>, <code>DextClient.swift</code>; <code>vhid-check.sh</code>; <code>driverkit-dext-design.md</code>.</li>
+<li><strong>Do NOT:</strong> add the tap, OneProcess, pinning or forwarding. G5 is unchanged.</li>
+<li><strong>Live checks</strong> (after U1–U7):<ul>
+<li>L7.</li>
+<li>L6: no regression. Record the gain from removing SetLength, and <code>hop</code>/<code>hr</code> p50/p99 (A16, A19). A hop p50 in the tens of µs means kernel routing; flag T9.</li>
+<li><code>kill -9</code> of the engine → <code>ioreg -rw0 -n GDHubVirtualPad</code> is empty within 1 s, and the root is still present.</li>
+<li>SIGSTOP of the engine for 3 s → neutral at 2 s.</li>
+<li>PC: the pad is unaffected.</li>
+<li>L8.</li>
+<li>The log shows no <code>syncViolations</code>.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> §7.2 to <code>~/GDHub-rollback/T3-pre</code> (the T2 app).</li>
+<li><strong>Reboot:</strong> only under the common rules.</li>
+<li><strong>Commit:</strong> <code>Dext: root owns the pad; fixed-length post buffers; additive status2 (T3)</code>.</li>
+<li><strong>Models:</strong> Sonnet high (dext); Sonnet medium (Swift mirror, DextClient).</li>
+</ul>
+<h3 id="t4-tap-in-production-inert-and-count-only">T4: Tap in production, INERT and COUNT only</h3>
+<ul>
+<li><strong>Scope:</strong><ul>
+<li>Dext:<ul>
+<li>personalities and entitlement (§3.2, §3.5) and the build checks (§3.6);</li>
+<li>the tap: Start/register, INERT, COUNT (pool B, Open with retry, counters, k2d), Stop order, SetPowerState rule, timer, pid log;</li>
+<li><code>GDHUB_TAP_DECLINE</code> define;</li>
+<li>root pid log; devTerminate order pad → tap (Close + Terminate) → root;</li>
+<li><code>CAP_TAP</code>; selector 9 accepts COUNT; status2 tap fields.</li>
+</ul>
+</li>
+<li>Engine and app:<ul>
+<li><code>inputPath = count</code> → <code>setForwarding(COUNT)</code> after hello;</li>
+<li>unsupervised DextClients send INERT;</li>
+<li>TapSupervisor timing only: interfaceUp→tapPresent, logged.</li>
+</ul>
+</li>
+<li>Docs: output-layer decision 5 note.</li>
+</ul>
+</li>
+<li><strong>Precondition:</strong> the probe is fully gone (T0.5), unless T0-alt applies.</li>
+<li><strong>Do NOT:</strong> link the translator; post anything from the tap.</li>
+<li><strong>Live checks</strong> (after U1–U7, then <code>inputPath = count</code>):<ul>
+<li>PC → L1 shows GDHubReceiverTap on interface 3 only; interface 4 still Apple.</li>
+<li>L2 (root pid == tap pid; stop if they differ).</li>
+<li>L3, L4, L5.</li>
+<li><code>inputPath = engine</code> → status2 <code>opened = 0</code> within 1 s (A24: the poke reached the tap queue).</li>
+<li>L8 with the tap attached (A18: the process exits on devTerminate).</li>
+<li>L9 to <code>T4-pre</code> and back.</li>
+<li>S1 in COUNT.</li>
+<li>Record the interfaceUp→tapPresent p99 (it sets the F2 grace).</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> §7.2. Alternatively a <code>GDHUB_TAP_DECLINE=1</code> build. Switching the controller off detaches the tap.</li>
+<li><strong>Reboot:</strong> only under the common rules. Record every case.</li>
+<li><strong>Commit:</strong> <code>Dext: receiver tap on interface 3, inert or counting only (T4)</code>.</li>
+<li><strong>Models:</strong> Sonnet high (dext); Sonnet medium (engine flag, scripts); Haiku low (plutil, ioreg and soak checks).</li>
+</ul>
+<h3 id="t5-translator-inside-the-dext-shadow-only">T5: Translator inside the dext, SHADOW only</h3>
+<ul>
+<li><strong>Scope:</strong><ul>
+<li>Dext:<ul>
+<li>remove the Shared <code>excludes</code>;</li>
+<li>SHADOW state; registry map handoff; selector 10;</li>
+<li>self-test; parity sampler;</li>
+<li>histograms and the meter line;</li>
+<li><code>CAP_XLATE</code>.</li>
+</ul>
+</li>
+<li>Engine:<ul>
+<li>pushes GDHM on every mapping change;</li>
+<li><code>inputPath = shadow</code> arms SHADOW;</li>
+<li>4 Hz sampler, which logs mismatches. There is no fallback yet, because SHADOW never posts.</li>
+</ul>
+</li>
+<li>Docs: the §4.2 note.</li>
+</ul>
+</li>
+<li><strong>Do NOT:</strong> implement LIVE, padSource arbitration, pinning, adopt or the Hot queue.</li>
+<li><strong>Live checks</strong> (after U1–U7, then <code>inputPath = shadow</code>):<ul>
+<li>30 min of play in SHADOW: 0 parity mismatches; framesIn ≈ engine frames.</li>
+<li><code>GDHub: selftest pass</code> in the log.</li>
+<li>A GUI learn edit → <code>appliedRevision</code> in status2 within 100 ms.</li>
+<li>L6 unchanged (the engine is still posting).</li>
+<li>The fuse, checked during L8: after the new build's hello, status2 <code>desiredState == INERT</code> before the engine re-arms.</li>
+<li>S1 in SHADOW.</li>
+<li>L1.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> <code>inputPath = engine</code>; §7.2 to <code>T5-pre</code>.</li>
+<li><strong>Reboot:</strong> only under the common rules.</li>
+<li><strong>Commit:</strong> <code>Dext: in-driver translation in shadow; mapping blob (T5)</code>.</li>
+<li><strong>Models:</strong> Sonnet high (dext); Sonnet medium (engine push and sampler).</li>
+</ul>
+<h3 id="t6-engine-supervisor-in-shadow-app-only">T6: Engine supervisor in SHADOW (app only)</h3>
+<ul>
+<li><strong>Scope:</strong><ul>
+<li>TapSupervisor F1–F5 for COUNT and SHADOW, the breaker, the fallback limiter;</li>
+<li><code>inputPath</code> and <code>tapDrill</code> polling (1 s);</li>
+<li>Driver menu item and status;</li>
+<li>encoder <code>.unsupported</code> → engine path with a reason;</li>
+<li>doc rows: §2.4 R14 and output-layer §3.1.</li>
+</ul>
+</li>
+<li><strong>Do NOT:</strong> change the dext; request LIVE (<code>driver</code> runs as <code>shadow</code> until CAP_LIVE exists).</li>
+<li><strong>Live checks</strong> (after <code>scripts/build-xcode.sh --release --same-build</code>):<ul>
+<li>A20: 20 toggles <code>engine ↔ shadow</code>. status2 <code>appliedState</code> follows within 1.2 s every time.</li>
+<li><code>tapDrill pause5</code> in SHADOW → <code>fallback: tap stalled</code> (F1) and re-arm after the pause.</li>
+<li>Switch the controller on → no F2 fallback within the grace period.</li>
+<li>A21: logout → the engine logs SIGTERM; fast user switch → the agent pid is unchanged.</li>
+<li>A22: run a seizing scratch reader if one is available; otherwise record "untested".</li>
+<li>GUI learn; the battery strip.</li>
+<li>Breaker and limiter: TapSupervisorTests only. A live drill would need repeated dext crashes, which T0.3 already characterised on the probe.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> <code>inputPath = engine</code>; revert the app.</li>
+<li><strong>Reboot:</strong> no.</li>
+<li><strong>Commit:</strong> <code>Engine: tap supervisor and input-path switch, shadow only (T6)</code>.</li>
+<li><strong>Models:</strong> Sonnet high (TapSupervisor, threading); Sonnet medium (menu, options).</li>
+</ul>
+<h3 id="t7-live-dext-and-engine-together">T7: LIVE (dext and engine together)</h3>
+<ul>
+<li><strong>Scope:</strong><ul>
+<li>Dext:<ul>
+<li><code>padSource</code> arbitration (§6.2); LIVE state; <code>holdNeutral</code>;</li>
+<li>pinning, orphan timer, <code>createDevice2</code> adopt, destroy/create rules, the spec-CRC arming check (§6.3);</li>
+<li>watchdog per slot (§6.4); silence, Stop and SetPowerState neutrals;</li>
+<li><code>DEV_PAUSE_TAP</code>, <code>RELEASE_PAD</code>; <code>CAP_LIVE</code>.</li>
+</ul>
+</li>
+<li>Engine:<ul>
+<li>posting gate; <code>resetDeliveryState</code> on TAP→UC; adopt skips the neutral;</li>
+<li>startup stay-LIVE; F6;</li>
+<li>fallback to COUNT or INERT;</li>
+<li>PowerObserver: async wait of at most 1 s, willSleep hold, didWake resume;</li>
+<li><code>--release-pad</code>; the <code>engine-agent.sh uninstall</code> cleanup.</li>
+</ul>
+</li>
+<li>Docs: G5 amendment; E2–E4 notes.</li>
+<li><strong>One fix replacement is allowed inside T7</strong> (budgeted), so defects in the LIVE code are fixed in the phase that first runs it.</li>
+</ul>
+</li>
+<li><strong>Do NOT:</strong> make LIVE the default; add Hot, rumble, overlay or AutoArm.</li>
+<li><strong>Live checks</strong> (after U1–U7, with <code>inputPath = driver</code>):<ul>
+<li>Every §7 row marked T7. The RT-hold <code>kill -9</code> test from §9.3 (twice).</li>
+<li>SIGSTOP of the engine for 5 s → input continues.</li>
+<li>Orphan test: <code>kill -9 $(pgrep -f 'GDHub --engine$'); scripts/engine-agent.sh bootout_wait</code>. Then <code>ioreg -rw0 -n GDHubVirtualPad</code> still shows the pad at 10 s and is empty at 35 s. Then <code>scripts/engine-agent.sh install</code>.</li>
+<li><code>engine-agent.sh uninstall</code> → pad removed.</li>
+<li>Controller sleep → neutral ≤ 300 ms (G9 method).</li>
+<li>Controller off → pad stays, neutral; on → same pad ID, LIVE resumes.</li>
+<li>Mac sleep/wake ×2: the log shows <code>hold</code> then <code>resume</code>; no stuck input.</li>
+<li>L10.</li>
+<li>50 <code>inputPath</code> toggles <code>engine ↔ driver</code> at 1 Hz while holding RT. After each switch the next 02E0 row shows RT held, and after release, RT = 0.</li>
+<li>In-app fallback: kill the engine, <code>bootout_wait</code>, open the GUI. The GUI adopts, sends INERT, and its posts move the pad (vhid-check, live view).</li>
+<li>S1 in LIVE.</li>
+<li>L6 (first numbers).</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> <code>inputPath = engine</code> (runtime); §7.2 to <code>T7-pre</code>.</li>
+<li><strong>Reboot:</strong> only under the common rules.</li>
+<li><strong>Commit:</strong> <code>Dext+Engine: driver input path (LIVE) with pad-side arbitration and pinning (T7)</code>.</li>
+<li><strong>Models:</strong> Sonnet high (dext arbitration, TapSupervisor, PowerObserver); Sonnet medium (scripts, options).</li>
+</ul>
+<h3 id="t8-gate-and-play-test-live-becomes-the-default">T8: Gate and play test; LIVE becomes the default</h3>
+<ul>
+<li><strong>Scope:</strong> §9.3. If it passes:<ul>
+<li>the <code>inputPath</code> default becomes <code>driver</code> (one line, app-only build);</li>
+<li><code>xlateCore</code> is removed, and the Swift mapper remains as the test oracle only;</li>
+<li>update HANDOFF.</li>
+</ul>
+</li>
+<li><strong>Do NOT:</strong> change the default if any criterion fails (R15).</li>
+<li><strong>Rollback:</strong> <code>inputPath = engine</code>.</li>
+<li><strong>Reboot:</strong> no.</li>
+<li><strong>Commits:</strong><ul>
+<li><code>docs: receiver takeover gate result (T8)</code></li>
+<li><code>Engine: driver input path is the default (T8)</code></li>
+</ul>
+</li>
+<li><strong>Models:</strong> Haiku low (runs and tables); the owner plays.</li>
+</ul>
+<h3 id="t9-shared-hot-queue-only-if-g11-or-g12-fails">T9: Shared Hot queue (only if G11 or G12 fails)</h3>
+<ul>
+<li><strong>Scope:</strong> §4.6, every listed method.</li>
+<li><strong>Do NOT:</strong> make any synchronous call from Hot.</li>
+<li><strong>Live checks:</strong><ul>
+<li><code>hop</code> p50 &lt; 10 µs; <code>occ</code> p99 ≤ 0.5 ms;</li>
+<li>the §4.6 step 8 toggle test;</li>
+<li>the full T8 gate again;</li>
+<li>L8.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> §7.2 to <code>T9-pre</code>.</li>
+<li><strong>Reboot:</strong> only under the common rules.</li>
+<li><strong>Commit:</strong> <code>Dext: tap and pad share the Hot queue (T9)</code>.</li>
+<li><strong>Model:</strong> Sonnet high.</li>
+</ul>
+<h3 id="t10-rumble">T10: Rumble</h3>
+<ul>
+<li><strong>Scope:</strong><ol>
+<li>Capture the 0x09 format from user space first (no build).</li>
+<li>The pad's <code>setReport</code> completes immediately (D5 rule, <span class="tag">R</span> latency-plan.md §2 row 9) and stores the latest (L,R).</li>
+<li><code>DispatchAsync</code> to the tap's <code>QUEUENAME(Output)</code> → <code>IOHIDInterface::SetReport(0x09)</code> (<span class="tag">R</span> IOHIDInterface.iig:194), with one write in flight, coalesced.</li>
+<li>Auto-stop on tap Stop, Off, silence, source switch and pad destroy.</li>
+<li>Latch safety (the receiver latches the motors, <span class="tag">R</span> other-controller-drivers.md §4):<ul>
+<li>the tap sends one zero-rumble report at Start and at each Open;</li>
+<li>the engine sends a single stop-only zero-rumble with IOHIDDeviceSetReport on the 0xFF58 device when it sees a nonce change.</li>
+</ul>
+</li>
+<li>A GDHM v2 output-template section.</li>
+</ol>
+</li>
+<li><strong>Do NOT:</strong> write rumble to interface 4; make a synchronous SetReport on the input path; build engine-side rumble beyond the stop-only write (ranks 6–7 are superseded).</li>
+<li><strong>Live checks:</strong><ul>
+<li>the motors run;</li>
+<li>each auto-stop path stops them;</li>
+<li>devTerminate while rumbling → stop within one relaunch and PC.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> §7.2.</li>
+<li><strong>Reboot:</strong> only under the common rules.</li>
+<li><strong>Commit:</strong> <code>Dext: rumble forwarded to the receiver (T10)</code>.</li>
+<li><strong>Model:</strong> Sonnet high.</li>
+</ul>
+<h3 id="t11-macro-overlay-and-d8-slots">T11: Macro overlay and D8 slots</h3>
+<ul>
+<li><strong>Scope:</strong><ul>
+<li>a <code>setOverlay</code> selector <code>{buttonsSet, buttonsClear, axisMask, axes[4], triggers[2], ttlMs ≤ 2000}</code>, merged by <code>gdx_apply_overlay</code> (shared with the engine);</li>
+<li>the overlay clears on UC Stop, watchdog fire, source switch and TTL expiry;</li>
+<li>D8 keyboard and pointer under the root, posted by the engine outside tap arbitration, never pinned, neutralised by the watchdog (§6.4).</li>
+</ul>
+</li>
+<li><strong>Live checks:</strong><ul>
+<li>stuck inputs at overlay end, source switch, re-enumeration and sleep;</li>
+<li><strong>SIGSTOP the engine with a key held → key released ≤ 2.25 s.</strong></li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> §7.2.</li>
+<li><strong>Reboot:</strong> only under the common rules.</li>
+<li><strong>Commit:</strong> <code>Dext: MERGE overlay with TTL; D8 slots under the root (T11)</code>.</li>
+<li><strong>Models:</strong> Sonnet high (dext); Sonnet medium (engine).</li>
+</ul>
+<h3 id="t12-autoarm-optional-last">T12: AutoArm (optional, last)</h3>
+<ul>
+<li><strong>Precondition:</strong> T0.3 found a measured relaunch signal (A25). <code>mach_absolute_time()</code> cannot serve as a boot clock, because its origin is arbitrary and it stops during sleep (<span class="tag">R</span> IOLib.h:177-181). Without a measured signal, T12 is not done.</li>
+<li><strong>Scope:</strong><ul>
+<li>plist key <code>GDHubAutoArm: true</code>;</li>
+<li>on the first launch (signal = no relaunch), the root creates the pad from the embedded default spec and the factory GDHM;</li>
+<li>SHADOW, then LIVE after 2 s, only if the self-test passes;</li>
+<li>a relaunched process never auto-arms;</li>
+<li>the pad is exempt from the orphan timer;</li>
+<li>the engine then adopts or recreates as usual.</li>
+</ul>
+</li>
+<li><strong>Live checks:</strong><ul>
+<li>boot out the agent, quit the GUI, <code>pgrep GDHub</code> prints nothing → the pad exists and moves;</li>
+<li>after a reboot, <code>/usr/bin/log show --last boot --predicate 'eventMessage CONTAINS "GDHub: tap autoarm"'</code> shows arming before the engine's first hello.</li>
+</ul>
+</li>
+<li><strong>Rollback:</strong> rebuild with <code>GDHubAutoArm: false</code> (§7.1).</li>
+<li><strong>Reboot:</strong> one, for the check.</li>
+<li><strong>Commit:</strong> <code>Dext: optional AutoArm at first launch (T12)</code>.</li>
+<li><strong>Model:</strong> Sonnet high.</li>
+</ul>
+<hr />
+<h2 id="12-risks-symptom-action">12. Risks (symptom → action)</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Symptom</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1</td>
+<td>A dext stays "activated waiting", or amfid logs a denial</td>
+<td><code>scripts/dext-log.sh --load</code>. Stop. Roll back (§7.2). Recheck the profile.</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>Tap or probe not on interface 3 after PC</td>
+<td>Check the §3.6 integer assertions, the scores in ioreg and the personality scan. Stop.</td>
+</tr>
+<tr>
+<td>R3</td>
+<td>Tap seen on interface 4 or the audio interfaces</td>
+<td>Should be impossible by keys. Roll back at once (§7.2).</td>
+</tr>
+<tr>
+<td>R4</td>
+<td>Root and tap pids differ</td>
+<td>Stop. Plan B review.</td>
+</tr>
+<tr>
+<td>R5</td>
+<td>Open fails</td>
+<td>Check the seize state (receiver-check). If something has seized the device: quit that app. Otherwise: Plan C probe.</td>
+</tr>
+<tr>
+<td>R6</td>
+<td>CreatedBuffers grows, or "No report pool"</td>
+<td>Check that the re-add runs after every frame (strategy B), and the poolMiss count.</td>
+</tr>
+<tr>
+<td>R7</td>
+<td>GUI live view or engine callback rate drops after the tap attaches</td>
+<td><code>inputPath = engine</code> does not help. Switch the controller off, then roll back (§7.2). Stop.</td>
+</tr>
+<tr>
+<td>R8</td>
+<td>A game loses the pad or sees a duplicate (L5 reject)</td>
+<td>Roll back. The HID-tap mechanism fails; review the USB-claim last resort or abandon.</td>
+</tr>
+<tr>
+<td>R9</td>
+<td>Dext crash loop (crash in Start, Stop, SetPowerState, the timer or the pool code runs at every enumeration; the fuse does not cover this)</td>
+<td><strong>Switch the controller off first</strong> (3A09 never matches). Roll back (§7.2) with the controller off, then PC. macOS may reboot the Mac if a driver crashes too often (<span class="tag">R</span> IOKitKeys.h:134-136). Fix with a new soak case.</td>
+</tr>
+<tr>
+<td>R10</td>
+<td><code>selfTest = fail</code> or a parity mismatch</td>
+<td>Stays LEGACY. Compare cflags (<code>-ffp-contract=off</code>) and the golden vectors.</td>
+</tr>
+<tr>
+<td>R11</td>
+<td>Stuck or held input after a switch, sleep or unlink</td>
+<td>Check the neutral and hold counters in status2. <code>inputPath = engine</code>. Add a test.</td>
+</tr>
+<tr>
+<td>R12</td>
+<td><code>ucRejected &gt; 0</code> in LIVE outside drills</td>
+<td>Engine posting-gate bug; fix before the gate.</td>
+</tr>
+<tr>
+<td>R13</td>
+<td>The process does not exit on devTerminate with the tap attached</td>
+<td>Switch the controller off (that detaches the tap) and retry. Otherwise reboot. Record.</td>
+</tr>
+<tr>
+<td>R14</td>
+<td>sysextd wedge or "terminating_for_upgrade"</td>
+<td>Reboot (<span class="tag">R</span> engine-agent-plan.md:894).</td>
+</tr>
+<tr>
+<td>R15</td>
+<td>The gate misses G1, G4 or G12</td>
+<td>T9 if the hop or occupancy is large. Otherwise keep <code>inputPath = engine</code>. If LIVE is not adopted within 4 weeks, ship one build without the <code>GDHubReceiverTap</code> personality (one replacement). Keep the T3 root-owned pad, so Apple's event driver is back on interface 3.</td>
+</tr>
+<tr>
+<td>R16</td>
+<td>Silent while the controller is on</td>
+<td>The status shows the seize label. Quit the seizing app. No fallback loop.</td>
+</tr>
+<tr>
+<td>R17</td>
+<td>Orphan pad after an uninstall or an unclean logout</td>
+<td>It is removed within 30 s (orphan timer), or run <code>GDHub --engine --engine-foreground --release-pad</code>.</td>
+</tr>
+<tr>
+<td>R18</td>
+<td><code>setMapping</code> BadArgument, or the encoder says <code>.unsupported</code></td>
+<td>The engine logs the reason and stays on the engine path; the Driver menu shows it.</td>
+</tr>
+<tr>
+<td>R19</td>
+<td>The probe lingers before T4</td>
+<td>Do not start T4. Reboot until <code>systemextensionsctl list</code> shows no probe.</td>
+</tr>
+<tr>
+<td>R20</td>
+<td>Deadlock (a dext queue stops)</td>
+<td><code>syncViolations</code> and the log name the call. Production: <strong>reboot</strong>. devTerminate runs on the UC queue and may be blocked too.</td>
+</tr>
+<tr>
+<td>R21</td>
+<td>The OS reboots the Mac after repeated dext crashes</td>
+<td>Switch the controller off, roll back, and record the count and spacing next to T0.3's numbers.</td>
+</tr>
+<tr>
+<td>R22</td>
+<td>A pinned pad drives input at loginwindow or in another session</td>
+<td>Expected for at most 30 s (orphan timer). If longer: a check of the orphan timer fails; fix it.</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="13-open-questions">13. Open questions</h2>
+<ol>
+<li>Does installing a personality re-probe interface 3 without a re-enumeration? (A10, T0.2)</li>
+<li>Is a crashed dext relaunched, who gets interface 3, does <code>IODEXTMatchCount</code> move, and does the OS reboot policy apply? (A9, A25, T0.3)</li>
+<li>Does the sleep timer re-enumerate the receiver (A12, T0.1)? Which SetPowerState flags arrive on Mac sleep (A13, T0.2)?</li>
+<li>Does Xcode's automatic profile for a <strong>new</strong> bundle ID carry transport.hid and the UDID? (T0.1.6; otherwise T0-alt)</li>
+<li>Is the cross-queue hop in-process or a kernel round trip? (A19, T3)</li>
+<li>Does <code>DispatchAsync</code> onto another service's queue in one process work? (A24, T4)</li>
+<li>Does the engine see <code>inputPath</code> changes from another process within 1 s? (A20, T6)</li>
+<li>Does the agent survive fast user switching, and does it get SIGTERM on logout? (A21, T6)</li>
+<li>When should the −1 quirk be fixed? A product decision, applied to the single core.</li>
+<li>What is the SCUF 0x09 rumble format, and does it need init or keep-alive? (T10 capture)</li>
+<li>Does Bragi software mode remove the onboard-profile echo? Needed before echo suppression (GDHM v2).</li>
+<li>What causes the 5–9 ms spikes? Outside this plan; expected to persist.</li>
+</ol>
+<p>Closed by the SDK headers:
+- A SetPowerState override must make the driver safe and then pass the call to super (<span class="tag">R</span> IOService.iig:253-262). This is now a rule in §6.4.
+- <code>mach_absolute_time()</code> has an arbitrary origin and does not count during sleep (<span class="tag">R</span> IOLib.h:177-181). This is now handled in T12.
+- Whether an SDL tool exists: <code>scuf-envision/tools/sdlmatch</code> (<span class="tag">R</span>), now in L5.</p>
+<hr />
+<h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Item (judge)</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>getpid() as the one-process proof (dk, pf)</td>
+<td>§2.5 A1, §5.5, T0.2, L2</td>
+</tr>
+<tr>
+<td>Tap CFBundleIdentifierKernel <code>com.apple.kpi.iokit</code>; IOHIDFamily only for Plan C (dk, sr)</td>
+<td>§3.2, §3.4</td>
+</tr>
+<tr>
+<td>AddReportToPool after the post; CreatedBuffers measured (dk, sr, pf)</td>
+<td>§4.4 row 7, §4.5, T0.2, L3</td>
+</tr>
+<tr>
+<td>No translator while disarmed; in-dext fuse; safe AutoArm (dk, sr)</td>
+<td>§6.1, §6.5, T12</td>
+</tr>
+<tr>
+<td>Inert, always-attached tap instead of refusing Start (pf)</td>
+<td>§2.3, §6.1, T4</td>
+</tr>
+<tr>
+<td>Silence neutral 250 ms; Stop and SetPowerState neutral (dk, sr, pf)</td>
+<td>§5.3, §6.4</td>
+</tr>
+<tr>
+<td>Translator parity: the engine switches to the same core; asymmetric ranges tested (dk)</td>
+<td>§5.1, T2, §10.1</td>
+</tr>
+<tr>
+<td>CAS registry; any Start order; no null dereference (dk)</td>
+<td>§4.3</td>
+</tr>
+<tr>
+<td>Measure the hop and <code>_HandleReport</code>; numeric threshold for the shared queue (dk, sr)</td>
+<td>§9.1, G11, G12, T3, T9</td>
+</tr>
+<tr>
+<td>Probe logistics: App ID/profile, embedding, DriverManager, approval, removal before production (dk, sr)</td>
+<td>§3.3, §3.6, T0.1.6, T0.2, T0.5, §8.3</td>
+</tr>
+<tr>
+<td>Lower probe score; probe fully gone before production (sr)</td>
+<td>§3.3, T0.5, T4 precondition, R19</td>
+</tr>
+<tr>
+<td>Attach only at the next enumeration; PC in every live check (dk, sr)</td>
+<td>A10, PC, §7.1 U6</td>
+</tr>
+<tr>
+<td>hidutil/GC/SDL lists before and after, with accept/reject (dk, sr)</td>
+<td>T0.1, L5</td>
+</tr>
+<tr>
+<td>devTerminate terminates the tap first; process exit verified; E1 rule; reboot rules (dk, sr, pf)</td>
+<td>§7.1, T4 L8, common rules</td>
+</tr>
+<tr>
+<td>G5 change documented; controller-off row checked (dk, sr)</td>
+<td>§2.4, T7</td>
+</tr>
+<tr>
+<td>Unproven assumptions listed (dk)</td>
+<td>§2.5</td>
+</tr>
+<tr>
+<td>Minimal arbitration; no OVERRIDE lease (sr)</td>
+<td>§6.2</td>
+</tr>
+<tr>
+<td>Pinned pad destroyed on clean exit, uninstall and devTerminate (sr)</td>
+<td>§6.3</td>
+</tr>
+<tr>
+<td>Seize detection and labelling; GDHub never seizes interface 3 (sr, pf)</td>
+<td>§4.5, §6.6, A22, R16</td>
+</tr>
+<tr>
+<td>−1 quirk decided before parity (sr)</td>
+<td>§5.2</td>
+</tr>
+<tr>
+<td>Rank-5 fix measured first; gate reports both deltas (sr)</td>
+<td>T1, G4b</td>
+</tr>
+<tr>
+<td>Sleep-timer re-enumeration answered early (sr, pf)</td>
+<td>T0.1, A12</td>
+</tr>
+<tr>
+<td>Paddle facts stated correctly; echo masks reserved (pf)</td>
+<td>§5.2, §5.3</td>
+</tr>
+<tr>
+<td>How the pad joins the Hot queue; checked deadlock invariant (pf)</td>
+<td>§4.2, §4.6</td>
+</tr>
+<tr>
+<td>Macros use a MERGE overlay with TTL (pf)</td>
+<td>§2.3, T11</td>
+</tr>
+<tr>
+<td>v1 scope limited; gain restated (pf)</td>
+<td>§5.1, summary, §1</td>
+</tr>
+<tr>
+<td>padlat baseline before T1; padlat still valid after (pf)</td>
+<td>T0.1, §9.2</td>
+</tr>
+<tr>
+<td>Edits in project.yml; integer keys checked; transport.hid in <code>need</code>; tap has no IOMatchCategory; root keeps its own and gains OneProcess (pf)</td>
+<td>§3</td>
+</tr>
+</tbody>
+</table></div>
+<p>dk = driverkit-correctness, sr = safety-and-rollback, pf = product-fit.</p>
+<hr />
+<h2 id="review-resolution">Review resolution</h2>
+<p>AT = api-truth, FM = failure-modes, SP = scope-and-proof. Duplicates are marked "=".</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Issue</th>
+<th>Done</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AT-1 (major)</td>
+<td>T0 never forced <code>--same-build</code>; the probe version counter could not work</td>
+<td>Fixed. <code>--probe</code> forces SAME, the probe uses <code>$(PROBE_BUILD)</code>, and the script asserts the production version equals the installed one and that the probe version increases (§3.3, §3.6, T0). Verified at build-xcode.sh:24, 35 and DriverManager.swift:521-545.</td>
+</tr>
+<tr>
+<td>AT-2 (major)</td>
+<td>T8 Hot moved only two methods; races</td>
+<td>Fixed in §4.6 (now T9): every state method on Hot, timer on Hot, DispatchSync from Stop and SetPowerState, the invariant restated, toggle test added.</td>
+</tr>
+<tr>
+<td>AT-3 (major)</td>
+<td>Crash drill could loop; reboot policy ignored</td>
+<td>Fixed. Chord-triggered crash, at most 3, at least 2 min apart, loop-breaker = controller off, OS response recorded (T0.3). Policy note in §1, §6.5, R9, R21. Verified at IOKitKeys.h:134-136.</td>
+</tr>
+<tr>
+<td>AT-4 (minor)</td>
+<td>Open failure misread as "not allowed"; no retry; Open success proves nothing</td>
+<td>Fixed. Retry from the timer, seize state reported, Plan C only when nothing is seized, success gated on frames (§4.5, A4, R5).</td>
+</tr>
+<tr>
+<td>AT-5 (minor)</td>
+<td>Pool re-add treated as optional</td>
+<td>Fixed. Strategy B is the baseline, A only as a T0 confirmation; A6 restated; <code>addPool</code> and <code>occ</code> histograms; G12.</td>
+</tr>
+<tr>
+<td>AT-6 (minor)</td>
+<td>"SDK has no math.h/atomic" was false</td>
+<td>Fixed in §4.3 and §5.1. Verified: math.h and c++/v1/atomic exist; libsystem_m exports <code>_round</code>.</td>
+</tr>
+<tr>
+<td>AT-7 (minor)</td>
+<td>SetPowerState rule already in the header; Low ignored</td>
+<td>Fixed. Rule in §6.4; Low and LPW handled; question removed. Verified at IOService.iig:253-262 and IOService.h:58-61.</td>
+</tr>
+<tr>
+<td>AT-8 (minor)</td>
+<td>AutoArm boot window relied on mach_absolute_time origin</td>
+<td>Fixed. Question closed from IOLib.h:177-181; T12 needs a measured relaunch signal (A25, T0.3).</td>
+</tr>
+<tr>
+<td>AT-9 (minor)</td>
+<td>In-process hop tagged as read</td>
+<td>Fixed. Tagged G·T3; crossings "4, or 6 via kernel"; today's count also given both ways (§4.4).</td>
+</tr>
+<tr>
+<td>AT-10 (minor)</td>
+<td>Engine willSleep neutral overwritten by tap resync</td>
+<td>Fixed. In TAP, postNeutral sets <code>holdNeutral</code> until SetPowerState(On), a tap Start or setForwarding(LIVE) (§6.2, §7).</td>
+</tr>
+<tr>
+<td>AT-11 (minor)</td>
+<td>Competing-personality scan too narrow</td>
+<td>Fixed. <code>personality-scan.py</code> covers system kexts, plugins and DriverExtensions; measured today (2,863 personalities, one unrelated 6940 hit); production IOProbeScore 1000; re-run after macOS updates.</td>
+</tr>
+<tr>
+<td>AT-12 (minor)</td>
+<td>Citation errors</td>
+<td>Fixed. Test counts (<span class="tag">M</span>), KeepAlive tagged R (plist:21-22), project.yml:42, SetProperties at iig:159-182, raw bytes in Plan C (§3.4).</td>
+</tr>
+<tr>
+<td>FM-1 (major)</td>
+<td>INERT still ran per-frame code; a tap crash kills the pad</td>
+<td>Fixed. INERT = not opened; new COUNT state; R9 loop-breaker; cost stated in §1.</td>
+</tr>
+<tr>
+<td>FM-2 (major)</td>
+<td>Recovery waited synchronously on the tap queue</td>
+<td>Fixed. Pad-only arbitration with an atomic <code>padSource</code>; the tap is reached only by registry + DispatchAsync; PowerObserver waits at most 1 s; R20 → reboot. Partly rejected: control-plane selectors stay on vhidQueue (DextClient.swift:6 confinement), because the dext no longer waits on the tap.</td>
+</tr>
+<tr>
+<td>FM-3 (major)</td>
+<td>Tap matches DextClient's lookup</td>
+<td>Fixed in T3: <code>IOUserClass</code> added to the match, plus a unit test. Verified at DextClient.swift:93-97; vhid-check uses names only.</td>
+</tr>
+<tr>
+<td>FM-4 (major)</td>
+<td>F1 missed "frames arrive but nothing is posted"</td>
+<td>Fixed. Registration and state read in one critical section; F6 output stall; <code>framesIgnored</code>; Low and LPW handled; §7 contradiction removed.</td>
+</tr>
+<tr>
+<td>FM-5 (major)</td>
+<td>Object lifetimes and the lock undefined</td>
+<td>Fixed. +1 accessors; private registry lock, so no RPC can run under it (replaces thread-owner tracking, whose DriverKit API was not verified); DestroyPad order; tap <code>stopping</code> order (§4.3, §6.3, §6.4).</td>
+</tr>
+<tr>
+<td>FM-6 (major)</td>
+<td>destroyDevice/createDevice in LIVE; orphan pinned pad</td>
+<td>Fixed in §6.3: destroy always unpins; a new pad starts UC/INERT; spec CRC gates arming; orphan timer 30 s. Rejected: "hello from a new owner drops to INERT", because it conflicts with SP-7's glitch-free restart; the orphan timer covers the case.</td>
+</tr>
+<tr>
+<td>FM-7 (major)</td>
+<td>= AT-2</td>
+<td>See AT-2.</td>
+</tr>
+<tr>
+<td>FM-8 (major)</td>
+<td>Watchdog exemption global</td>
+<td>Fixed: per slot (§6.4), plus the T11 SIGSTOP key test.</td>
+</tr>
+<tr>
+<td>FM-9 (major)</td>
+<td>T0 cost and evidence validity</td>
+<td>Fixed. One probe build sequencing decline then run; every line tagged build/crash/pid; a reboot budgeted per probe operation; separate PROBE_BUILD.</td>
+</tr>
+<tr>
+<td>FM-10 (minor)</td>
+<td>Probe touches DriverManager state; build-17 restore; sleep timer</td>
+<td>Fixed. Separate ProbeExtensionRequester; T0-probe archive and the "never restore build 17 before count 0" rule; timer restored to its pre-test value (T0.1).</td>
+</tr>
+<tr>
+<td>FM-11 (minor)</td>
+<td>= AT-7</td>
+<td>See AT-7.</td>
+</tr>
+<tr>
+<td>FM-12 (minor)</td>
+<td>Stale sink dedupe after fallback</td>
+<td>Fixed: <code>resetDeliveryState()</code> on TAP→UC, plus a TapSupervisorTests case; <code>holdNeutral</code> in the registry.</td>
+</tr>
+<tr>
+<td>FM-13 (minor)</td>
+<td>Breaker live drill impossible</td>
+<td>Fixed: covered by TapSupervisorTests; T0.3 gives the real relaunch pattern; no live drill (T6).</td>
+</tr>
+<tr>
+<td>FM-14 (minor)</td>
+<td>"No 955 Hz wakes" claim false</td>
+<td>Fixed in the summary and §1: the engine still reads at about 955 Hz as hot standby.</td>
+</tr>
+<tr>
+<td>FM-15 (minor)</td>
+<td>Rumble latch after a crash</td>
+<td>Fixed in T10: zero-rumble at tap Start and Open, plus a stop-only engine write on a nonce change (a narrow exception to SP-21).</td>
+</tr>
+<tr>
+<td>SP-1 (major)</td>
+<td>Upgrade row: build-xcode.sh does not replace the dext</td>
+<td>Fixed with exact steps U1–U7 (§7.1). Partly rejected: <code>--engine-install</code> was not used, because engine mode ignores <code>--dev-terminate-driver</code> (DriverManager.swift:126-127); the swap runs from an in-app GUI with devTerminate instead.</td>
+</tr>
+<tr>
+<td>SP-2 (major)</td>
+<td>= AT-1</td>
+<td>See AT-1. T0.1.6 is now the literal command.</td>
+</tr>
+<tr>
+<td>SP-3 (major)</td>
+<td>DEBUG-gated drills absent from Release</td>
+<td>Fixed. DEV_PAUSE_TAP is a runtime flag, GDH_SYNC is always on, tap decline is a non-DEBUG define; replacement budget restated.</td>
+</tr>
+<tr>
+<td>SP-4 (major)</td>
+<td>One-shot engine invocations cannot run</td>
+<td>Fixed. <code>tapDrill</code> defaults key; <code>--engine-foreground --release-pad</code> after bootout; launch argument dropped. Verified at EngineMain.swift:18-22.</td>
+</tr>
+<tr>
+<td>SP-5 (major)</td>
+<td>devTerminate does not relaunch</td>
+<td>Fixed. Fuse checked during the L8 upgrade drill (T5); breaker in unit tests.</td>
+</tr>
+<tr>
+<td>SP-6 (major)</td>
+<td>LIVE code first ran in a no-dext-change phase</td>
+<td>Fixed. LIVE dext and engine code ship together in T7, with one fix replacement budgeted; phases renumbered.</td>
+</tr>
+<tr>
+<td>SP-7 (major)</td>
+<td>Engine restart in LIVE not glitch-free</td>
+<td>Fixed. <code>createDevice2</code> returns <code>adopted</code>; the sink skips the neutral; startup stays LIVE; RT-hold kill test.</td>
+</tr>
+<tr>
+<td>SP-8 (major)</td>
+<td>= FM-14</td>
+<td>See FM-14.</td>
+</tr>
+<tr>
+<td>SP-9 (major)</td>
+<td>Game Mode check could pass while paused</td>
+<td>Fixed: start/end-bounded procedure (§9.2).</td>
+</tr>
+<tr>
+<td>SP-10 (major)</td>
+<td>G4 ambiguous</td>
+<td>Fixed. G4a and G4b on named padlat metrics, same-session A/B, ≥ 0.2 ms; baselines for context only.</td>
+</tr>
+<tr>
+<td>SP-11 (major)</td>
+<td>Conflict with the output-layer plan</td>
+<td>Fixed. §2.4 row; 2 OR'ed sources in v1; <code>.unsupported</code> → engine path with a Driver-menu reason; one replacement per new primitive.</td>
+</tr>
+<tr>
+<td>SP-12 (major)</td>
+<td>In-app fallback vs pinned LIVE</td>
+<td>Fixed: unsupervised DextClients send INERT; §5.7 row; DriverManagerModeTests case.</td>
+</tr>
+<tr>
+<td>SP-13 (major)</td>
+<td>T0.4 optional; single power cycle checks</td>
+<td>Fixed: crash drill mandatory (T0.3); soak S1 in T4, T5 and T7.</td>
+</tr>
+<tr>
+<td>SP-14 (major)</td>
+<td>Rollback not exact; lower version unproven</td>
+<td>Fixed: §7.2 RB1–RB7; A23 proven in T0.4.</td>
+</tr>
+<tr>
+<td>SP-15 (minor)</td>
+<td>Oracle skipped the parser; sequences differ</td>
+<td>Fixed: raw-report oracle through GamepadFrame.parse; sequence test; claim reworded (§5.1).</td>
+</tr>
+<tr>
+<td>SP-16 (minor)</td>
+<td>= FM-12</td>
+<td>See FM-12.</td>
+</tr>
+<tr>
+<td>SP-17 (minor)</td>
+<td>L2, §3.6 and G9 commands wrong</td>
+<td>Fixed: <code>pgrep -lf '…VirtualHID$'</code> (verified today); <code>"$DEXT/Info.plist"</code>; G9 via the padlat CSV.</td>
+</tr>
+<tr>
+<td>SP-18 (minor)</td>
+<td>= AT-7</td>
+<td>See AT-7.</td>
+</tr>
+<tr>
+<td>SP-19 (minor)</td>
+<td>No way out if the gate fails</td>
+<td>Fixed: R15 build without the tap personality after 4 weeks.</td>
+</tr>
+<tr>
+<td>SP-20 (minor)</td>
+<td>status2 over-built</td>
+<td>Fixed. Histograms stay in the dext, read from the meter line; status2 ≤ 512 B.</td>
+</tr>
+<tr>
+<td>SP-21 (minor)</td>
+<td>Three undocumented contradictions</td>
+<td>Fixed: §2.4 rows for R14, the D5 owner lookup and rumble ranks 6–7.</td>
+</tr>
+<tr>
+<td>SP-22 (minor)</td>
+<td>F2 had no grace</td>
+<td>Fixed: grace = max(1 s, 3 × the T4-measured p99).</td>
+</tr>
+<tr>
+<td>SP-23 (minor)</td>
+<td>T1 had no pass; T2 tolerance too tight</td>
+<td>Fixed. T1: cap p50 ≤ 0.05 ms and coalesced &lt; 20 %. T2: microbenchmark plus A/B within ±0.15 ms.</td>
+</tr>
+</tbody>
+</table></div>
+<p>No reviewer claim was found false on checking. AT-6's correction was verified against the SDK, and FM-3's against DextClient.swift. Two suggested fixes were partly replaced, with reasons given in SP-1 and FM-2/FM-6.</p>
+</main>
+</body>
+</html>
