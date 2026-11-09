@@ -1704,6 +1704,20 @@ Tests: 478.
 
 ---
 
+## T7 results (2026-11-09, in progress): LIVE engaged and verified on production dext build 24
+
+| Check | Result |
+|---|---|
+| Install | `upgrade.sh T7` 23 → 24 in 4 s (`connected: driver build 24 protocol 1 capabilities 3841`); `vhid-check.sh` PASS; SHADOW regression OK (parity ok growing, mapping revision 1 accepted). |
+| First LIVE engage | `inputPath=driver` 20:51:43 → engine `posting gate: closed, the driver drives the pad`, `setForwarding(LIVE) applied=2`; dext `tap mode 3`, `tap live: ready (pad epoch 3, mapping rev 1)`; tap live meter total p50/p99/max 100/225/346 µs, occ p99 75, submit p50/p99 1/1, addpool p99 50 µs; rej=0 err=0 throughout. |
+| LIVE delivers the stick stream (M) | **Developer mode, `sticks` template, same owner, both paths** (`dev-runs/2026-11-09T22-23-48_engine_sticks.json` vs `…T22-27-14_driver_sticks.json`): App path 4266/4336 pad reports per stick, loss ratio 1.00, onset 0.22/0.21 ms; **Driver LIVE 3722/3451 pad reports, loss ratio 1.00, onset 0.08/0.10 ms**, full range on both axes, hands-off step clean on both; `dev-run-compare.py`: no marked differences (onset −0.14/−0.11 ms in LIVE's favour, below the 5 ms mark). Path confirmed from `armed == live` and restored to `engine` after the run. |
+| Earlier "LIVE loses the fast stream" scare (20:55–21:02) | Not a fault: three stopwatch captures missed the owner's movements (the post counter rose after each window closed; the hat changes seen were the back paddles). This is what led to Developer mode (`docs/plans/developer-mode-plan.md`). |
+| Crash reports | Dext: none new (27 before and after). GUI: two `EXC_BREAKPOINT` at 22:17 in the new Developer mode (UInt64 overflow on an early-stamped receiver frame), fixed the same evening (705 tests). |
+
+**Still to run (owner's hands; now as Developer-mode templates where a template fits):** `full` on both paths; back to App with full-state repost; 50 toggles engine ↔ driver with RT held (needs `actions`, step 2 of Developer mode); L10 `tapDrill pause5` → `fallback: tap stalled` ≤ 300 ms and re-arm; SIGSTOP engine 5 s; controller sleep → neutral ≤ 300 ms; controller off/on; Mac sleep/wake ×2; RT-hold `kill -9` ×2; orphan test; `engine-agent.sh uninstall` removes the pinned pad; in-app GUI fallback; learn edit in LIVE; S1 soak; L6 numbers.
+
+---
+
 ## Appendix A: Judges' mustFix items and where each is handled
 
 | Item (judge) | Where |
