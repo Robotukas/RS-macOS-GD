@@ -65,7 +65,7 @@ status() {
     local start
     start=$(date -j -f '%a %b %d %T %Y' "$(ps -o lstart= -p $pid | xargs)" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     if [[ -n $start ]]; then
-      conn=$(/usr/bin/log show --style compact --start "$start" --predicate 'process == "GDHub" AND subsystem == "com.interlinked.gdhub" AND category == "engine" AND eventMessage BEGINSWITH "connection: "' 2>/dev/null | tail -1)
+      conn=$(/usr/bin/log show --style compact --start "$start" --predicate "processID == $pid AND subsystem == \"com.interlinked.gdhub\" AND category == \"engine\" AND eventMessage BEGINSWITH \"connection: \"" 2>/dev/null | tail -1)
     fi
   fi
   if (( ! quiet )); then
