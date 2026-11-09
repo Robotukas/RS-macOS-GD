@@ -38,7 +38,7 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | done (passed 2026-11-09, dext builds 20–22, see "T4 results") |
 | T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | done (passed 2026-11-09, dext build 23, see "T5 results") |
 | T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | done (passed 2026-11-09, see "T6 results") |
-| T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | ✓ done |
+| T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | done (passed 2026-11-09, dext build 24, see "T7 results") |
 | T8 | Gate and play test; LIVE becomes the default | No | ▶ current |
 | T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending (T3 measured the hop at about 1 µs, so unlikely to be needed) |
 | T10 | Rumble (after the 0x09 capture) | Yes | pending |
