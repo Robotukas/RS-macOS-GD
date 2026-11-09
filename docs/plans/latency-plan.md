@@ -225,3 +225,18 @@ The user played for about six minutes. 110 ten-second meter windows with at leas
 **Experiment (01:42):** the same 1 kHz receiver stream read by `latprobe` running as a launchd agent with `ProcessType = Interactive`, Shadow fullscreen in front, GDHub clamped in part of the run: 19264 of ~19250 reports, kernel → callback p50 0.14 ms, p95 0.33 ms, p99 0.55 ms, max 8.9 ms. A legacy `launchctl submit` job (default process type) was bad: only 3072 reports in 20 s, p95 35 ms. A plain child process of a foreground app: p50 0.12 ms, p99 2.9 ms, max 37 ms.
 
 **Decision:** move the hot path (HID read → mapper → sink → dext client) out of the GUI app into a headless engine process registered as an Interactive LaunchAgent. The GUI becomes a front end. This supersedes the conditional fix 3b. Interim workaround for the user: run Shadow windowed on the same Space as the GDHub window, where the clamp does not apply.
+
+## 8. After the engine LaunchAgent, 2026-11-09 07:59–08:07 (Game Mode on, Shadow fullscreen)
+
+Same play, hot path now in the headless engine (engine-agent-plan E1). 34 meter windows, 71 599 changed frames:
+
+| Metric (median window) | GUI app (§7) | Engine | 
+|---|---|---|
+| GDHub total delay, p50 | 57 ms | 1.19 ms |
+| GDHub total delay, p99 | 135 ms (p95) | 2.69 ms |
+| GDHub total delay, worst max | 1476 ms | 8.88 ms |
+| Kernel timestamp → HID callback, p50 | 55 ms | 0.12 ms |
+| Posts to the pad | 15 Hz | 217 Hz (peak 363 Hz) |
+| States coalesced away | 76 % | 21 % |
+
+The GUI process was demoted to the Background role for the whole period and the engine was not affected. GDHub's own share of the controller delay is now about 1 ms. What remains on the path is outside GDHub: Shadow's 10 ms joystick poll, then the stream's encode, network and decode time. Full criteria table: engine-agent-plan §8.4.

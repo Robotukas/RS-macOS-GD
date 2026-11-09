@@ -11,7 +11,7 @@ Their probes live in the session scratch dir (`…/scratchpad/la/`, `…/scratch
 
 | Phase | Title | Status |
 |---|---|---|
-| E1 | Engine runs passthrough under launchd; GUI stops owning the dext; read-only engine status | pending |
+| E1 | Engine runs passthrough under launchd; GUI stops owning the dext; read-only engine status | done (gate passed 2026-11-09, §8.4) |
 | E2 | XPC channel: live engine status and full Driver-menu control from the GUI, mapping push | pending |
 | E3 | One engine core for both modes (in-app fallback through the same code); install/uninstall from the GUI | pending |
 | E4 | Mapping-engine groundwork: profiles, output channels, self-throttle report, TCC probe | pending |
@@ -781,6 +781,30 @@ Pass criteria, over 10 s meter windows with at least 30 changed frames:
 - **Subjective:** the user reports no lag.
 
 If it fails, see §10 R1 and R6.
+
+### 8.4 Result: gate passed, 2026-11-09 07:59–08:07 (Game Mode on)
+
+The user played fullscreen Shadow. gamepolicyd logged "Game mode enabled" at 07:59:06 and "Game mode status is now paused" at 08:07:39, so the whole 8.5 minutes ran under Game Mode. Engine pid 41185 (up since 02:45, release build, dext build 17). 34 ten-second meter windows with at least 30 changed frames, 71 599 changed frames in total:
+
+| Criterion | Limit | Measured | Verdict |
+|---|---|---|---|
+| Total delay, median-window p50 | < 2 ms | 1.19 ms (windows 0.80–1.72) | pass |
+| Total delay, median-window p99 | < 5 ms | 2.69 ms (worst window 3.47) | pass |
+| Total delay, worst-window max | < 20 ms | 8.88 ms | pass |
+| Kernel → callback, median-window p50 | < 0.5 ms | 0.12 ms | pass |
+| Posts vs changed-frame rate | ≥ 90 % | 100 % (median 217 Hz, peak 363 Hz) | pass |
+| Coalesced | < 20 % | median 21 %, worst window 32 % | marginal miss |
+| Engine thread priority | never 4 | `vhidPrio=37` and `napped=no` in all 51 windows; napwatch lowest 20 in 2352 samples; `ThrottleCheck` logged nothing | pass |
+| runningboardd tracks the engine | 0 lines | 0 `osservice<com.interlinked.gdhub.engine` lines | pass |
+| Positive control (GUI is clamped) | present | GUI pid 41283 "Set darwin role to: Background" at 07:59:06, back to UserInteractiveNonFocal at 08:07:39 | valid |
+| Subjective | no lag | not yet reported by the user | open |
+
+Notes:
+- Baseline for the same play in the GUI app (latency-plan §7): 57 ms p50, 135 ms p95, 1476 ms max, 15 Hz posts, 76 % coalesced.
+- The coalescing that remains comes from the sink's 1000 Hz rate cap: the `cap` stage adds about 0.65 ms p50 of the 1.19 ms total, `io` (IOConnect) about 0.36 ms. Posting on the leading edge when the minimum interval has already elapsed would remove most of it. That is worth at most 0.6 ms against Shadow's 10 ms joystick poll, so it is not scheduled.
+- The napwatch GUI control run in the recipe above was replaced by the runningboardd role log, which shows the same clamp directly. `napwatch`'s `front=` column stayed on the launching app for the whole run (no run loop, so `frontmostApplication` never updates); only its priority columns are reliable.
+- Shadow kept the receiver unforwarded across its restart: the engine received 946–961 reports per second in every window, with no gap.
+- §10 R1 (real-time thread, dext-side forwarding) is not needed.
 
 ## 9. Phased implementation (one Sonnet implementer)
 
