@@ -183,6 +183,7 @@ final class DextCoreMeterTests: XCTestCase {
         s.nonce = 0x0102030405060708; s.build = 18; s.pid = 777
         s.desiredState = 0; s.padSource = UInt32(GDHR_SRC_UC); s.padState = UInt32(GDHR_PAD_LIVE); s.padSpecCrc = 0xCAFEBABE
         s.ownerPresent = 1; s.rootPresent = 1
+        s.topology = 0x77; s.probeExt = 0x83; s.probePad = 0x85
         withUnsafeMutableBytes(of: &s.counters) { raw in
             let c = raw.bindMemory(to: UInt64.self)
             c[Int(GDHR_CTR_UC_POSTS.rawValue)] = 1_000_000_000_001
@@ -196,6 +197,7 @@ final class DextCoreMeterTests: XCTestCase {
             c[Int(GDHR_CTR_OUTPUTS_SEEN.rawValue)] = 9
             c[Int(GDHR_CTR_OUTPUTS_NO_OWNER.rawValue)] = 10
             c[Int(GDHR_CTR_CREATE_EARLY.rawValue)] = 11
+            c[Int(GDHR_CTR_SYNC_INLINE.rawValue)] = 12
         }
         return s
     }
@@ -213,18 +215,30 @@ final class DextCoreMeterTests: XCTestCase {
         let bytes = packed()
         XCTAssertEqual(bytes.count, DextStatus2.size)
         let s = try XCTUnwrap(DextStatus2.decode(bytes))
-        XCTAssertEqual(s.version, 1); XCTAssertEqual(s.declaredSize, 160)
+        XCTAssertEqual(s.version, 1); XCTAssertEqual(s.declaredSize, 172)
         XCTAssertEqual(s.build, 18); XCTAssertEqual(s.instanceNonce, 0x0102030405060708); XCTAssertEqual(s.rootPid, 777)
         XCTAssertEqual(s.desiredState, 0); XCTAssertEqual(s.source, .userClient)
         XCTAssertTrue(s.padLive); XCTAssertTrue(s.ownerPresent)
         XCTAssertEqual(s.ucPosts, 1_000_000_000_001); XCTAssertEqual(s.ucRejected, 2); XCTAssertEqual(s.neutralPosts, 3)
         XCTAssertEqual(s.postErrors, 4); XCTAssertEqual(s.syncViolations, 5); XCTAssertEqual(s.padCreates, 6)
         XCTAssertEqual(s.padDestroys, 7); XCTAssertEqual(s.createFails, 8); XCTAssertEqual(s.outputsSeen, 9)
-        XCTAssertEqual(s.outputsNoOwner, 10); XCTAssertEqual(s.createEarly, 11)
+        XCTAssertEqual(s.outputsNoOwner, 10); XCTAssertEqual(s.createEarly, 11); XCTAssertEqual(s.syncInline, 12)
+        XCTAssertEqual(s.topology, 0x77); XCTAssertEqual(s.probeExt, 0x83); XCTAssertEqual(s.probeSubmit, 0x85)
         XCTAssertEqual(s.padSpecCRC, 0xCAFEBABE); XCTAssertEqual(s.meterWindows, 9)
         XCTAssertEqual(s.hop, DextMeterSummary(count: 220, p50Ns: 25_000, p99Ns: 75_000, maxNs: 120_000, meanNs: 31_000))
         XCTAssertEqual(s.hr, DextMeterSummary(count: 220, p50Ns: 50_000, p99Ns: 100_000, maxNs: 140_000, meanNs: 42_000))
-        XCTAssertEqual(s.meterLogText, "dext: hop p50/p99/max/mean 25/75/120/31.0 us hr 50/100/140/42.0 us n=220 win=9 syncViolations=5")
+        XCTAssertEqual(s.meterLogText, "dext: hop p50/p99/max/mean 25/75/120/31.0 us hr 50/100/140/42.0 us n=220 win=9 dext topo: uc=root:1 pad=root:1 pad=uc:1 syncViolations=5 syncInline=12")
+    }
+
+    func testTopologyTextShowsUnknownAsAQuestionMark() {
+        var s = DextStatus2(); XCTAssertNil(s.topologyText); XCTAssertNil(s.meterLogText)
+        s.topology = 0x10 | 0x01                                   // uc==root known and true
+        XCTAssertEqual(s.topologyText, "dext topo: uc=root:1 pad=root:? pad=uc:?")
+        s.topology = 0x70 | 0x04                                   // all known, only pad==uc
+        XCTAssertEqual(s.topologyText, "dext topo: uc=root:0 pad=root:0 pad=uc:1")
+        XCTAssertEqual(s.meterLogText, "dext topo: uc=root:0 pad=root:0 pad=uc:1")
+        s.syncInline = 3
+        XCTAssertTrue(s.meterLogText!.hasSuffix("syncInline=3"))
     }
 
     func testStatus2WithoutPadOrWindowHasNoMeterText() throws {
@@ -233,14 +247,14 @@ final class DextCoreMeterTests: XCTestCase {
         let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertFalse(d.padLive); XCTAssertEqual(d.source, DextProtocol.PadSource.none); XCTAssertFalse(d.ownerPresent)
-        XCTAssertEqual(d.hop, DextMeterSummary()); XCTAssertNil(d.meterLogText)
+        XCTAssertEqual(d.hop, DextMeterSummary())
     }
 
     func testShortBuffersDecodeWhatFits() throws {
         // The dext writes min(size, caller maximum) bytes.
         let full = packed()
         let short = try XCTUnwrap(DextStatus2.decode(Array(full.prefix(28))))
-        XCTAssertEqual(short.declaredSize, 160, "size says what the dext has; the buffer is what arrived")
+        XCTAssertEqual(short.declaredSize, 172, "size says what the dext has; the buffer is what arrived")
         XCTAssertEqual(short.build, 18); XCTAssertEqual(short.rootPid, 777); XCTAssertEqual(short.source, .userClient)
         XCTAssertEqual(short.ucPosts, 0, "beyond the buffer reads as zero"); XCTAssertEqual(short.hop, DextMeterSummary())
         let tight = try XCTUnwrap(DextStatus2.decode(Array(full.prefix(8))))
@@ -259,10 +273,10 @@ final class DextCoreMeterTests: XCTestCase {
 
     func testLongBuffersAndNewerVersionsDecodeTheKnownPrefix() throws {
         var longer = packed() + [UInt8](repeating: 0x5A, count: 64)      // a newer dext appended fields
-        longer[DextStatus2.Offset.size] = UInt8((160 + 64) & 0xFF); longer[DextStatus2.Offset.size + 1] = UInt8((160 + 64) >> 8)
+        longer[DextStatus2.Offset.size] = UInt8((172 + 64) & 0xFF); longer[DextStatus2.Offset.size + 1] = UInt8((172 + 64) >> 8)
         longer[DextStatus2.Offset.version] = 3                           // and bumped the version
         let s = try XCTUnwrap(DextStatus2.decode(longer))
-        XCTAssertEqual(s.version, 3); XCTAssertEqual(s.declaredSize, 224)
+        XCTAssertEqual(s.version, 3); XCTAssertEqual(s.declaredSize, 236)
         XCTAssertEqual(s.ucPosts, 1_000_000_000_001); XCTAssertEqual(s.hr.p99Ns, 100_000)
         // garbage that claims a tiny size, or version 0, is refused
         var bad = packed(); bad[DextStatus2.Offset.size] = 4; bad[DextStatus2.Offset.size + 1] = 0
@@ -273,7 +287,7 @@ final class DextCoreMeterTests: XCTestCase {
 
     func testStatus2StaysInsideItsMaximum() {
         XCTAssertLessThanOrEqual(DextStatus2.size, DextStatus2.maxSize)
-        XCTAssertEqual(DextStatus2.Offset.hrMean + 4, DextStatus2.size, "the layout ends exactly at the declared size")
+        XCTAssertEqual(DextStatus2.Offset.probeSubmit + 2, DextStatus2.size, "the layout ends exactly at the declared size (one reserved byte after the last probe byte)")
     }
 }
 

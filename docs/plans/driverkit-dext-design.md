@@ -613,7 +613,7 @@ static bool callerIsGDHub(GDHubVirtualHIDUserClient * self) {
   - spec rejection reason
   - watchdog fire
   - T3: one `pad meter` line per completed 10 s window with posts (`hop` and `hr` p50/p99/max/mean in µs; at most 192 characters by the generic estimator, about 144 in practice); the root start line carries the process id
-  - T3: the first few `SYNC VIOLATION` lines (the counter is in status2)
+  - T3: `sync inline (first at this site)` once per GDH_SYNC call site, and the topology probe lines `topo <where>: rootq=… ucq=… padq=… onq root/uc/pad=…` (root, user client and pad Start, first ExternalMethod, first submitInput; each once)
   - first output report per slot
 - **Never log per report.**
 - **Dext log lines are live-only** (`log stream` shows them as `kernel () GDHub…`; `log show` does not keep them) **and are cut at about 256 characters**: every line stays under 250.
@@ -636,22 +636,33 @@ static bool callerIsGDHub(GDHubVirtualHIDUserClient * self) {
 
 **Transitions.** `stage` (user client; owner generation checked; slot must be NONE, else Busy) → `begin_create` (root) → `started` (the pad, last thing in `handleStart`; refused unless CREATING) → `take` (destroy: `padSource = NONE`, then the pointer is cleared; a stale generation is refused; any state returns to NONE) or `stopped` (the pad stopped by itself: only if it is still the registered pad). `release_owner` takes the owner's pad in the same critical section.
 
-**Queues.** Each IOService has its own serial default queue. Every method of an object runs on that object's queue.
+**Queues: documented, measured on build 18, and still open.**
+- *Documented:* every IOService gets its own default queue (`IOService.iig:171-175, 195-203`). `ExternalMethod` runs on a queue named `IOUserClientQueueExternalMethod` if one was set, else on "the default queue for the IOUserClient object" (`IOUserClient.iig:183-189, 203-209`). A queue runs one block at a time, and `OnQueue()` is true on the queue we run on and on any queue that invoked a second one (`IODispatchQueue.iig:99-105`). No header says that a service created with `Create` shares its creator's queue.
+- *Generated code:* it names queues only in the class description (the user client declares `IOUserClientQueueExternalMethod`, the root and pad none: `GDHubVirtualHIDUserClient.iig.cpp:40-41, 70-71`). The choice of queue happens in the DriverKit runtime library, which is not in the SDK as source.
+- *Measured (build 18):* inside the user client's `ExternalMethod`, `rootQueue->OnQueue()` was TRUE for both `CreatePad` and `DestroyPad`, and both calls completed at once. At the `postNeutralFrom` call of the same `destroyDevice` no violation was logged, which is consistent with the pad's queue not being on the stack (or with its queue pointer being null, which the probe will show).
+- *So either* the user client uses the root's default queue object, *or* its methods are invoked nested inside the root's queue, *or* something else. The documents cannot tell these apart. The next build logs one `topo …` line at each Start and at the first `ExternalMethod` and `submitInput`, and puts three equality flags and two `OnQueue()` bytes into status2 (`topology`, `probeExt`, `probePad`). Until that is read, nothing in this section may be taken as fact beyond the list above.
 
-| Object | Rank | Runs on its queue |
+| Object | Rank | Methods that run "on its queue" (documented) |
 |---|---|---|
 | user client | 1 | `ExternalMethod` (selectors 0-11), `WatchdogFired`, `Stop` |
 | root | 2 | `Start`, `Stop`, `NewUserClient`, `CreatePad`, `DestroyPad` |
 | tap | 3 | (T4) |
 | pad | 4 | `handleStart`, `Stop`, `submitInput`, `postNeutralFrom`, `setReport`, `getReport`, the only calls of `handleReport` |
 
-**Call-order invariant.** The only synchronous cross-object calls are UC → root (`CreatePad`, `DestroyPad`) and UC → pad (`submitInput`, `postNeutralFrom`). Calls go only toward a higher rank. The pad calls no GDHub object (it reads the registry and calls the kernel). The root calls no GDHub object synchronously either: `Terminate(0)` on a pad is a kernel call that returns before the pad's `Stop` runs on the pad's queue. `GDHubUCDeliverOutput` (D5) will take only the client's leaf lock and use `AsyncCompletion`, with no queue entry. Hence the waits-for graph is UC → root and UC → pad and has no cycle. `Create` on the root's queue waits for the kernel to run the pad's `Start` on the pad's queue; the pad's `handleStart` waits for nothing but the registry lock, which is never held across a wait.
+**What does not depend on the topology.**
+- The registry is lock- and atomics-based and assumes nothing about queues.
+- The fields that the user client's `ExternalMethod`, watchdog and `Stop` all touch (`padCreated`, `neutralised`, `stopped`, `lastActivity`, `postCount`, `watchdogFires`) are accessed atomically, and the pad's `stopping` flag too, so one queue or several are both correct. `spec[]` and the input buffers are touched only by `ExternalMethod` and `Stop` (never by the watchdog).
+- The pad's meter has one writer: `submitInput`, called only by the one user client, whose calls are sequential on whatever queue it runs.
 
-**`GDH_SYNC(callerRank, targetRank, targetQueue, what)`** wraps all four call sites, in every build. At compile time `callerRank < targetRank` is a `static_assert`. At run time, if the target's queue is already on this thread's queue stack (`IODispatchQueue::OnQueue()`, `IODispatchQueue.iig:104-105`, which also reports true for a queue that invoked a second queue) the call would re-enter a queue we are nested in: it is counted (`syncViolations` in status2) and the first eight are logged. It never blocks and never aborts.
+**Call-order invariant.** The only synchronous cross-object calls are UC → root (`CreatePad`, `DestroyPad`) and UC → pad (`submitInput`, `postNeutralFrom`). Calls go only toward a higher rank. The pad calls no GDHub object (it reads the registry and calls the kernel). The root calls no GDHub object synchronously either: `Terminate(0)` on a pad is a kernel call that returns before the pad's `Stop` runs. `GDHubUCDeliverOutput` (D5) will take only the client's leaf lock and use `AsyncCompletion`. With these four call sites no wait cycle is expressible whatever the queue topology: a cycle needs something that holds the target queue while waiting on the user client, and no code does.
+
+**`GDH_SYNC(callerRank, targetRank, targetQueue, what)`** wraps all four call sites, in every build.
+- *Compile time:* `callerRank < targetRank` is a `static_assert`. That is the only rank check, and it makes a run-time rank violation impossible: `syncViolations` stays in the status2 layout (offset 56) and reads 0 by construction.
+- *Run time:* if the target's queue is already on this thread's queue stack (`OnQueue()`), the call is an inline nested call, not a cycle, because the thread already owns that queue. It is counted in `syncInline` (status2 offset 160) and logged once per call site. This is the situation build 18 found for `CreatePad` and `DestroyPad`, which it had wrongly called violations.
 
 **Failure paths.** Every path leaves the registry consistent:
 - the client builds its input buffers before staging anything, and releases them if staging or `CreatePad` fails (`unstage` is idempotent);
-- `CreatePad` that fails empties the slot and terminates a pad that exists but never registered, or registered and then failed a later start step. If Create returns before the pad's `Start` (IOService.iig:299-315 does not say which comes first), the root logs `CreatePad: Create returned before the pad started`, counts `createEarly`, and returns success without terminating anything; the user client's `createDevice` then polls the registry for at most 500 ms until the pad is LIVE and otherwise reports failure and empties the slot. A slot stuck in CREATING is emptied by `destroyDevice`, by the client's `Stop` (`release_owner`) and by the root's `Stop`, and a pad that registers afterwards is refused by `gdhr_pad_started`. A `createDevice` that reports failure, whatever state the pad reached (even LIVE), always leaves the slot empty;
+- `CreatePad` that fails empties the slot and terminates a pad that exists but never registered, or registered and then failed a later start step. If Create returns before the pad's `Start` (IOService.iig:299-315 does not say which comes first), the root logs `CreatePad: Create returned before the pad started`, counts `createEarly`, and returns success without terminating anything; the user client's `createDevice` then reports failure and empties the slot, because the engine treats a NotReady post as a lost device (it does not wait: `IOSleep` would block a queue that may be the root's own). Build 18 measured `pad start` before `createDevice … created`, so this case does not occur on this OS. A slot stuck in CREATING is emptied by `destroyDevice`, by the client's `Stop` (`release_owner`) and by the root's `Stop`, and a pad that registers afterwards is refused by `gdhr_pad_started`. A `createDevice` that reports failure, whatever state the pad reached (even LIVE), always leaves the slot empty;
 - a second `createDevice` is Busy at the client (`padCreated`) and again at the registry (slot not NONE); a stale client record (the pad stopped behind its back) is dropped;
 - a destroy without a create, or a destroy by a stale generation, changes nothing;
 - the pad starts only while the root is creating it, so no other path can start a pad;

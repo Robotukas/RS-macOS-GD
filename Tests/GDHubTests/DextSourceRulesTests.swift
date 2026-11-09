@@ -124,6 +124,9 @@ final class DextSourceRulesTests: XCTestCase {
         let meter = Self.worstCaseLength("pad meter b=%u w=%u n=%u hop p50/p99/max/mean %u/%u/%u/%u.%u hr %u/%u/%u/%u.%u us")
         XCTAssertLessThan(meter, 250)
         XCTAssertEqual(meter, 192, "the worst case of the meter line, as stated in the source comment")
+        // the topology probe and the inline-call lines (next build)
+        XCTAssertLessThan(Self.worstCaseLength("topo %{public}s: rootq=%u ucq=%u padq=%u onq root/uc/pad=%u/%u/%u"), 150)
+        XCTAssertLessThan(Self.worstCaseLength("sync inline (first at this site): %{public}s runs on the target's queue"), 100)
     }
 
     /// Plan 6.3: neutral before destroy. destroyPad (destroyDevice, Stop and devTerminate all use it) posts neutral first
@@ -140,6 +143,30 @@ final class DextSourceRulesTests: XCTestCase {
         let create = try XCTUnwrap(text.range(of: "static kern_return_t sCreateDevice"))
         let cbody = String(text[create.lowerBound...].prefix(6000))
         XCTAssertTrue(cbody.contains("gdhr_pad_take(reg, iv->ownerGen, &rc)"))
+    }
+
+    /// The topology is measured, not assumed: nothing may wait on a queue it cannot name (no IOSleep in the dext), the probe
+    /// logs only from the Start methods and once per kind from the hot paths, and GDH_SYNC counts inline calls instead of
+    /// calling them violations.
+    func testNoBlockingWaitsAndTheProbeIsOneShot() throws {
+        for (name, lines) in try sources(ext: ["cpp"]) {
+            for (i, line) in lines.enumerated() where (line.components(separatedBy: "//").first ?? "").contains("IOSleep") {
+                XCTFail("\(name):\(i + 1) sleeps on a queue")
+            }
+        }
+        let internalH = try String(contentsOf: dextDir.appendingPathComponent("GDHubInternal.h"), encoding: .utf8)
+        XCTAssertTrue(internalH.contains("GDHubSyncInline"))
+        XCTAssertFalse(internalH.contains("GDHubSyncViolation"), "a runtime violation cannot exist: the rank order is a static_assert")
+        XCTAssertTrue(internalH.contains("static_assert((callerRank) < (targetRank)"))
+        let probeCalls = NSRegularExpression.escapedPattern(for: "GDHubProbeFirst(")
+        var firsts = 0, starts = 0
+        for (_, lines) in try sources(ext: ["cpp"]) {
+            for l in lines { let c = l.components(separatedBy: "//").first ?? ""
+                if c.range(of: probeCalls, options: .regularExpression) != nil && !c.contains("void ") { firsts += 1 }
+                if c.contains("GDHubProbeStart(") && !c.contains("void ") { starts += 1 } }
+        }
+        XCTAssertEqual(firsts, 2, "first ExternalMethod and first submitInput")
+        XCTAssertEqual(starts, 3, "root, user client and pad Start")
     }
 
     /// No per-post allocation, logging or SetLength on the hot paths: the posting functions contain none of them.

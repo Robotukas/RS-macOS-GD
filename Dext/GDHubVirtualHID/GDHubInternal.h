@@ -10,7 +10,6 @@
 #define GDHUB_WATCHDOG_PERIOD_MS    250
 #define GDHUB_WATCHDOG_TIMEOUT_MS   2000
 #define GDHUB_METER_WINDOW_MS       10000
-#define GDHUB_CREATE_WAIT_MS        500    // createDevice waits at most this long for a pad that Create returned before it started
 #ifndef GDHUB_DEV_TERMINATE
 #define GDHUB_DEV_TERMINATE         1      // DEBUG-ONLY: enables selector devTerminate; set to 0 for a release build
 #endif
@@ -28,19 +27,33 @@ class GDHubVirtualHID; class GDHubVirtualHIDUserClient; class GDHubVirtualPad;
 // ---------------------------------------------------------------------------------------------------------------
 // Call-order invariant (receiver-takeover plan 4.2). Ranks: user client 1, root 2, tap 3 (T4), pad 4. The only
 // synchronous cross-object calls are UC -> root (CreatePad, DestroyPad) and UC -> pad (submitInput, postNeutralFrom).
-// GDH_SYNC wraps every one of them, in every build:
-//  - compile time: the caller's rank must be below the target's, so a call toward a lower or equal rank cannot be built;
-//  - run time: if the target's queue is already on this thread's queue stack (OnQueue(), IODispatchQueue.iig:105, which
-//    is also true for a queue that invoked a second queue), the call would re-enter a queue we are nested in. That is a
-//    call cycle: it is counted (status2 syncViolations) and the first few are logged. It never blocks or aborts.
-void GDHubSyncViolation(const char * what, uint32_t callerRank, uint32_t targetRank);
-static inline void GDHubSyncCheck(IODispatchQueue * targetQueue, const char * what, uint32_t callerRank, uint32_t targetRank)
+// GDH_SYNC wraps every one of them, in every build.
+//  - Compile time: the caller's rank must be below the target's, so a call toward a lower or equal rank cannot be built.
+//    With the four call sites above and a root and a pad that call no GDHub object, no wait cycle is expressible.
+//  - Run time: if the target's queue is already on this thread's queue stack (OnQueue(), IODispatchQueue.iig:104-105,
+//    which is also true for a queue that invoked a second queue) the call is an inline nested call, not a cycle: the
+//    thread already owns that queue. It is counted in `syncInline` and logged once per call site. Build 18 measured
+//    this for the user client calling the root: the topology is not what the plan assumed (see the probe below).
+//    `syncViolations` (GDHR_CTR_SYNC_VIOLATIONS) means a call toward a lower or equal rank; the compile-time assert makes it
+//    unreachable, so it reads 0 by construction.
+void GDHubSyncInline(const char * what, uint32_t * seenOnce);
+static inline void GDHubSyncCheck(IODispatchQueue * targetQueue, const char * what, uint32_t * seenOnce)
 {
-    if (targetQueue != nullptr && targetQueue->OnQueue()) GDHubSyncViolation(what, callerRank, targetRank);
+    if (targetQueue != nullptr && targetQueue->OnQueue()) GDHubSyncInline(what, seenOnce);
 }
 #define GDH_SYNC(callerRank, targetRank, targetQueue, what) \
     do { static_assert((callerRank) < (targetRank), "GDH_SYNC: a synchronous call must go to a higher rank"); \
-         GDHubSyncCheck((targetQueue), (what), (callerRank), (targetRank)); } while (0)
+         static uint32_t gdhSeenOnce; \
+         GDHubSyncCheck((targetQueue), (what), &gdhSeenOnce); } while (0)
+
+// Queue topology probe (next build): which queue objects the root, the user client and the pad really use. Each Start logs
+// one line with the object's own default-queue index (process-local, comparable across lines; 0 = none) and which of the
+// other known queues are on this thread's stack; the first ExternalMethod and the first submitInput log once more.
+// The results are also in status2 (topology flags and the two probe bytes). Nothing here runs per post except one load.
+uint32_t GDHubQueueIndex(IODispatchQueue * q);
+void     GDHubProbeStart(const char * where, int which, IODispatchQueue * ownQueue);   // GDHR_Q_*; records the index, logs once
+void     GDHubProbeFirst(int probe, const char * where, int which, IODispatchQueue * ownQueue);   // GDHR_PROBE_*; once
+IODispatchQueue * GDHubUCQueue(GDHubVirtualHIDUserClient * uc);                        // valid while `uc` is retained
 
 // ---------------------------------------------------------------------------------------------------------------
 // Process-global registry (GDHubRegistry.cpp over Core/GDHubRegistryCore.c). Whichever object runs first creates it.

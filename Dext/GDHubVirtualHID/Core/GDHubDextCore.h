@@ -57,6 +57,7 @@ enum gdhr_counter {
     GDHR_CTR_OUTPUTS_SEEN,       /* host output reports (setReport) that arrived at the pad */
     GDHR_CTR_OUTPUTS_NO_OWNER,   /* ... of which there was no owner client to deliver them to */
     GDHR_CTR_CREATE_EARLY,       /* Create returned before the pad's Start registered it */
+    GDHR_CTR_SYNC_INLINE,        /* a GDH_SYNC call whose target queue was already on this thread's queue stack (an inline nested call) */
     GDHR_CTR_COUNT
 };
 
@@ -90,6 +91,10 @@ typedef struct gdhr {
     uint64_t        nonce;
     uint32_t        build, pid;
     uint64_t        counters[GDHR_CTR_COUNT];
+    /* topology probe (atomic): process-local index of each object's default queue (0 = not seen yet), and the OnQueue()
+       bits recorded at the first ExternalMethod and the first submitInput */
+    uint32_t        queueIdx[3];
+    uint32_t        probe[2];
 } gdhr;
 
 typedef struct gdhr_snap {
@@ -97,8 +102,31 @@ typedef struct gdhr_snap {
     uint32_t build, pid;
     uint32_t desiredState, padSource, padState, padSpecCrc;
     uint32_t ownerPresent, rootPresent;
+    uint32_t topology, probeExt, probePad;
     uint64_t counters[GDHR_CTR_COUNT];
 } gdhr_snap;
+
+/* Topology probe. Which of the three queue indices to set: */
+#define GDHR_Q_ROOT 0
+#define GDHR_Q_UC   1
+#define GDHR_Q_PAD  2
+/* gdhr_topology() bits: low nibble = the queues are the same object, high nibble = both sides known (set at their Start) */
+#define GDHR_TOPO_UC_EQ_ROOT   0x01u
+#define GDHR_TOPO_PAD_EQ_ROOT  0x02u
+#define GDHR_TOPO_PAD_EQ_UC    0x04u
+#define GDHR_TOPO_KNOWN_SHIFT  4
+/* probe bits (OnQueue() of the root, user-client and pad queue); VALID once recorded */
+#define GDHR_PROBE_ROOT   0x01u
+#define GDHR_PROBE_UC     0x02u
+#define GDHR_PROBE_PAD    0x04u
+#define GDHR_PROBE_VALID  0x80u
+#define GDHR_PROBE_EXT    0     /* first ExternalMethod */
+#define GDHR_PROBE_SUBMIT 1     /* first submitInput */
+void     gdhr_set_queue_idx(gdhr *r, int which, uint32_t idx);
+uint32_t gdhr_queue_idx(const gdhr *r, int which);
+uint32_t gdhr_topology(const gdhr *r);
+uint32_t gdhr_probe_get(const gdhr *r, int which);                    /* 0 until recorded */
+int      gdhr_probe_once(gdhr *r, int which, uint32_t bits);         /* 1 if this call recorded it (first wins) */
 
 /* Idempotent and thread-safe: installs the lock by compare-and-swap (the loser frees its own lock and waits for the
  * winner's two stores). Returns 0 only if no lock could be allocated; every other function then returns an error. */

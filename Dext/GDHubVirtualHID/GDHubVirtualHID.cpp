@@ -36,6 +36,7 @@ kern_return_t IMPL(GDHubVirtualHID, Start)
     gdhr * reg = GDHubReg();
     if (!reg) { GDLog("root start: no registry lock"); return kIOReturnNoMemory; }
     if (CopyDispatchQueue(kIOServiceDefaultQueueName, &ivars->queue) != kIOReturnSuccess) ivars->queue = nullptr;   // GDH_SYNC just skips
+    GDHubProbeStart("root start", GDHR_Q_ROOT, ivars->queue);
     gdhr_set_identity(reg, mach_absolute_time(), (uint32_t)GDHUB_DEXT_BUILD, (uint32_t)getpid());
     if (gdhr_register_root(reg, static_cast<OSObject *>(this))) GDLog("root start: replaced a stale root in the registry");
     kr = RegisterService();

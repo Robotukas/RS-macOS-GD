@@ -16,7 +16,7 @@ struct GDHubVirtualPad_IVars {
     IOBufferMemoryDescriptor * neutral[GDHUB_MAX_INPUT_REPORTS];   // prefilled, fixed length (SetLength once)
     uint32_t neutralLen[GDHUB_MAX_INPUT_REPORTS];
     uint32_t neutralCount;
-    bool stopping;                                          // pad queue only
+    bool stopping;                                          // written in Stop, read in the posting methods: atomic
     bool loggedOutput;
     gdh_meter meter;                                        // written on the pad queue, read lock-free elsewhere
 };
@@ -78,6 +78,7 @@ bool GDHubVirtualPad::handleStart(IOService * provider)
     ivars->spec = GDHubCopyPadSpec();
     if (!ivars->spec) { GDLog("pad start: no spec staged for the pad slot"); return false; }
     if (CopyDispatchQueue(kIOServiceDefaultQueueName, &ivars->queue) != kIOReturnSuccess) ivars->queue = nullptr;
+    GDHubProbeStart("pad start", GDHR_Q_PAD, ivars->queue);
     if (!buildNeutrals(ivars)) { GDLog("pad start: neutral buffers could not be built"); return false; }
     mach_timebase_info_data_t tb = {0, 0};
     mach_timebase_info(&tb);
@@ -98,7 +99,7 @@ bool GDHubVirtualPad::handleStart(IOService * provider)
 kern_return_t IMPL(GDHubVirtualPad, Stop)
 {
     GDLog("pad stop");
-    ivars->stopping = true;                                    // every later submission returns NotReady
+    __atomic_store_n(&ivars->stopping, true, __ATOMIC_RELAXED);   // every later submission returns NotReady
     gdhr_pad_stopped(GDHubReg(), static_cast<OSObject *>(this));   // no-op if DestroyPad already took it
     return Stop(provider, SUPERDISPATCH);
 }
@@ -118,9 +119,11 @@ kern_return_t IMPL(GDHubVirtualPad, submitInput)
 {
     uint64_t tPin = mach_absolute_time();
     gdhr * reg = GDHubReg();
-    if (ivars->stopping || !report || length == 0 || length > GDHUB_MAX_REPORT) {
+    GDHubProbeFirst(GDHR_PROBE_SUBMIT, "first submit", GDHR_Q_PAD, ivars->queue);
+    bool stopping = __atomic_load_n(&ivars->stopping, __ATOMIC_RELAXED);
+    if (stopping || !report || length == 0 || length > GDHUB_MAX_REPORT) {
         gdhr_ctr_add(reg, GDHR_CTR_UC_REJECTED, 1);
-        return ivars->stopping ? kIOReturnNotReady : kIOReturnBadArgument;
+        return stopping ? kIOReturnNotReady : kIOReturnBadArgument;
     }
     uint32_t padSource = gdhr_pad_source(reg);                 // authoritative: checked here, on the pad's own queue
     if (source != padSource) {
@@ -152,7 +155,7 @@ kern_return_t IMPL(GDHubVirtualPad, submitInput)
 kern_return_t IMPL(GDHubVirtualPad, postNeutralFrom)
 {
     gdhr * reg = GDHubReg();
-    if (ivars->stopping) return kIOReturnNotReady;
+    if (__atomic_load_n(&ivars->stopping, __ATOMIC_RELAXED)) return kIOReturnNotReady;
     uint32_t padSource = gdhr_pad_source(reg);
     if (source != padSource) return padSource == GDHUB_PADSRC_NONE ? kIOReturnNotReady : kIOReturnBusy;
     kern_return_t result = kIOReturnSuccess;

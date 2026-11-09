@@ -140,9 +140,10 @@ struct DextStatus2: Equatable {
         static let padSpecCRC = 112, meterWindows = 116
         static let hopCount = 120, hopP50 = 124, hopP99 = 128, hopMax = 132, hopMean = 136
         static let hrCount = 140, hrP50 = 144, hrP99 = 148, hrMax = 152, hrMean = 156
+        static let syncInline = 160, topology = 168, probeExt = 169, probeSubmit = 170
     }
     static let version = 1
-    static let size = 160
+    static let size = 172
     static let maxSize = 512
     /// version, size and build: the least a reader needs.
     static let minimumBytes = 8
@@ -161,6 +162,8 @@ struct DextStatus2: Equatable {
     var outputsSeen: UInt64 = 0, outputsNoOwner: UInt64 = 0, createEarly: UInt64 = 0
     var padSpecCRC: UInt32 = 0
     var meterWindows: UInt32 = 0
+    var syncInline: UInt64 = 0
+    var topology: UInt8 = 0, probeExt: UInt8 = 0, probeSubmit: UInt8 = 0
     var hop = DextMeterSummary()
     var hr = DextMeterSummary()
 
@@ -194,14 +197,38 @@ struct DextStatus2: Equatable {
         s.hr = DextMeterSummary(count: UInt32(u(Offset.hrCount, 4)), p50Ns: UInt32(u(Offset.hrP50, 4)),
                                 p99Ns: UInt32(u(Offset.hrP99, 4)), maxNs: UInt32(u(Offset.hrMax, 4)),
                                 meanNs: UInt32(u(Offset.hrMean, 4)))
+        s.syncInline = u(Offset.syncInline, 8)
+        s.topology = UInt8(u(Offset.topology, 1)); s.probeExt = UInt8(u(Offset.probeExt, 1)); s.probeSubmit = UInt8(u(Offset.probeSubmit, 1))
         return s
+    }
+
+    /// Topology flags (`GDHUB_TOPO_*`): the two queues are the same object. nil while one side has not started yet.
+    enum Topology {
+        static let ucEqRoot: UInt8 = 0x01, padEqRoot: UInt8 = 0x02, padEqUC: UInt8 = 0x04, knownShift: UInt8 = 4
+    }
+    enum Probe {
+        static let root: UInt8 = 0x01, uc: UInt8 = 0x02, pad: UInt8 = 0x04, valid: UInt8 = 0x80
+    }
+
+    func isSame(_ bit: UInt8) -> Bool? { topology & (bit << Topology.knownShift) == 0 ? nil : topology & bit != 0 }
+
+    /// "dext topo: uc=root:1 pad=root:0 pad=uc:0" ("?" while unknown); nil when nothing is known yet.
+    var topologyText: String? {
+        guard topology >> Topology.knownShift != 0 else { return nil }
+        func f(_ b: Bool?) -> String { b.map { $0 ? "1" : "0" } ?? "?" }
+        return "dext topo: uc=root:\(f(isSame(Topology.ucEqRoot))) pad=root:\(f(isSame(Topology.padEqRoot))) pad=uc:\(f(isSame(Topology.padEqUC)))"
     }
 
     /// The part of the engine's meter line that comes from the dext; nil until the dext has closed a 10 s window with posts.
     var meterLogText: String? {
-        guard hr.count > 0 else { return nil }
-        return "dext: hop p50/p99/max/mean \(hop.microsecondsText) us hr \(hr.microsecondsText) us n=\(hr.count) win=\(meterWindows)"
-            + (syncViolations > 0 ? " syncViolations=\(syncViolations)" : "")
+        var parts: [String] = []
+        if hr.count > 0 {
+            parts.append("dext: hop p50/p99/max/mean \(hop.microsecondsText) us hr \(hr.microsecondsText) us n=\(hr.count) win=\(meterWindows)")
+        }
+        if let t = topologyText { parts.append(t) }
+        if syncViolations > 0 { parts.append("syncViolations=\(syncViolations)") }
+        if syncInline > 0 { parts.append("syncInline=\(syncInline)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 }
 

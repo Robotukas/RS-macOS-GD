@@ -14,6 +14,12 @@
 #include "GDHubVirtualHIDUserClient.h"
 #include "GDHubVirtualPad.h"
 
+// The T3 probe (status2 topology flags) will say which queue ExternalMethod, the watchdog and Stop really run on. Until it
+// has, the few fields that more than one of them touch are accessed atomically (relaxed: each is a flag or a counter and
+// carries no data that needs ordering), so a shared or a separate queue are both correct.
+#define ALOAD(x)     __atomic_load_n(&(x), __ATOMIC_RELAXED)
+#define ASTORE(x, v) __atomic_store_n(&(x), (v), __ATOMIC_RELAXED)
+
 struct GDHubVirtualHIDUserClient_IVars {
     GDHubVirtualHID * root;                         // provider (retained by DriverKit until Stop), not retained here
     bool authorized, protocolOK, ownsRoot, neutralised, stopped;
@@ -78,6 +84,11 @@ static uint64_t nsToTicks(uint64_t ns)
     return ns * tb.denom / tb.numer;
 }
 
+IODispatchQueue * GDHubUCQueue(GDHubVirtualHIDUserClient * uc)
+{
+    return (uc && uc->ivars) ? uc->ivars->queue : nullptr;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Dispatch handlers. The SDK checks counts and sizes (table below) before calling them.
 
@@ -101,8 +112,8 @@ static kern_return_t sHello(OSObject * target, void * reference, IOUserClientMet
         iv->ownerGen = gen;
     }
     iv->protocolOK = (a->scalarInput[0] == GDHUB_PROTOCOL_VERSION);
-    iv->neutralised = false;
-    iv->lastActivity = mach_absolute_time();
+    ASTORE(iv->neutralised, false);
+    ASTORE(iv->lastActivity, mach_absolute_time());
     a->scalarOutput[0] = GDHUB_PROTOCOL_VERSION;
     a->scalarOutput[1] = GDHUB_DEXT_BUILD;
     a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD;   // capabilities: keyboard and pointer arrive in D8
@@ -190,7 +201,7 @@ static void destroyPad(GDHubVirtualHIDUserClient * uc)
             GDHubTerminateAndRelease(left);
         }
     }
-    iv->padCreated = false;
+    ASTORE(iv->padCreated, false);
     dropInputBuffers(iv);
     OSSafeReleaseNULL(iv->spec[GDHUB_SLOT_PAD]);
 }
@@ -198,7 +209,7 @@ static void destroyPad(GDHubVirtualHIDUserClient * uc)
 // Posts the pad's neutral reports. Used by the postNeutral selector and the watchdog.
 static kern_return_t postNeutralToPad(GDHubVirtualHIDUserClient * uc, uint32_t reason)
 {
-    if (!uc->ivars->padCreated) return kIOReturnNotReady;
+    if (!ALOAD(uc->ivars->padCreated)) return kIOReturnNotReady;
     GDHubVirtualPad * pad = GDHubCopyPad();                    // +1 for the duration of the call
     if (!pad) return kIOReturnNotReady;
     GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_PAD, GDHubPadQueue(pad), "postNeutralFrom");
@@ -224,11 +235,11 @@ static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserCl
         if (map) map->release();
         return kIOReturnUnsupported;
     }
-    if (iv->padCreated) {
+    if (ALOAD(iv->padCreated)) {
         // Still ours, or gone behind our back (the pad stopped on its own)? Only a live registry slot means Busy.
         if (gdhr_pad_state(GDHubReg()) != GDHR_PAD_NONE) { if (map) map->release(); return kIOReturnBusy; }
         GDLog("createDevice: dropping a stale pad record");
-        iv->padCreated = false;
+        ASTORE(iv->padCreated, false);
         dropInputBuffers(iv);
         OSSafeReleaseNULL(iv->spec[slot]);
     }
@@ -254,15 +265,13 @@ static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserCl
     }
     GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_ROOT, GDHubRootQueue(iv->root), "CreatePad");
     kr = iv->root->CreatePad(iv->ownerGen);
-    if (kr == kIOReturnSuccess) {
-        // Create may have returned before the pad's Start registered it (root logs "returned before the pad started").
-        // The engine treats a NotReady post as a lost device, so createDevice does not report success until the pad is
-        // LIVE: poll the registry for at most 500 ms. The pad's Start does not need this queue, so nothing deadlocks.
-        // In the normal case (already LIVE) this loop does not run at all.
-        uint32_t waited = 0;
-        while (gdhr_pad_state(reg) != GDHR_PAD_LIVE && waited < GDHUB_CREATE_WAIT_MS) { IOSleep(1); waited++; }
-        if (gdhr_pad_state(reg) != GDHR_PAD_LIVE) { GDLog("createDevice: pad not live after %u ms", (unsigned)waited); kr = kIOReturnNotReady; }
-        else if (waited) GDLog("createDevice: pad became live after %u ms", (unsigned)waited);
+    if (kr == kIOReturnSuccess && gdhr_pad_state(reg) != GDHR_PAD_LIVE) {
+        // CreatePad found Create returned before the pad's Start registered it (the root logs and counts that). Build 18
+        // measured that Create waits for Start, so this should not happen. The engine treats a NotReady post as a lost device, so
+        // createDevice does not report success for a pad that is not live. Nothing waits here: IOSleep would block this
+        // queue, which may be the root's own queue (the probe has not settled that), and the pad's Start might need it.
+        GDLog("createDevice: pad not live when CreatePad returned");
+        kr = kIOReturnNotReady;
     }
     if (kr != kIOReturnSuccess) {
         GDLog("createDevice: CreatePad failed 0x%x", (unsigned)kr);
@@ -277,7 +286,7 @@ static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserCl
         return kr;
     }
     iv->spec[slot] = spec;                              // keeps the +1 from withBytes
-    iv->padCreated = true;
+    ASTORE(iv->padCreated, true);
     GDLog("createDevice: slot %u %04x:%04x created", slot, vid, pid);
     return kIOReturnSuccess;
 }
@@ -288,7 +297,7 @@ static kern_return_t sDestroyDevice(OSObject * target, void * reference, IOUserC
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
     uint64_t slot = a->scalarInput[0];
     if (slot >= GDHUB_SLOT_COUNT) return kIOReturnBadArgument;
-    if (slot == GDHUB_SLOT_PAD && uc->ivars->padCreated) {
+    if (slot == GDHUB_SLOT_PAD && ALOAD(uc->ivars->padCreated)) {
         GDLog("destroyDevice: slot %llu", slot);
         destroyPad(uc);
     }
@@ -304,7 +313,7 @@ static kern_return_t sPostReport(OSObject * target, void * reference, IOUserClie
     if (slot >= GDHUB_SLOT_COUNT) return kIOReturnBadArgument;
     if (slot != GDHUB_SLOT_PAD) return iv->spec[slot] ? kIOReturnUnsupported : kIOReturnNotReady;   // keyboard / pointer: D8
     OSData * spec = iv->spec[GDHUB_SLOT_PAD];
-    if (!iv->padCreated || !spec) return kIOReturnNotReady;
+    if (!ALOAD(iv->padCreated) || !spec) return kIOReturnNotReady;
     const uint8_t * bytes = nullptr; size_t len = 0; IOMemoryMap * map = nullptr;
     kern_return_t kr = structureBytes(a, &bytes, &len, &map);
     if (kr != kIOReturnSuccess) return kIOReturnBadArgument;
@@ -322,9 +331,9 @@ static kern_return_t sPostReport(OSObject * target, void * reference, IOUserClie
     kr = pad->submitInput(GDHUB_PADSRC_UC, tCall, iv->inBuf[idx], (uint32_t)len);
     pad->release();
     if (kr == kIOReturnSuccess) {
-        iv->postCount++;
-        iv->lastActivity = mach_absolute_time();
-        iv->neutralised = false;
+        ASTORE(iv->postCount, ALOAD(iv->postCount) + 1);          // single writer: the ExternalMethod queue
+        ASTORE(iv->lastActivity, mach_absolute_time());
+        ASTORE(iv->neutralised, false);
     }
     return kr;
 }
@@ -337,7 +346,7 @@ static kern_return_t sPostNeutral(OSObject * target, void * reference, IOUserCli
     if (slot >= GDHUB_SLOT_COUNT) return kIOReturnBadArgument;
     if (slot != GDHUB_SLOT_PAD) return kIOReturnNotReady;
     kern_return_t kr = postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST);
-    if (kr == kIOReturnSuccess) uc->ivars->lastActivity = mach_absolute_time();
+    if (kr == kIOReturnSuccess) ASTORE(uc->ivars->lastActivity, mach_absolute_time());
     return kr;
 }
 
@@ -350,7 +359,7 @@ static kern_return_t sDevTerminate(OSObject * target, void * reference, IOUserCl
 #if GDHUB_DEV_TERMINATE
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
     GDLog("devTerminate: pad, then Terminate(0) on the root service (DEBUG-only)");
-    if (uc->ivars->padCreated) destroyPad(uc);
+    if (ALOAD(uc->ivars->padCreated)) destroyPad(uc);
     kern_return_t kr = uc->ivars->root ? uc->ivars->root->Terminate(0) : kIOReturnNotReady;
     GDLog("devTerminate: Terminate returned 0x%x", (unsigned)kr);
     return kr;
@@ -364,7 +373,7 @@ static kern_return_t sHeartbeat(OSObject * target, void * reference, IOUserClien
 {
     (void)reference; (void)a;
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
-    uc->ivars->lastActivity = mach_absolute_time();
+    ASTORE(uc->ivars->lastActivity, mach_absolute_time());
     return kIOReturnSuccess;
 }
 
@@ -390,13 +399,13 @@ static kern_return_t sGetStatus(OSObject * target, void * reference, IOUserClien
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
     auto iv = uc->ivars;
     uint64_t mask = 0;
-    if (iv->padCreated && gdhr_pad_state(GDHubReg()) == GDHR_PAD_LIVE) mask |= (1ull << GDHUB_SLOT_PAD);
+    if (ALOAD(iv->padCreated) && gdhr_pad_state(GDHubReg()) == GDHR_PAD_LIVE) mask |= (1ull << GDHUB_SLOT_PAD);
     IOLockLock(iv->lock);
     uint64_t outCount = iv->outputCount, outDrops = iv->outputDrops;
     IOLockUnlock(iv->lock);
     a->scalarOutput[0] = mask;
-    a->scalarOutput[1] = iv->postCount;
-    a->scalarOutput[2] = iv->watchdogFires;
+    a->scalarOutput[1] = ALOAD(iv->postCount);
+    a->scalarOutput[2] = ALOAD(iv->watchdogFires);
     a->scalarOutput[3] = outCount;
     a->scalarOutput[4] = outDrops;
     a->scalarOutputCount = 5;
@@ -519,6 +528,7 @@ kern_return_t IMPL(GDHubVirtualHIDUserClient, Start)
     kr = ivars->timer->WakeAtTime(kIOTimerClockMachAbsoluteTime, mach_absolute_time() + ivars->periodTicks,
                                   ivars->periodTicks / 10);
     if (kr != kIOReturnSuccess) { GDLog("client start: timer arm 0x%x", (unsigned)kr); return kr; }
+    GDHubProbeStart("uc start", GDHR_Q_UC, ivars->queue);
     GDLog("client start (watchdog armed: period %u ms, timeout %u ms)",
           (unsigned)GDHUB_WATCHDOG_PERIOD_MS, (unsigned)GDHUB_WATCHDOG_TIMEOUT_MS);
     return kIOReturnSuccess;
@@ -526,14 +536,14 @@ kern_return_t IMPL(GDHubVirtualHIDUserClient, Start)
 
 kern_return_t IMPL(GDHubVirtualHIDUserClient, Stop)
 {
-    GDLog("client stop (owner=%d posts=%llu watchdogFires=%llu)", (int)ivars->ownsRoot, ivars->postCount,
-          ivars->watchdogFires);
-    ivars->stopped = true;                 // the watchdog handler bails out from now on
+    GDLog("client stop (owner=%d posts=%llu watchdogFires=%llu)", (int)ivars->ownsRoot, ALOAD(ivars->postCount),
+          ALOAD(ivars->watchdogFires));
+    ASTORE(ivars->stopped, true);          // the watchdog handler bails out from now on
     // The pad belongs to the root now, so it does not go away with this client by itself: destroy it here (G5, §3.9).
     // Terminate is asynchronous; the pad's Stop releases its own references. The owner is released last, and the core
     // hands back any pad that is still registered for this owner so none can outlive it.
     if (ivars->ownsRoot) {
-        if (ivars->padCreated) destroyPad(this);
+        if (ALOAD(ivars->padCreated)) destroyPad(this);
         GDHubReleaseOwner(this);
         ivars->ownsRoot = false;
     }
@@ -565,6 +575,7 @@ kern_return_t GDHubVirtualHIDUserClient::ExternalMethod(uint64_t selector, IOUse
                                                         OSObject * target, void * reference)
 {
     (void)dispatch; (void)target; (void)reference;
+    GDHubProbeFirst(GDHR_PROBE_EXT, "first ext", GDHR_Q_UC, ivars->queue);
     if (selector >= GDHUB_SEL_COUNT) return kIOReturnBadArgument;
     if (selector != GDHUB_SEL_HELLO) {
         if (!ivars->authorized) return kIOReturnNotPermitted;
@@ -576,14 +587,15 @@ kern_return_t GDHubVirtualHIDUserClient::ExternalMethod(uint64_t selector, IOUse
 void IMPL(GDHubVirtualHIDUserClient, WatchdogFired)
 {
     (void)action; (void)time;
-    if (ivars->stopped) return;            // Stop is cancelling the timer: do nothing and do not re-arm
+    if (ALOAD(ivars->stopped)) return;            // Stop is cancelling the timer: do nothing and do not re-arm
     uint64_t now = mach_absolute_time();
-    if (ivars->padCreated && !ivars->neutralised && ivars->lastActivity != 0 && now - ivars->lastActivity > ivars->timeoutTicks) {
+    uint64_t last = ALOAD(ivars->lastActivity);
+    if (ALOAD(ivars->padCreated) && !ALOAD(ivars->neutralised) && last != 0 && now - last > ivars->timeoutTicks) {
         postNeutralToPad(this, GDHUB_NEUTRAL_WATCHDOG);
-        ivars->neutralised = true;
-        ivars->watchdogFires++;
+        ASTORE(ivars->neutralised, true);
+        ASTORE(ivars->watchdogFires, ALOAD(ivars->watchdogFires) + 1);   // single writer: the watchdog
         GDLog("watchdog: no activity for more than %u ms, neutral reports posted (fires=%llu)",
-              (unsigned)GDHUB_WATCHDOG_TIMEOUT_MS, ivars->watchdogFires);
+              (unsigned)GDHUB_WATCHDOG_TIMEOUT_MS, ALOAD(ivars->watchdogFires));
     }
     ivars->timer->WakeAtTime(kIOTimerClockMachAbsoluteTime, now + ivars->periodTicks, ivars->periodTicks / 10);
 }

@@ -209,6 +209,10 @@ size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
     put64(full, GDHUB_ST2_OFF_OUTPUTS_SEEN, s->counters[GDHR_CTR_OUTPUTS_SEEN]);
     put64(full, GDHUB_ST2_OFF_OUTPUTS_NO_OWNER, s->counters[GDHR_CTR_OUTPUTS_NO_OWNER]);
     put64(full, GDHUB_ST2_OFF_CREATE_EARLY, s->counters[GDHR_CTR_CREATE_EARLY]);
+    put64(full, GDHUB_ST2_OFF_SYNC_INLINE, s->counters[GDHR_CTR_SYNC_INLINE]);
+    full[GDHUB_ST2_OFF_TOPOLOGY] = (uint8_t)s->topology;
+    full[GDHUB_ST2_OFF_PROBE_EXT] = (uint8_t)s->probeExt;
+    full[GDHUB_ST2_OFF_PROBE_SUBMIT] = (uint8_t)s->probePad;
     put32(full, GDHUB_ST2_OFF_PAD_SPEC_CRC, s->padSpecCrc);
     put32(full, GDHUB_ST2_OFF_METER_WINDOWS, meterWindows);
     if (hop) {

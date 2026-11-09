@@ -112,6 +112,12 @@ final class DextProtocolTests: XCTestCase {
             "GDHUB_ST2_OFF_HR_COUNT": UInt64(S2.hrCount), "GDHUB_ST2_OFF_HR_P50_NS": UInt64(S2.hrP50),
             "GDHUB_ST2_OFF_HR_P99_NS": UInt64(S2.hrP99), "GDHUB_ST2_OFF_HR_MAX_NS": UInt64(S2.hrMax),
             "GDHUB_ST2_OFF_HR_MEAN_NS": UInt64(S2.hrMean),
+            "GDHUB_ST2_OFF_SYNC_INLINE": UInt64(S2.syncInline), "GDHUB_ST2_OFF_TOPOLOGY": UInt64(S2.topology),
+            "GDHUB_ST2_OFF_PROBE_EXT": UInt64(S2.probeExt), "GDHUB_ST2_OFF_PROBE_SUBMIT": UInt64(S2.probeSubmit),
+            "GDHUB_TOPO_UC_EQ_ROOT": UInt64(DextStatus2.Topology.ucEqRoot), "GDHUB_TOPO_PAD_EQ_ROOT": UInt64(DextStatus2.Topology.padEqRoot),
+            "GDHUB_TOPO_PAD_EQ_UC": UInt64(DextStatus2.Topology.padEqUC), "GDHUB_TOPO_KNOWN_SHIFT": UInt64(DextStatus2.Topology.knownShift),
+            "GDHUB_PROBE_ROOT": UInt64(DextStatus2.Probe.root), "GDHUB_PROBE_UC": UInt64(DextStatus2.Probe.uc),
+            "GDHUB_PROBE_PAD": UInt64(DextStatus2.Probe.pad), "GDHUB_PROBE_VALID": UInt64(DextStatus2.Probe.valid),
         ]
     }
 

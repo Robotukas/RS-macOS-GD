@@ -449,6 +449,41 @@ final class DextCoreRegistryTests: XCTestCase {
         assertBalanced()
     }
 
+    // MARK: topology probe
+
+    func testTopologyFlagsFromQueueIndices() {
+        XCTAssertEqual(gdhr_topology(reg), 0, "nothing known before any Start")
+        gdhr_set_queue_idx(reg, Int32(GDHR_Q_ROOT), 1)
+        XCTAssertEqual(gdhr_topology(reg), 0, "one side is not enough")
+        gdhr_set_queue_idx(reg, Int32(GDHR_Q_UC), 1)               // the user client shares the root's queue object
+        XCTAssertEqual(gdhr_topology(reg), 0x01 | 0x10)
+        gdhr_set_queue_idx(reg, Int32(GDHR_Q_PAD), 2)              // the pad has its own
+        XCTAssertEqual(gdhr_topology(reg), 0x01 | 0x10 | 0x20 | 0x40, "pad != root, pad != uc, uc == root, all known")
+        gdhr_set_queue_idx(reg, Int32(GDHR_Q_UC), 3)               // a new user client with its own queue
+        XCTAssertEqual(gdhr_topology(reg), 0x70)
+        gdhr_set_queue_idx(reg, Int32(GDHR_Q_PAD), 1)
+        XCTAssertEqual(gdhr_topology(reg), 0x70 | 0x02, "pad == root")
+        gdhr_set_queue_idx(reg, 7, 9); gdhr_set_queue_idx(reg, -1, 9)   // out of range: ignored
+        XCTAssertEqual(gdhr_queue_idx(reg, 7), 0)
+        var s = gdhr_snap(); gdhr_snapshot(reg, &s)
+        XCTAssertEqual(s.topology, 0x72)
+    }
+
+    func testProbeIsRecordedOnceAndTheFirstWins() {
+        XCTAssertEqual(gdhr_probe_get(reg, Int32(GDHR_PROBE_EXT)), 0)
+        XCTAssertEqual(gdhr_probe_once(reg, Int32(GDHR_PROBE_EXT), 0x01), 1)
+        XCTAssertEqual(gdhr_probe_once(reg, Int32(GDHR_PROBE_EXT), 0x06), 0, "a second recording changes nothing")
+        XCTAssertEqual(gdhr_probe_get(reg, Int32(GDHR_PROBE_EXT)), 0x81, "bits plus the VALID flag; a result of 0 bits is still recorded")
+        XCTAssertEqual(gdhr_probe_once(reg, Int32(GDHR_PROBE_SUBMIT), 0), 1)
+        XCTAssertEqual(gdhr_probe_get(reg, Int32(GDHR_PROBE_SUBMIT)), 0x80)
+        XCTAssertEqual(gdhr_probe_once(reg, 2, 1), 0)
+        let r = UnsafeMutablePointer<gdhr>.allocate(capacity: 1); r.initialize(to: gdhr()); defer { r.deallocate() }
+        let wins = Counter()
+        gdhr_ensure(r, fakeOps)
+        DispatchQueue.concurrentPerform(iterations: 16) { i in if gdhr_probe_once(r, 0, UInt32(i & 7)) == 1 { wins.add() } }
+        XCTAssertEqual(wins.value, 1, "exactly one of 16 racing recorders wins")
+    }
+
     // MARK: root
 
     func testRootRegistrationReplacesAndIgnoresStaleUnregister() {

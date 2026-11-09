@@ -73,12 +73,76 @@ void GDHubReleaseOwner(GDHubVirtualHIDUserClient * uc)
     }
 }
 
-void GDHubSyncViolation(const char * what, uint32_t callerRank, uint32_t targetRank)
+// A GDH_SYNC call whose target queue was already on this thread's queue stack: an inline nested call, counted in
+// syncInline and logged once per call site (`seenOnce` is that call site's static flag).
+void GDHubSyncInline(const char * what, uint32_t * seenOnce)
+{
+    gdhr_ctr_add(GDHubReg(), GDHR_CTR_SYNC_INLINE, 1);
+    if (__atomic_exchange_n(seenOnce, 1u, __ATOMIC_RELAXED) == 0) GDLog("sync inline (first at this site): %{public}s runs on the target's queue", what);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Topology probe. Queue objects are identified by a process-local index in first-seen order (1..14; 15 = table full); the
+// pointers are used for equality only, never dereferenced here.
+
+uint32_t GDHubQueueIndex(IODispatchQueue * q)
+{
+    static void * sSeen[14];
+    if (!q) return 0;
+    for (uint32_t i = 0; i < 14; i++) {
+        void * cur = __atomic_load_n(&sSeen[i], __ATOMIC_ACQUIRE);
+        if (cur == nullptr) {
+            void * expected = nullptr;
+            if (__atomic_compare_exchange_n(&sSeen[i], &expected, (void *)q, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return i + 1;
+            cur = expected;
+        }
+        if (cur == (void *)q) return i + 1;
+    }
+    return 15;
+}
+
+// OnQueue() of the root, user-client and pad queues on this thread right now. `own` is the caller's own queue (its object
+// may not be registered yet); the others come from the registry as +1 copies.
+static uint32_t probeBits(int ownWhich, IODispatchQueue * ownQueue)
+{
+    uint32_t bits = 0;
+    IODispatchQueue * q;
+    GDHubVirtualHID * root = ownWhich == GDHR_Q_ROOT ? nullptr : GDHubCopyRoot();
+    q = ownWhich == GDHR_Q_ROOT ? ownQueue : GDHubRootQueue(root);
+    if (q && q->OnQueue()) bits |= GDHR_PROBE_ROOT;
+    if (root) root->release();
+    GDHubVirtualHIDUserClient * uc = ownWhich == GDHR_Q_UC ? nullptr : GDHubCopyOwner(nullptr);
+    q = ownWhich == GDHR_Q_UC ? ownQueue : GDHubUCQueue(uc);
+    if (q && q->OnQueue()) bits |= GDHR_PROBE_UC;
+    if (uc) uc->release();
+    GDHubVirtualPad * pad = ownWhich == GDHR_Q_PAD ? nullptr : GDHubCopyPad();
+    q = ownWhich == GDHR_Q_PAD ? ownQueue : GDHubPadQueue(pad);
+    if (q && q->OnQueue()) bits |= GDHR_PROBE_PAD;
+    if (pad) pad->release();
+    return bits;
+}
+
+static void probeLog(const char * where, uint32_t bits)
 {
     gdhr * r = GDHubReg();
-    gdhr_ctr_add(r, GDHR_CTR_SYNC_VIOLATIONS, 1);
-    uint64_t n = gdhr_ctr_get(r, GDHR_CTR_SYNC_VIOLATIONS);
-    if (n <= 8) GDLog("SYNC VIOLATION #%llu: %{public}s from rank %u to rank %u re-enters a queue we are on", n, what, callerRank, targetRank);
+    // Worst case 134 characters by the generic estimator (a string counted as 24, six %u at 10); about 71 in practice.
+    GDLog("topo %{public}s: rootq=%u ucq=%u padq=%u onq root/uc/pad=%u/%u/%u", where, gdhr_queue_idx(r, GDHR_Q_ROOT),
+          gdhr_queue_idx(r, GDHR_Q_UC), gdhr_queue_idx(r, GDHR_Q_PAD), (bits & GDHR_PROBE_ROOT) != 0,
+          (bits & GDHR_PROBE_UC) != 0, (bits & GDHR_PROBE_PAD) != 0);
+}
+
+void GDHubProbeStart(const char * where, int which, IODispatchQueue * ownQueue)
+{
+    gdhr_set_queue_idx(GDHubReg(), which, GDHubQueueIndex(ownQueue));
+    probeLog(where, probeBits(which, ownQueue));
+}
+
+void GDHubProbeFirst(int probe, const char * where, int which, IODispatchQueue * ownQueue)
+{
+    gdhr * r = GDHubReg();
+    if (gdhr_probe_get(r, probe) != 0) return;                         // the only per-call cost: one relaxed load
+    uint32_t bits = probeBits(which, ownQueue);
+    if (gdhr_probe_once(r, probe, bits)) probeLog(where, bits);
 }
 
 size_t GDHubBuildStatus2(uint8_t * buf, size_t cap)

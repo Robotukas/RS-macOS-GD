@@ -323,6 +323,39 @@ uint64_t gdhr_ctr_get(const gdhr *r, int id)
     return (r && id >= 0 && id < GDHR_CTR_COUNT) ? __atomic_load_n(&r->counters[id], __ATOMIC_RELAXED) : 0;
 }
 
+void gdhr_set_queue_idx(gdhr *r, int which, uint32_t idx)
+{
+    if (r && which >= 0 && which < 3) __atomic_store_n(&r->queueIdx[which], idx, __ATOMIC_RELAXED);
+}
+
+uint32_t gdhr_queue_idx(const gdhr *r, int which)
+{
+    return (r && which >= 0 && which < 3) ? __atomic_load_n(&r->queueIdx[which], __ATOMIC_RELAXED) : 0;
+}
+
+uint32_t gdhr_topology(const gdhr *r)
+{
+    uint32_t root = gdhr_queue_idx(r, GDHR_Q_ROOT), uc = gdhr_queue_idx(r, GDHR_Q_UC), pad = gdhr_queue_idx(r, GDHR_Q_PAD);
+    uint32_t t = 0;
+    if (uc && root)  { t |= GDHR_TOPO_UC_EQ_ROOT << GDHR_TOPO_KNOWN_SHIFT;  if (uc == root)  t |= GDHR_TOPO_UC_EQ_ROOT; }
+    if (pad && root) { t |= GDHR_TOPO_PAD_EQ_ROOT << GDHR_TOPO_KNOWN_SHIFT; if (pad == root) t |= GDHR_TOPO_PAD_EQ_ROOT; }
+    if (pad && uc)   { t |= GDHR_TOPO_PAD_EQ_UC << GDHR_TOPO_KNOWN_SHIFT;   if (pad == uc)   t |= GDHR_TOPO_PAD_EQ_UC; }
+    return t;
+}
+
+uint32_t gdhr_probe_get(const gdhr *r, int which)
+{
+    return (r && which >= 0 && which < 2) ? __atomic_load_n(&r->probe[which], __ATOMIC_RELAXED) : 0;
+}
+
+int gdhr_probe_once(gdhr *r, int which, uint32_t bits)
+{
+    if (!r || which < 0 || which > 1) return 0;
+    uint32_t expected = 0;
+    return __atomic_compare_exchange_n(&r->probe[which], &expected, (bits & 0x7Fu) | GDHR_PROBE_VALID, 0,
+                                       __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
 void gdhr_snapshot(gdhr *r, gdhr_snap *out)
 {
     int i;
@@ -332,6 +365,9 @@ void gdhr_snapshot(gdhr *r, gdhr_snap *out)
     out->build = __atomic_load_n(&r->build, __ATOMIC_RELAXED);
     out->pid = __atomic_load_n(&r->pid, __ATOMIC_RELAXED);
     out->desiredState = gdhr_desired_state(r);
+    out->topology = gdhr_topology(r);
+    out->probeExt = gdhr_probe_get(r, GDHR_PROBE_EXT);
+    out->probePad = gdhr_probe_get(r, GDHR_PROBE_SUBMIT);
     out->padSource = gdhr_pad_source(r);
     LOCK(r);
     out->padState = r->padState;

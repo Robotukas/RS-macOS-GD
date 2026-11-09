@@ -80,7 +80,7 @@
    maximum, the smallest bucket edge is 1 us; the mean is exact). */
 #define GDHUB_ST2_VERSION               1
 #define GDHUB_ST2_MAX_SIZE              512
-#define GDHUB_ST2_SIZE                  160
+#define GDHUB_ST2_SIZE                  172
 #define GDHUB_ST2_OFF_VERSION           0      /* u16 */
 #define GDHUB_ST2_OFF_SIZE              2      /* u16 */
 #define GDHUB_ST2_OFF_BUILD             4      /* u32 */
@@ -113,5 +113,18 @@
 #define GDHUB_ST2_OFF_HR_P99_NS         148
 #define GDHUB_ST2_OFF_HR_MAX_NS         152
 #define GDHUB_ST2_OFF_HR_MEAN_NS        156
+#define GDHUB_ST2_OFF_SYNC_INLINE       160    /* u64, GDH_SYNC calls whose target queue was already on this thread's queue stack */
+#define GDHUB_ST2_OFF_TOPOLOGY          168    /* u8, GDHUB_TOPO_*: which of the root, user client and pad share a queue object */
+#define GDHUB_ST2_OFF_PROBE_EXT         169    /* u8, GDHUB_PROBE_*: OnQueue() of the root/UC/pad queue at the first ExternalMethod */
+#define GDHUB_ST2_OFF_PROBE_SUBMIT      170    /* u8, the same at the first submitInput */
+/* 171 reserved. Topology: low nibble = the two queues are the same object, high nibble = both were known (set at Start). */
+#define GDHUB_TOPO_UC_EQ_ROOT           0x01
+#define GDHUB_TOPO_PAD_EQ_ROOT          0x02
+#define GDHUB_TOPO_PAD_EQ_UC            0x04
+#define GDHUB_TOPO_KNOWN_SHIFT          4
+#define GDHUB_PROBE_ROOT                0x01
+#define GDHUB_PROBE_UC                  0x02
+#define GDHUB_PROBE_PAD                 0x04
+#define GDHUB_PROBE_VALID               0x80
 /* hop = pad submitInput entry minus the user client's stamp before the call; hr = handleReport duration. */
 #endif
