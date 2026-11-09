@@ -21,8 +21,9 @@ final class DextClientCapabilityTests: XCTestCase {
             case DextProtocol.Selector.getStatus:
                 return DextRawResult(kr: KERN_SUCCESS, scalars: [1, 100, 0, 0, 0])
             case DextProtocol.Selector.setForwarding where hasRootPad:
-                return scalarsIn[0] == 0 && scalarsIn[1] == 0 ? DextRawResult(kr: KERN_SUCCESS, scalars: [0, 0, 1, 0])
-                                                              : DextRawResult(kr: DextProtocol.krUnsupported)
+                let hasTap = capabilities & DextProtocol.Capability.tap != 0
+                let ok = scalarsIn[1] == 0 && (scalarsIn[0] == 0 || (scalarsIn[0] == 1 && hasTap))     // build 19: INERT only
+                return ok ? DextRawResult(kr: KERN_SUCCESS, scalars: [0, hasTap ? 1 : 0, 1, 0]) : DextRawResult(kr: DextProtocol.krUnsupported)
             case DextProtocol.Selector.getStatus2 where hasRootPad:
                 return DextRawResult(kr: KERN_SUCCESS, bytes: Array(status2Bytes.prefix(structCap)))
             default:
@@ -43,7 +44,7 @@ final class DextClientCapabilityTests: XCTestCase {
         var hop = gdh_summary(count: 5, p50Ns: 25_000, p99Ns: 50_000, maxNs: 60_000, meanNs: 30_000)
         var hr = gdh_summary(count: 5, p50Ns: 50_000, p99Ns: 75_000, maxNs: 80_000, meanNs: 55_000)
         var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, &hop, &hr, 2)
+        let n = gdh_status2_pack(&buf, 512, &s, &hop, &hr, 2, nil)
         return Array(buf.prefix(n))
     }
 
@@ -133,5 +134,74 @@ final class DextClientCapabilityTests: XCTestCase {
             XCTAssertEqual(c.setForwardingInert().kr, DextProtocol.krNotReady)
             XCTAssertEqual(c.capabilities, 0)
         }
+    }
+
+    // MARK: T4: CAP_TAP, COUNT, unsupervised clients
+
+    private let build19 = DextProtocol.Capability.pad | DextProtocol.Capability.rootPad          // 257: what build 19 reports
+    private let build20 = DextProtocol.Capability.pad | DextProtocol.Capability.rootPad | DextProtocol.Capability.tap
+
+    func testNewAppWithBuild19DextNeverSendsCount() {
+        let fake = FakeDext(capabilities: build19)
+        let c = client(fake)
+        queue.sync {
+            XCTAssertFalse(c.hasTap); XCTAssertTrue(c.hasRootPad)
+            let r = c.setForwarding(DextProtocol.Forwarding.count)
+            XCTAssertEqual(r.kr, DextProtocol.krUnsupported); XCTAssertNil(r.result)
+            XCTAssertTrue(fake.calls.isEmpty, "COUNT is not sent without CAP_TAP")
+            XCTAssertEqual(c.setForwarding(DextProtocol.Forwarding.inert).kr, KERN_SUCCESS, "INERT still works on build 19 (selector 9 exists)")
+            XCTAssertEqual(fake.calls.last?.scalarsIn, [0, 0, 0])
+            XCTAssertEqual(c.setForwarding(2).kr, DextProtocol.krUnsupported, "SHADOW does not exist yet")
+            XCTAssertEqual(fake.calls.count, 1)
+        }
+    }
+
+    func testNewAppWithTapDextSendsCountAndInert() {
+        let fake = FakeDext(capabilities: build20)
+        let c = client(fake)
+        queue.sync {
+            XCTAssertTrue(c.hasTap)
+            let r = c.setForwarding(DextProtocol.Forwarding.count)
+            XCTAssertEqual(r.kr, KERN_SUCCESS)
+            XCTAssertEqual(fake.calls.last?.scalarsIn, [1, 0, 0], "state COUNT, no flags, argMs 0")
+            XCTAssertEqual(fake.calls.last?.outCount, 4)
+            XCTAssertEqual(c.setForwarding(3).kr, DextProtocol.krUnsupported, "LIVE is not sent")
+            XCTAssertEqual(fake.calls.count, 1)
+        }
+    }
+
+    func testUnsupervisedClientSendsInertAfterHelloOnlyToATapDext() {
+        let tapDext = FakeDext(capabilities: build20)
+        let unsup = DextClient(queue: queue, supervised: false)
+        queue.sync { unsup.attachFakeDext(capabilities: tapDext.capabilities, call: tapDext.call); unsup.sendInitialForwarding() }
+        XCTAssertEqual(tapDext.calls.map(\.selector), [9]); XCTAssertEqual(tapDext.calls.first?.scalarsIn, [0, 0, 0], "INERT")
+
+        let sup = DextClient(queue: queue, supervised: true)
+        let tapDext2 = FakeDext(capabilities: build20)
+        queue.sync { sup.attachFakeDext(capabilities: tapDext2.capabilities, call: tapDext2.call); sup.sendInitialForwarding() }
+        XCTAssertTrue(tapDext2.calls.isEmpty, "the engine's TapSupervisor decides, not the client")
+
+        let old = FakeDext(capabilities: build19)
+        let unsup2 = DextClient(queue: queue)
+        queue.sync { unsup2.attachFakeDext(capabilities: old.capabilities, call: old.call); unsup2.sendInitialForwarding() }
+        XCTAssertTrue(old.calls.isEmpty, "a build-19 dext has no tap: nothing is sent")
+        XCTAssertFalse(DextClient(queue: queue).supervised, "unsupervised is the default")
+    }
+
+    /// Old app (build 19) against a T4 dext: it calls only selectors 0-9 with INERT and reads the first 172 status2 bytes,
+    /// and ignores the capability bit it does not know. Everything it relies on must be where it was.
+    func testBuild19AppContractsAreUnchanged() {
+        typealias O = DextStatus2.Offset
+        XCTAssertEqual([O.version, O.size, O.build, O.nonce, O.rootPid, O.desiredState, O.padSource, O.padLive, O.ownerPresent,
+                        O.ucPosts, O.ucRejected, O.neutralPosts, O.postErrors, O.syncViolations, O.padCreates, O.padDestroys,
+                        O.createFails, O.outputsSeen, O.outputsNoOwner, O.createEarly, O.padSpecCRC, O.meterWindows],
+                       [0, 2, 4, 8, 16, 20, 21, 22, 23, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 116])
+        XCTAssertEqual([O.hopCount, O.hopP50, O.hopP99, O.hopMax, O.hopMean, O.hrCount, O.hrP50, O.hrP99, O.hrMax, O.hrMean,
+                        O.syncInline, O.topology, O.probeExt, O.probeSubmit], [120, 124, 128, 132, 136, 140, 144, 148, 152, 156, 160, 168, 169, 170])
+        XCTAssertEqual(DextProtocol.Capability.pad | DextProtocol.Capability.rootPad, 257)
+        XCTAssertEqual(DextProtocol.Capability.tap, 0x200)
+        XCTAssertEqual(DextProtocol.Selector.setForwarding, 9); XCTAssertEqual(DextProtocol.Selector.getStatus2, 11)
+        XCTAssertEqual(DextProtocol.Forwarding.inert, 0, "an old app's INERT request is still INERT")
+        XCTAssertEqual(DextProtocol.version, 1)
     }
 }

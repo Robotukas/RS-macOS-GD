@@ -22,6 +22,33 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>IOKitPersonalities</key>
 	<dict>
+		<key>GDHubReceiverTap</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleIdentifierKernel</key>
+			<string>com.apple.kpi.iokit</string>
+			<key>IOClass</key>
+			<string>IOUserService</string>
+			<key>IOProbeScore</key>
+			<integer>1000</integer>
+			<key>IOProviderClass</key>
+			<string>IOHIDInterface</string>
+			<key>IOUserClass</key>
+			<string>GDHubReceiverTap</string>
+			<key>IOUserServerName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>IOUserServerOneProcess</key>
+			<true/>
+			<key>PrimaryUsage</key>
+			<integer>1</integer>
+			<key>PrimaryUsagePage</key>
+			<integer>65368</integer>
+			<key>ProductID</key>
+			<integer>14856</integer>
+			<key>VendorID</key>
+			<integer>6940</integer>
+		</dict>
 		<key>GDHubVirtualHID</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
@@ -47,6 +74,8 @@
 			<string>GDHubVirtualHID</string>
 			<key>IOUserServerName</key>
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>IOUserServerOneProcess</key>
+			<true/>
 			<key>UserClientProperties</key>
 			<dict>
 				<key>IOClass</key>

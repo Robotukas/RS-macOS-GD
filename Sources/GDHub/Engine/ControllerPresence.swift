@@ -15,6 +15,8 @@ final class ControllerPresence: @unchecked Sendable {
 
     /// Called on `queue` whenever `status` changes.
     var onChange: ((ControllerStatus) -> Void)?
+    /// Called on `queue` when the first matching interface appears (true) and when the last one goes away (false).
+    var onInterface: ((Bool) -> Void)?
 
     init(queue: DispatchQueue? = nil, clock: @escaping () -> UInt64 = LatencyMeter.nowNs) {
         self.queue = queue
@@ -30,12 +32,15 @@ final class ControllerPresence: @unchecked Sendable {
     /// A matching HID interface appeared.
     func interfaceUp() {
         interfaces += 1
+        if interfaces == 1 { onInterface?(true) }
         if status == .disconnected || status == .receiverIdle { set(.asleep) }
     }
 
     /// A matching HID interface went away. With the last one gone the controller is disconnected.
     func interfaceDown() {
+        let before = interfaces
         interfaces = max(interfaces - 1, 0)
+        if before > 0, interfaces == 0 { onInterface?(false) }
         if interfaces == 0 {
             lastReportAt = nil
             set(.disconnected)

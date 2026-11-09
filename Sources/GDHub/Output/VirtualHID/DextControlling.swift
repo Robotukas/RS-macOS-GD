@@ -22,6 +22,15 @@ protocol DextStatus2Source: AnyObject {
     func status2() -> DextStatus2?
 }
 
+/// T4: what the engine's `TapSupervisor` needs from the connection.
+protocol TapControlling: AnyObject {
+    /// The connected dext has a receiver tap (`Capability.tap`).
+    var hasTap: Bool { get }
+    func setForwarding(_ state: UInt64) -> (kr: kern_return_t, result: DextForwardingResult?)
+    func status2() -> DextStatus2?
+}
+extension DextClient: TapControlling {}
+
 /// Everything a process needs from the dext connection.
 typealias DextBackend = DextControlling & PadTransport & DextStatusSource
 

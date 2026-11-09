@@ -160,6 +160,13 @@ Expected `plutil -p Dext/GDHubVirtualHID/Info.plist` (after build-setting expans
       "GDHubKeyboardProperties" => { "IOClass" => "AppleUserHIDDevice", "IOUserClass" => "GDHubVirtualKeyboard" }
       "GDHubPointerProperties"  => { "IOClass" => "AppleUserHIDDevice", "IOUserClass" => "GDHubVirtualPointer" }
     }
+    "IOUserServerOneProcess"   => true          // T4
+  }
+  "GDHubReceiverTap" => {                       // T4: all five match keys are integers; no IOMatchCategory, no Transport
+    "CFBundleIdentifier" => "com.interlinked.gdhub.VirtualHID", "CFBundleIdentifierKernel" => "com.apple.kpi.iokit"
+    "IOClass" => "IOUserService", "IOProviderClass" => "IOHIDInterface", "IOUserClass" => "GDHubReceiverTap"
+    "IOUserServerName" => "com.interlinked.gdhub.VirtualHID", "IOUserServerOneProcess" => true
+    "VendorID" => 6940, "ProductID" => 14856, "PrimaryUsagePage" => 65368, "PrimaryUsage" => 1, "IOProbeScore" => 1000
   }
 }
 "OSBundleUsageDescription" => "Publishes GDHub's virtual game controller, keyboard and pointer."
@@ -181,7 +188,7 @@ Expected `plutil -p Dext/GDHubVirtualHID/Info.plist` (after build-setting expans
 | `com.apple.developer.driverkit` | `true` | DriverKit (development) (`DRIVERKIT_PUBLIC`, `alwaysEnableForSupportedProductTypes`) | yes |
 | `com.apple.developer.driverkit.family.hid.device` | `true` | DriverKit Family HID Device (development) | yes |
 | `com.apple.developer.driverkit.allow-any-userclient-access` | `true` | DriverKit Allow Any UserClient (development) | yes |
-| *(fallback only)* `com.apple.developer.driverkit.transport.hid` | `true` | DriverKit Transport HID (development) | yes |
+| `com.apple.developer.driverkit.transport.hid` | `true` | DriverKit Transport HID (development). **From T4 it is required**: the receiver tap opens an `IOHIDInterface`. The development profile for this App ID lists it (checked by `build-xcode.sh`) | yes |
 
 - **Never put these in the dext:** `com.apple.developer.hid.virtual.device` ("should never be included in a DEXT", forum 843327), `com.apple.developer.driverkit.family.hid.virtual.device` (defunct), `com.apple.developer.driverkit.userclient-access` (restricted).
 - **Why `family.hid.device`:** DTS says AppleUserHIDDevice needs it, and "Including any other HID entitlement is unnecessary" (843327). Razer ships with `transport.hid` and no `family.hid.device`. `transport.hid` is therefore the documented fallback (§8).
@@ -403,9 +410,9 @@ struct GDHubVirtualHIDUserClient_IVars {
 | 6 | `registerOutput` | — | — | — | 1 0 0 0 | Retain `args->completion` (it is retained only during the call; `IOUserClient.iig:96-98`). Replaces any earlier one. Returns at once | — |
 | 7 | `getStatus` | — | — | `[deviceMask, postCount, watchdogFires, outputCount, outputDrops]` | 0 0 0 5 | Counters, for the UI and the rate check | — |
 | 8 | `devTerminate` | — | — | — | 0 0 0 0 | DEBUG-only (`GDHUB_DEV_TERMINATE`). T3 order: `DestroyPad`, then `Terminate(0)` on the root | `NotReady` |
-| 9 | `setForwarding` (T3, `CAP_ROOT_PAD`) | `[state, flags, argMs]` | — | `[appliedState, tapPresent, padSource, lastError]` | 0 3 0 4 | INERT (0) only, `flags == 0`. Anything else: `kIOReturnUnsupported`. The receiver tap arrives in T4 | `Unsupported` |
+| 9 | `setForwarding` (T3; COUNT needs `CAP_TAP`, T4) | `[state, flags, argMs]` | — | `[appliedState, tapPresent, padSource, lastError]` | 0 3 0 4 | INERT (0) or COUNT (1), `flags == 0` (`gdh_fwd_validate`). Anything else: `kIOReturnUnsupported`. The state is stored in the registry and the tap is poked with `DispatchAsync` onto its own queue; the reply does not wait for the interface to open or close, so `appliedState` is what had been applied so far (status2 shows the result) | `Unsupported` |
 | 10 | reserved (T5, mapping blob) | — | — | — | VAR on every column | Answers `kIOReturnUnsupported` | `Unsupported` |
-| 11 | `getStatus2` (T3, `CAP_ROOT_PAD`) | — | — | — | 0 0 0 0 `sOut=VAR` | Structure output `GDHubStatus2` (160 bytes in T3, maximum 512): identity, counters, and the last 10 s window of `hop` and `hr`. Returns `min(size, caller's maximum)` bytes. `GDHubStatus2` is 160 bytes in T3 | `BadArgument` (maximum below 8 bytes) |
+| 11 | `getStatus2` (T3, `CAP_ROOT_PAD`) | — | — | — | 0 0 0 0 `sOut=VAR` | Structure output `GDHubStatus2` (276 bytes from T4, maximum 512): identity, counters, the last 10 s window of `hop` and `hr`, the topology probe, and the tap fields (T4). Returns `min(size, caller's maximum)` bytes. A reader that knows an older layout uses the fields that fit | `BadArgument` (maximum below 8 bytes) |
 
 - **Gate.** `ExternalMethod` first rejects `selector >= GDHUB_SEL_COUNT` (12 from T3; 9 in build 17) with `BadArgument`. For any selector except 0 it then returns `NotPermitted` unless `authorized`, and `Unsupported` unless `protocolOK`.
 - **Table layout.** Write `sMethods[]` positionally, in selector order, with a comment per row. C++ does not allow `[n] =` designators.
@@ -413,6 +420,7 @@ struct GDHubVirtualHIDUserClient_IVars {
 
 **T3 additions to the protocol (additive; `GDHUB_PROTOCOL_VERSION` stays 1).**
 - `GDHUB_SPEC_VERSION 1`: the spec validator checks this value at spec offset 4 instead of the protocol version. Both are 1, so the bytes did not change.
+- T4 adds `GDHUB_CAP_TAP (1u << 9)` (absent in a `GDHUB_TAP_DECLINE` build), `GDHUB_FWD_COUNT 1` and the tap fields of status2 (offsets 172-275, appended; byte 171 stays reserved).
 - `GDHUB_CAP_ROOT_PAD (1u << 8)`, `GDHUB_SEL_SET_FORWARDING 9`, `GDHUB_SEL_GET_STATUS2 11`, `GDHUB_SEL_COUNT 12`, `GDHUB_FWD_INERT 0`, `GDHUB_PADSRC_NONE/UC/TAP`, and the `GDHUB_ST2_*` offsets of `GDHubStatus2`.
 - **The additive rule** (written into the header): selectors are only added, each new one behind a capability bit; blobs carry their own versions; `GDHubStatus2` only grows by appending fields, and a reader uses `min(size field, bytes received)`.
 - **Compatibility.** An old app never calls 9 or 11 and ignores the new capability bit. A new app calls 9 and 11 only when `hello` reported `CAP_ROOT_PAD`; build 17 answers any selector above 8 with `BadArgument`, and the app would not send them.
@@ -562,7 +570,7 @@ getReport: if (action) CompleteReport(action, kIOReturnUnsupported, 0); return k
 2. **`destroyDevice`** calls `root->DestroyPad`, which calls `Terminate(0)`. That is asynchronous and calls `Stop` later (`IOService.iig:324-326`); the registry slot is free at once. The app waits **300 ms** before creating the next identity, so hosts never see two pads. A late `Stop` of the old pad cannot disturb a new one: it compares the pad pointer.
 3. **`free()`** of the user client: `IOLockFree`, release `timer`, `timerAction`, `queue`, specs and buffers, then `IOSafeDeleteNULL(ivars, …)`.
 4. **Driver update:** `DriverManager` destroys every device and closes the connection **before** it submits a replacement activation (§5.1). Whether replacement completes in place while a client is open is untested.
-5. **Root `Stop`** (and `devTerminate`, which destroys the pad first and then terminates the root) also terminate a pad that is still registered.
+5. **Root `Stop`** (and `devTerminate`) also terminate a pad that is still registered. T4 `devTerminate` order: set `terminating` in the registry, destroy the pad, `Terminate(0)` on the tap (its `Stop` closes the interface), then `Terminate(0)` on the root. With `IOUserServerOneProcess` the old process survives a replacement unless every service of it ends (T0), so the tap must go too; the `terminating` flag makes a tap that the kernel re-matches in the meantime decline its Start, so nothing is left to keep the process alive. Root `Stop` also terminates the tap (belt and braces).
 
 ### 3.10 Watchdog (neutral report)
 
@@ -640,13 +648,14 @@ static bool callerIsGDHub(GDHubVirtualHIDUserClient * self) {
 - *Documented:* every IOService gets its own default queue (`IOService.iig:171-175, 195-203`). `ExternalMethod` runs on a queue named `IOUserClientQueueExternalMethod` if one was set, else on "the default queue for the IOUserClient object" (`IOUserClient.iig:183-189, 203-209`). A queue runs one block at a time, and `OnQueue()` is true on the queue we run on and on any queue that invoked a second one (`IODispatchQueue.iig:99-105`). No header says that a service created with `Create` shares its creator's queue.
 - *Generated code:* it names queues only in the class description (the user client declares `IOUserClientQueueExternalMethod`, the root and pad none: `GDHubVirtualHIDUserClient.iig.cpp:40-41, 70-71`). The choice of queue happens in the DriverKit runtime library, which is not in the SDK as source.
 - *Measured (build 18):* inside the user client's `ExternalMethod`, `rootQueue->OnQueue()` was TRUE for both `CreatePad` and `DestroyPad`, and both calls completed at once. At the `postNeutralFrom` call of the same `destroyDevice` no violation was logged, which is consistent with the pad's queue not being on the stack (or with its queue pointer being null, which the probe will show).
+- *Resolved on build 19 (takeover plan, "T3 results"):* root, user client and pad each have their own default queue; `ExternalMethod` runs on the **root's** queue (the provider's), the user client's own queue only runs the watchdog timer, and a call from the root's queue to `CreatePad`/`DestroyPad` is an inline nested call. The text below is kept as it was written before that measurement; where it says "user client queue" for external methods, read "root queue". The tap (T4) has its own queue as well.
 - *So either* the user client uses the root's default queue object, *or* its methods are invoked nested inside the root's queue, *or* something else. The documents cannot tell these apart. The next build logs one `topo …` line at each Start and at the first `ExternalMethod` and `submitInput`, and puts three equality flags and two `OnQueue()` bytes into status2 (`topology`, `probeExt`, `probePad`). Until that is read, nothing in this section may be taken as fact beyond the list above.
 
 | Object | Rank | Methods that run "on its queue" (documented) |
 |---|---|---|
 | user client | 1 | `ExternalMethod` (selectors 0-11), `WatchdogFired`, `Stop` |
 | root | 2 | `Start`, `Stop`, `NewUserClient`, `CreatePad`, `DestroyPad` |
-| tap | 3 | (T4) |
+| tap | 3 | `Start`, `Stop`, `SetPowerState`, `TapTick` (50 ms), `ReportAvailable`, the `GDHubTapApply` pokes (T4, §3.14) |
 | pad | 4 | `handleStart`, `Stop`, `submitInput`, `postNeutralFrom`, `setReport`, `getReport`, the only calls of `handleReport` |
 
 **What does not depend on the topology.**
@@ -668,6 +677,43 @@ static bool callerIsGDHub(GDHubVirtualHIDUserClient * self) {
 - the pad starts only while the root is creating it, so no other path can start a pad;
 - a late `Stop` of an old pad cannot clear a newer pad;
 - an early `Stop` (root, pad) is safe: unregister/stopped compare pointers and ignore strangers.
+
+### 3.14 The receiver tap (T4)
+
+`GDHubReceiverTap` is a plain `IOService` that matches interface 3's `IOHIDInterface` only (vendor 6940, product 14856 = 3A08, page 65368, usage 1; `IOProbeScore 1000`, about 8200 in total against Apple's 1201) and runs in the root's process (`IOUserServerOneProcess` on both personalities). It does **nothing per frame unless an owner asked for COUNT in this process**, and in T4 it translates and posts nothing. Plan sections 3.2, 4.5, 6.1, 6.4, 6.5 are the specification; this section is what the code does.
+
+**States and transitions** (all applied on the tap's own queue).
+
+| From | To | Trigger | What happens |
+|---|---|---|---|
+| (process start) | INERT | any relaunch | `desiredState` is zero in a new process. The tap attaches, the interface is **not** opened |
+| INERT | COUNT | owner's `setForwarding(COUNT)` (root queue stores the state **only if the caller is the current owner**, under the registry lock, and pokes) or the tap's timer | pool of 8 × 64 B buffers created once, each `AddReportToPool`, then `Open(this, 0, action)`. On error: `openFailures++`, `lastError`, retry no sooner than 500 ms later, log rate-limited |
+| COUNT | INERT | `setForwarding(INERT)`, or the owner went away (user client `Stop` resets the state inside the registry's critical section and pokes), or tap `Stop` | `Close(this, 0)`, `opened = 0` (even if `Close` fails: counted in `closeFailures`, the next Open is still attempted), the whole pool released, published to status2 |
+| COUNT | COUNT (paused) | `SetPowerState(Off)` | `powered = 0`; frames are counted as `framesIgnored` (the buffer is still re-added). `On` resumes. The interface is not closed: the receiver re-enumerates on wake and a new tap instance starts |
+| (new instance) | INERT or COUNT | Start | `gdhr_register_tap` reads `desiredState` in the same critical section. Normally INERT; after a re-enumeration inside the same process it finds COUNT still asked for |
+| any | gone | `Stop` | order: `stopping` (atomic) → `Close` → `gdhr_unregister_tap` → timer cancel → `Stop(SUPERDISPATCH)` from the cancel handler |
+
+**The exact condition under which `Open` is called** (`gdh_tap_decide`, `Core/GDHubRegistryCore.c`, called from `GDHubTapApply`, the only caller): `desiredState == COUNT` (only selector 9 sets it, owner loss clears it, a new process starts at INERT) **and** the tap is not stopping **and** `powered` **and** the interface is not already open **and** the retry time has passed. A unit test enumerates all 64 input combinations: exactly one opens.
+
+**Control path.** Selector 9 runs on the root's queue: it stores `desiredState` (atomic) and calls `GDHubPokeTap`, which takes +1 copies of the tap and its queue from the registry and `DispatchAsync`es (`IODispatchQueue.iig:132-133`, never waits) a block that runs `GDHubTapApply` on the tap's queue and releases the tap. The tap's timer runs the same function as a backstop for a lost poke and drives the Open retry. It is adaptive: 50 ms while desired != applied, an Open retry is pending or the dext is terminating, otherwise 1 s (no more than one wakeup per second when INERT and settled). status2 tells the paths apart: `pokesRun` counts pokes that ran on the tap's queue and `tickApplies` counts the Open/Close attempts the timer made.
+
+**Waits-for graph, with the tap.** Root queue → pad queue (`submitInput`, `postNeutralFrom`) and root queue → registry lock (leaf). Tap queue → kernel (`Open`, `Close`, `AddReportToPool`, `Create` of buffers) and registry lock (leaf). Nothing calls the tap synchronously (pokes are asynchronous; the kernel's `Start`, `Stop`, `SetPowerState` and `ReportAvailable` are kernel callbacks onto its queue; `GDHubTapReadMeter` reads a seqlock and enters no queue). The tap calls no GDHub object. The tap node has no outgoing edge to any GDHub queue and no incoming synchronous edge, so it can lie on no cycle.
+
+**Pool and report path.** Strategy B of the T0 probe: 8 buffers, each re-added after its report. `poolMiss` counts reports that arrived in a kernel buffer or in a buffer of a dropped pool. The bookkeeping (`gdh_pool_*`, in the core) runs before the `opened` check, so ownership is right whatever the state. **On Close the whole pool is released** and a fresh one is built at the next Open (`reopens` counts these): nobody knows whether the kernel keeps its pool across a Close, and a late report that carries an old buffer then matches nothing and is never dereferenced. Nothing is mapped or copied in T4 (only the report ID, the length and the timestamp are read), so there is no per-frame allocation. The kernel-to-driver delay (`now - timestamp`) feeds the meter core's second histogram; one `tap meter` line per 10 s window, never per frame.
+
+**Lifetime.** An `OSAction` retains its target until it is cancelled or freed (`OSAction.iig:69-70`), and the tap holds its two actions, so the tap, its queue, timer, pool and a reference on the `IOHIDInterface` would never be freed. `Stop` therefore, after `Close`, cancels `reportAction` and `timerAction` in the timer's cancel handler (`OSAction::Cancel`, `OSAction.iig:100-105`: afterwards the action can only be freed), then calls the super `Stop`, releases the pool and the provider. `tap free #N` is logged in `free()` and counted (`tapFrees`): `tapStarts == tapFrees + live instances`. Close precedes Cancel. The user client keeps `timerAction` in the same way and probably leaks the same way; `client free` is logged so a count of `client start` against `client free` measures it.
+
+**Self-terminate.** devTerminate and root `Stop` reach only the registered tap. When `terminating` is set, every tap's timer calls `Terminate(0)` on itself once and stops re-arming, so an older instance or a second receiver's tap cannot keep the shared process alive. `IOService.iig:317-326` documents `Terminate` for objects made with `Create()`; the header does not forbid it for a matched service. If it fails the tap logs the code and stays; the process then needs the controller switched off or a reboot. If `devTerminate`'s own `Terminate(0)` of the root fails, the flag is cleared again so taps can attach in a process that did not end.
+
+**"Restart driver (dev)" (m5).** The menu item ends the process through `devTerminate` and the root is not re-matched afterwards (it matches `IOUserResources` once). While the tap personality is installed, the next 3A08 enumeration can start a process that contains only a tap and no root, so `devTerminate` is unreachable and the tap cannot be ended. **Reboot after "Restart driver (dev)"** (or use the upgrade procedure, which replaces the dext). Possible alternative, not implemented: make the tap decline its `Start` when no root has registered within N seconds, which lets Apple's driver take the interface but makes a controller that attaches during a slow root start (the T0 relaunch showed either order) lose its tap until the next enumeration.
+
+**Never breaks the engine path.** The tap takes only the `IOHIDInterface`. The engine reads the `IOHIDDevice`, which is untouched. If a user-space client has seized the device, `Open` fails; the tap counts it, retries every 500 ms from the timer and never spins.
+
+**Rollback lever.** A `GDHUB_TAP_DECLINE=1` build makes the tap's `Start` log, undo the super `Start` and return an error, so Apple's driver attaches to interface 3; it also drops `CAP_TAP`.
+
+**Engine side (`TapSupervisor`).** `inputPath = count` sends COUNT after hello; every other value sends INERT; the value is polled once a second. The dext's `instanceNonce` of the instance on which COUNT was accepted is remembered. A different nonce at a later hello or status2 (relaunch or replacement) **trips** the supervisor: no re-arm for the rest of this engine run, because a crash in the COUNT path would otherwise become a crash loop at the reconnect back-off. The trip clears when the stored `inputPath` value changes (any change of the stored text, e.g. `engine` and then `count`, or `Count`; an identical rewrite cannot be seen) or the engine restarts. A re-enumeration inside the same dext process keeps the nonce and needs no engine action. Selector-11 calls from the supervisor: none while INERT and settled; 1 per second while armed; 10 per second for at most 5 s after the controller interface comes up, and only if the dext has a tap (it logs `tap: not present 5 s after the controller interface came up` and stops).
+
+**Tests** (off-device): `DextCoreTapTests`, `InputPathTests`, `TapSupervisorTests`, `DextTapSourceTests`, and the capability tests in `DextClientCapabilityTests`.
 
 ---
 
@@ -1298,6 +1344,16 @@ targets:
             UserClientProperties:
               IOClass: IOUserUserClient
               IOUserClass: GDHubVirtualHIDUserClient
+            IOUserServerOneProcess: true                          # T4
+          GDHubReceiverTap:                                       # T4 (see §3.14 and project.yml for the full keys)
+            IOProviderClass: IOHIDInterface
+            IOUserClass: GDHubReceiverTap
+            IOUserServerOneProcess: true
+            VendorID: 6940
+            ProductID: 14856
+            PrimaryUsagePage: 65368
+            PrimaryUsage: 1
+            IOProbeScore: 1000
     entitlements:
       path: Dext/GDHubVirtualHID/GDHubVirtualHID.entitlements
       properties: {com.apple.developer.driverkit: true, com.apple.developer.driverkit.family.hid.device: true,

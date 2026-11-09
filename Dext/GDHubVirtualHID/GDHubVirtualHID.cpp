@@ -60,6 +60,9 @@ kern_return_t IMPL(GDHubVirtualHID, Stop)
         gdhr_ctr_add(GDHubReg(), GDHR_CTR_PAD_DESTROYS, 1);
         GDHubTerminateAndRelease(pad);
     }
+    // The tap is not a child of the root, but the process cannot exit while it is alive (IOUserServerOneProcess): end it too.
+    gdhr_set_terminating(GDHubReg());
+    GDHubTerminateTap();
     gdhr_unregister_root(GDHubReg(), static_cast<OSObject *>(this));
     return Stop(provider, SUPERDISPATCH);
 }

@@ -136,6 +136,7 @@ void *gdhr_release_owner(gdhr *r, void *uc)
         oldOwner = r->owner;
         r->owner = 0;
         r->ownerGen = 0;
+        ATOMIC_STORE(&r->desiredState, GDH_FWD_INERT);       /* nothing keeps counting for a dead owner (T4 rule C) */
         if (r->padState != GDHR_PAD_NONE && r->padGen == gen) pad = take_locked(r, &spec);
     }
     UNLOCK(r);
@@ -323,14 +324,205 @@ uint64_t gdhr_ctr_get(const gdhr *r, int id)
     return (r && id >= 0 && id < GDHR_CTR_COUNT) ? __atomic_load_n(&r->counters[id], __ATOMIC_RELAXED) : 0;
 }
 
+/* ------------------------------------------------------------------------------------------------------------- */
+/* Receiver tap (T4) */
+
+int gdhr_register_tap(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *desired)
+{
+    if (desired) *desired = GDH_FWD_INERT;
+    if (!ready(r) || !tap || !queue) return 0;
+    void *oldTap = 0, *oldQueue = 0;
+    r->ops->retain(tap);
+    r->ops->retain(queue);
+    LOCK(r);
+    oldTap = r->tap;
+    oldQueue = r->tapQueue;
+    r->tap = tap;
+    r->tapQueue = queue;
+    ATOMIC_STORE(&r->tapOpened, 0);
+    ATOMIC_STORE(&r->tapApplied, GDH_FWD_INERT);
+    ATOMIC_STORE(&r->tapPowered, 1);
+    ATOMIC_STORE(&r->tapPid, pid);
+    ATOMIC_STORE(&r->tapPresent, 1);
+    if (desired) *desired = ATOMIC_LOAD(&r->desiredState);
+    UNLOCK(r);
+    rel(r, oldTap);
+    rel(r, oldQueue);
+    return oldTap != 0;
+}
+
+void gdhr_unregister_tap(gdhr *r, void *tap)
+{
+    if (!ready(r)) return;
+    void *oldTap = 0, *oldQueue = 0;
+    LOCK(r);
+    if (r->tap && r->tap == tap) {
+        oldTap = r->tap;
+        oldQueue = r->tapQueue;
+        r->tap = 0;
+        r->tapQueue = 0;
+        ATOMIC_STORE(&r->tapPresent, 0);
+        ATOMIC_STORE(&r->tapOpened, 0);
+        ATOMIC_STORE(&r->tapApplied, GDH_FWD_INERT);
+    }
+    UNLOCK(r);
+    rel(r, oldTap);
+    rel(r, oldQueue);
+}
+
+void *gdhr_copy_tap(gdhr *r, void **queueOut)
+{
+    if (queueOut) *queueOut = 0;
+    if (!ready(r)) return 0;
+    LOCK(r);
+    void *t = r->tap;
+    if (t) {
+        r->ops->retain(t);
+        if (r->tapQueue) { r->ops->retain(r->tapQueue); if (queueOut) *queueOut = r->tapQueue; else rel(r, r->tapQueue); }
+    }
+    UNLOCK(r);
+    return t;
+}
+
+int gdhr_tap_is(gdhr *r, void *tap)
+{
+    if (!ready(r) || !tap) return 0;
+    LOCK(r);
+    int yes = (r->tap == tap);
+    UNLOCK(r);
+    return yes;
+}
+
+void gdhr_tap_publish(gdhr *r, void *tap, uint32_t opened, uint32_t applied)
+{
+    if (!ready(r)) return;
+    LOCK(r);
+    if (r->tap && r->tap == tap) {
+        ATOMIC_STORE(&r->tapOpened, opened);
+        ATOMIC_STORE(&r->tapApplied, applied);
+    }
+    UNLOCK(r);
+}
+
+void gdhr_tap_set_power(gdhr *r, void *tap, uint32_t powered, uint32_t flags)
+{
+    if (!ready(r)) return;
+    LOCK(r);
+    if (r->tap && r->tap == tap) {
+        ATOMIC_STORE(&r->tapPowered, powered);
+        ATOMIC_STORE(&r->tapLastPowerFlags, flags);
+    }
+    UNLOCK(r);
+}
+
+void gdhr_set_desired(gdhr *r, uint32_t state)
+{
+    if (r) ATOMIC_STORE(&r->desiredState, state);
+}
+
+int gdhr_set_desired_if_owner(gdhr *r, void *uc, uint32_t state)
+{
+    if (!ready(r) || !uc) return GDHR_E_STATE;
+    int rc;
+    LOCK(r);
+    if (r->owner && r->owner == uc) { ATOMIC_STORE(&r->desiredState, state); rc = GDHR_OK; }
+    else rc = GDHR_E_NOT_OWNER;
+    UNLOCK(r);
+    return rc;
+}
+
+void gdhr_set_last_error(gdhr *r, uint32_t err)
+{
+    if (r) __atomic_store_n(&r->lastError, err, __ATOMIC_RELAXED);
+}
+
+void gdhr_set_terminating(gdhr *r)
+{
+    if (r) ATOMIC_STORE(&r->terminating, 1);
+}
+
+void gdhr_clear_terminating(gdhr *r)
+{
+    if (r) ATOMIC_STORE(&r->terminating, 0);
+}
+
+uint32_t gdhr_terminating(const gdhr *r)
+{
+    return r ? ATOMIC_LOAD(&r->terminating) : 0;
+}
+
+int gdh_fwd_validate(uint64_t state, uint64_t flags)
+{
+    if (flags != 0) return 1;
+    return (state == GDH_FWD_INERT || state == GDH_FWD_COUNT) ? 0 : 1;
+}
+
+int gdh_tap_decide(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t stopping, uint32_t retryDue)
+{
+    if (stopping) return opened ? GDH_TAP_CLOSE : GDH_TAP_NONE;
+    if (opened) return desired == GDH_FWD_COUNT ? GDH_TAP_NONE : GDH_TAP_CLOSE;
+    if (desired == GDH_FWD_COUNT && powered && retryDue) return GDH_TAP_OPEN;
+    return GDH_TAP_NONE;
+}
+
+int gdh_tap_fast_tick(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t stopping, uint32_t terminating)
+{
+    if (terminating) return 1;
+    return gdh_tap_decide(desired, opened, powered, stopping, 1) != GDH_TAP_NONE;
+}
+
+int gdh_pool_find(const gdh_pool *p, const void *report)
+{
+    int i;
+    if (!p || !report) return -1;
+    for (i = 0; i < GDH_POOL_SLOTS; i++) if (p->buf[i] == report) return i;
+    return -1;
+}
+
+void gdh_pool_set(gdh_pool *p, int slot, void *buf)
+{
+    if (p && slot >= 0 && slot < GDH_POOL_SLOTS) { p->buf[slot] = buf; p->inPool[slot] = 0; }
+}
+
+void gdh_pool_delivered(gdh_pool *p, int slot)
+{
+    if (p && slot >= 0 && slot < GDH_POOL_SLOTS) p->inPool[slot] = 0;
+}
+
+void gdh_pool_added(gdh_pool *p, int slot)
+{
+    if (p && slot >= 0 && slot < GDH_POOL_SLOTS && p->buf[slot]) p->inPool[slot] = 1;
+}
+
+int gdh_pool_next_missing(const gdh_pool *p, int from)
+{
+    int i;
+    if (!p) return -1;
+    for (i = from < 0 ? 0 : from; i < GDH_POOL_SLOTS; i++) if (p->buf[i] && !p->inPool[i]) return i;
+    return -1;
+}
+
+int gdh_pool_reset(gdh_pool *p, void *old[GDH_POOL_SLOTS])
+{
+    int i, n = 0;
+    if (!p) return 0;
+    for (i = 0; i < GDH_POOL_SLOTS; i++) {
+        if (p->buf[i]) { if (old) old[n] = p->buf[i]; n++; }
+        p->buf[i] = 0;
+        p->inPool[i] = 0;
+    }
+    p->ready = 0;
+    return n;
+}
+
 void gdhr_set_queue_idx(gdhr *r, int which, uint32_t idx)
 {
-    if (r && which >= 0 && which < 3) __atomic_store_n(&r->queueIdx[which], idx, __ATOMIC_RELAXED);
+    if (r && which >= 0 && which < 4) __atomic_store_n(&r->queueIdx[which], idx, __ATOMIC_RELAXED);
 }
 
 uint32_t gdhr_queue_idx(const gdhr *r, int which)
 {
-    return (r && which >= 0 && which < 3) ? __atomic_load_n(&r->queueIdx[which], __ATOMIC_RELAXED) : 0;
+    return (r && which >= 0 && which < 4) ? __atomic_load_n(&r->queueIdx[which], __ATOMIC_RELAXED) : 0;
 }
 
 uint32_t gdhr_topology(const gdhr *r)
@@ -366,6 +558,13 @@ void gdhr_snapshot(gdhr *r, gdhr_snap *out)
     out->pid = __atomic_load_n(&r->pid, __ATOMIC_RELAXED);
     out->desiredState = gdhr_desired_state(r);
     out->topology = gdhr_topology(r);
+    out->tapPresent = ATOMIC_LOAD(&r->tapPresent);
+    out->tapOpened = ATOMIC_LOAD(&r->tapOpened);
+    out->tapApplied = ATOMIC_LOAD(&r->tapApplied);
+    out->tapPowered = ATOMIC_LOAD(&r->tapPowered);
+    out->tapPid = ATOMIC_LOAD(&r->tapPid);
+    out->tapLastPowerFlags = ATOMIC_LOAD(&r->tapLastPowerFlags);
+    out->lastError = __atomic_load_n(&r->lastError, __ATOMIC_RELAXED);
     out->probeExt = gdhr_probe_get(r, GDHR_PROBE_EXT);
     out->probePad = gdhr_probe_get(r, GDHR_PROBE_SUBMIT);
     out->padSource = gdhr_pad_source(r);

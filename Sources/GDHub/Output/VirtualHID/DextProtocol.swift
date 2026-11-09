@@ -40,11 +40,18 @@ enum DextProtocol {
         static let pointer: UInt64 = 4
         /// T3: the root service owns the pad; selectors `setForwarding` (9) and `getStatus2` (11) exist.
         static let rootPad: UInt64 = 1 << 8
+        /// T4: the receiver tap exists in this dext; `setForwarding` also accepts COUNT. A dext built with GDHUB_TAP_DECLINE
+        /// does not set it.
+        static let tap: UInt64 = 1 << 9
     }
 
-    /// Forwarding state of `setForwarding`. T3 knows INERT only.
+    /// Forwarding state of `setForwarding`. INERT: the tap is attached but the interface is not opened. COUNT (T4): opened,
+    /// counting frames, nothing translated or posted. Later phases add SHADOW (2) and LIVE (3).
     enum Forwarding {
         static let inert: UInt64 = 0
+        static let count: UInt64 = 1
+        /// Argument check of selector 9 in this protocol version: INERT or COUNT, no flags.
+        static func isAccepted(state: UInt64, flags: UInt64) -> Bool { flags == 0 && (state == inert || state == count) }
     }
 
     /// Who may post to the pad (`padSource` in status2 and in `setForwarding`'s output).
@@ -141,9 +148,15 @@ struct DextStatus2: Equatable {
         static let hopCount = 120, hopP50 = 124, hopP99 = 128, hopMax = 132, hopMean = 136
         static let hrCount = 140, hrP50 = 144, hrP99 = 148, hrMax = 152, hrMean = 156
         static let syncInline = 160, topology = 168, probeExt = 169, probeSubmit = 170
+        static let tapPresent = 172, tapOpened = 173, appliedState = 174, powered = 175
+        static let tapPid = 176, tapStarts = 180, lastPowerFlags = 184, lastError = 188
+        static let framesIn = 192, framesR06 = 200, framesOther = 208, framesIgnored = 216, framesBad = 224
+        static let poolMiss = 232, readdFail = 240, openFailures = 248
+        static let k2dCount = 256, k2dP50 = 260, k2dP99 = 264, k2dMax = 268, k2dMean = 272
+        static let pokesRun = 276, tickApplies = 284, closeFailures = 292, reopens = 300, tapFrees = 308
     }
     static let version = 1
-    static let size = 172
+    static let size = 316
     static let maxSize = 512
     /// version, size and build: the least a reader needs.
     static let minimumBytes = 8
@@ -164,6 +177,14 @@ struct DextStatus2: Equatable {
     var meterWindows: UInt32 = 0
     var syncInline: UInt64 = 0
     var topology: UInt8 = 0, probeExt: UInt8 = 0, probeSubmit: UInt8 = 0
+    // T4 receiver tap
+    var tapPresent = false, tapOpened = false, powered = false
+    var appliedState: UInt8 = 0
+    var tapPid: UInt32 = 0, tapStarts: UInt32 = 0, lastPowerFlags: UInt32 = 0, lastError: UInt32 = 0
+    var framesIn: UInt64 = 0, framesR06: UInt64 = 0, framesOther: UInt64 = 0, framesIgnored: UInt64 = 0, framesBad: UInt64 = 0
+    var poolMiss: UInt64 = 0, readdFail: UInt64 = 0, openFailures: UInt64 = 0
+    var k2d = DextMeterSummary()
+    var pokesRun: UInt64 = 0, tickApplies: UInt64 = 0, closeFailures: UInt64 = 0, reopens: UInt64 = 0, tapFrees: UInt64 = 0
     var hop = DextMeterSummary()
     var hr = DextMeterSummary()
 
@@ -199,7 +220,34 @@ struct DextStatus2: Equatable {
                                 meanNs: UInt32(u(Offset.hrMean, 4)))
         s.syncInline = u(Offset.syncInline, 8)
         s.topology = UInt8(u(Offset.topology, 1)); s.probeExt = UInt8(u(Offset.probeExt, 1)); s.probeSubmit = UInt8(u(Offset.probeSubmit, 1))
+        s.tapPresent = u(Offset.tapPresent, 1) != 0; s.tapOpened = u(Offset.tapOpened, 1) != 0
+        s.appliedState = UInt8(u(Offset.appliedState, 1)); s.powered = u(Offset.powered, 1) != 0
+        s.tapPid = UInt32(u(Offset.tapPid, 4)); s.tapStarts = UInt32(u(Offset.tapStarts, 4))
+        s.lastPowerFlags = UInt32(u(Offset.lastPowerFlags, 4)); s.lastError = UInt32(u(Offset.lastError, 4))
+        s.framesIn = u(Offset.framesIn, 8); s.framesR06 = u(Offset.framesR06, 8); s.framesOther = u(Offset.framesOther, 8)
+        s.framesIgnored = u(Offset.framesIgnored, 8); s.framesBad = u(Offset.framesBad, 8)
+        s.poolMiss = u(Offset.poolMiss, 8); s.readdFail = u(Offset.readdFail, 8); s.openFailures = u(Offset.openFailures, 8)
+        s.k2d = DextMeterSummary(count: UInt32(u(Offset.k2dCount, 4)), p50Ns: UInt32(u(Offset.k2dP50, 4)),
+                                 p99Ns: UInt32(u(Offset.k2dP99, 4)), maxNs: UInt32(u(Offset.k2dMax, 4)),
+                                 meanNs: UInt32(u(Offset.k2dMean, 4)))
+        s.pokesRun = u(Offset.pokesRun, 8); s.tickApplies = u(Offset.tickApplies, 8); s.closeFailures = u(Offset.closeFailures, 8)
+        s.reopens = u(Offset.reopens, 8); s.tapFrees = u(Offset.tapFrees, 8)
         return s
+    }
+
+    /// The tap part of the engine's meter line: nil while no tap is attached. `state` is what was asked for / what is applied.
+    var tapLogText: String? {
+        guard tapPresent else { return nil }
+        var t = "tap: state=\(desiredState)/\(appliedState) opened=\(tapOpened ? 1 : 0) frames=\(framesIn) r06=\(framesR06)"
+        if framesOther > 0 { t += " other=\(framesOther)" }
+        if poolMiss > 0 { t += " poolMiss=\(poolMiss)" }
+        if readdFail > 0 { t += " readdFail=\(readdFail)" }
+        if openFailures > 0 { t += " openFail=\(openFailures)" }
+        if closeFailures > 0 { t += " closeFail=\(closeFailures)" }
+        if reopens > 0 { t += " reopens=\(reopens)" }
+        if k2d.count > 0 { t += " k2d p50/p99/max/mean \(k2d.microsecondsText) us" }
+        if tapPid != 0 && tapPid != rootPid { t += " tapPid=\(tapPid)!=rootPid" }
+        return t
     }
 
     /// Topology flags (`GDHUB_TOPO_*`): the two queues are the same object. nil while one side has not started yet.
@@ -226,6 +274,7 @@ struct DextStatus2: Equatable {
             parts.append("dext: hop p50/p99/max/mean \(hop.microsecondsText) us hr \(hr.microsecondsText) us n=\(hr.count) win=\(meterWindows)")
         }
         if let t = topologyText { parts.append(t) }
+        if let t = tapLogText { parts.append(t) }
         if syncViolations > 0 { parts.append("syncViolations=\(syncViolations)") }
         if syncInline > 0 { parts.append("syncInline=\(syncInline)") }
         return parts.isEmpty ? nil : parts.joined(separator: " ")

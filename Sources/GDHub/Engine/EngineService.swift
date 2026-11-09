@@ -19,6 +19,7 @@ final class EngineService: @unchecked Sendable {
     private let presence: ControllerPresence
     private let reader: GamepadHIDReader
     private let poller: DextStatusPoller
+    private let tapSupervisor: TapSupervisor
     private let stat = CallbackStat()
     private let throttle: ThrottleCheck
     private let store = MappingStore.envisionPro
@@ -32,8 +33,9 @@ final class EngineService: @unchecked Sendable {
     init(options: EngineOptions) {
         self.options = options
         logEverySeconds = options.latencyLog ? 2 : 10
-        let client = DextClient(queue: vhidQueue)
+        let client = DextClient(queue: vhidQueue, supervised: true)      // the TapSupervisor below owns the forwarding state
         dext = client
+        tapSupervisor = TapSupervisor(queue: vhidQueue, dext: client)
         var config = VirtualPadSink.Config()
         config.maxRateHz = VirtualPadSink.runtimeMaxRateHz()
         config.xlateCore = VirtualPadSink.runtimeXlateCore()
@@ -56,7 +58,9 @@ final class EngineService: @unchecked Sendable {
         core.onConnection = { [weak self] state in
             guard let self else { return }
             if case .connected = state { self.poller.start() } else { self.poller.stop() }
+            if case .connected = state { self.tapSupervisor.connection(up: true) } else { self.tapSupervisor.connection(up: false) }
         }
+        presence.onInterface = { [weak self] up in self?.tapSupervisor.controllerInterface(up: up) }
         presence.onChange = { [weak self] status in
             Self.log.notice("controller: \(status.rawValue, privacy: .public)")
             self?.core.controllerStatus(status)
@@ -72,6 +76,7 @@ final class EngineService: @unchecked Sendable {
             core.start()
             reader.start()
             presence.startTimer()
+            tapSupervisor.start()
             throttle.start()
             startMeterTimer()
         }
@@ -130,6 +135,7 @@ final class EngineService: @unchecked Sendable {
                 Self.log.notice("signal \(sig): shutting down")
                 self.vhidQueue.sync {
                     self.reader.stop()
+                    self.tapSupervisor.shutdown()          // INERT first, then the pad is destroyed and the connection closed
                     self.core.shutdown()
                 }
                 exit(0)

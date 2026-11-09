@@ -8,5 +8,7 @@
 	<true/>
 	<key>com.apple.developer.driverkit.family.hid.device</key>
 	<true/>
+	<key>com.apple.developer.driverkit.transport.hid</key>
+	<true/>
 </dict>
 </plist>

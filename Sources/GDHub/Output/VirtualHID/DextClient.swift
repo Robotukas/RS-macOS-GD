@@ -45,6 +45,11 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     /// 9 and 11 with "bad argument".
     private(set) var capabilities: UInt64 = 0
     var hasRootPad: Bool { capabilities & DextProtocol.Capability.rootPad != 0 }
+    /// T4: the dext has the receiver tap (a GDHUB_TAP_DECLINE build and build 19 and earlier do not).
+    var hasTap: Bool { capabilities & DextProtocol.Capability.tap != 0 }
+    /// A supervised client belongs to the engine's `TapSupervisor`, which decides the forwarding state. Every other client
+    /// (the GUI in in-app mode) sends INERT after hello when the dext has a tap, so a tap can never keep counting for it.
+    let supervised: Bool
     /// Tests replace the IOKit call with a fake that behaves like a given dext.
     private var testCall: DextRawCall?
 
@@ -60,8 +65,9 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     /// driver build changing).
     private(set) var refusalLatched = false
 
-    init(queue: DispatchQueue) {
+    init(queue: DispatchQueue, supervised: Bool = false) {
         self.queue = queue
+        self.supervised = supervised
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         appBuild = UInt64(v ?? "") ?? 0
     }
@@ -238,6 +244,7 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         refusalLatched = false
         connectedAt = .now()
         capabilities = out[2]
+        sendInitialForwarding()
         registerOutput()
         Self.log.info("connected: driver build \(out[1]) protocol \(out[0]) capabilities \(out[2]) (app build \(self.appBuild))")
         setState(.connected(dextBuild: out[1]))
@@ -338,14 +345,29 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         return DextStatus2.decode(r.bytes)
     }
 
-    /// Selector 9. T3 knows INERT only; `krUnsupported` without `Capability.rootPad` (the old dext has no such selector).
-    func setForwardingInert() -> (kr: kern_return_t, result: DextForwardingResult?) {
+    /// Selector 9. INERT needs `Capability.rootPad` (build 18 and later), COUNT needs `Capability.tap`. Without the bit the
+    /// call is not sent and the result is `krUnsupported`: a dext that lacks the selector or the state answers BadArgument or
+    /// Unsupported anyway, but the app does not rely on that.
+    func setForwarding(_ state: UInt64) -> (kr: kern_return_t, result: DextForwardingResult?) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard isLinked else { return (DextProtocol.krNotReady, nil) }
-        guard hasRootPad else { return (DextProtocol.krUnsupported, nil) }
-        let r = callRaw(DextProtocol.Selector.setForwarding, scalarsIn: [DextProtocol.Forwarding.inert, 0, 0],
+        guard DextProtocol.Forwarding.isAccepted(state: state, flags: 0) else { return (DextProtocol.krUnsupported, nil) }
+        guard hasRootPad, state == DextProtocol.Forwarding.inert || hasTap else { return (DextProtocol.krUnsupported, nil) }
+        let r = callRaw(DextProtocol.Selector.setForwarding, scalarsIn: [state, 0, 0],
                         scalarOutCount: DextForwardingResult.scalarCount, structOutCapacity: 0)
         return (r.kr, r.kr == KERN_SUCCESS ? DextForwardingResult(words: r.scalars) : nil)
+    }
+
+    /// After hello: an unsupervised client (the GUI in in-app mode) tells a dext that has a tap to stay INERT. A supervised
+    /// client leaves the state to its `TapSupervisor`. A dext without `Capability.tap` is not touched.
+    func sendInitialForwarding() {
+        guard hasTap, !supervised else { return }
+        let r = setForwarding(DextProtocol.Forwarding.inert)
+        Self.log.info("unsupervised client: setForwarding(INERT) -> 0x\(String(UInt32(bitPattern: r.kr), radix: 16), privacy: .public)")
+    }
+
+    func setForwardingInert() -> (kr: kern_return_t, result: DextForwardingResult?) {
+        setForwarding(DextProtocol.Forwarding.inert)
     }
 
     private var isLinked: Bool { connect != 0 || testCall != nil }

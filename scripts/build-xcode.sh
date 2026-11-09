@@ -53,7 +53,25 @@ need() {
   [[ $prof == *$UDID* ]] || { echo "this Mac ($UDID) is not in the profile of $b: $(print -r -- "$prof" | plutil -extract Name raw -o - - 2>/dev/null). Delete the cached copy under ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles and rebuild."; exit 1; }
 }
 need "$DEXT" "$DEXT/embedded.provisionprofile" com.apple.developer.driverkit \
-     com.apple.developer.driverkit.family.hid.device com.apple.developer.driverkit.allow-any-userclient-access
+     com.apple.developer.driverkit.family.hid.device com.apple.developer.driverkit.allow-any-userclient-access \
+     com.apple.developer.driverkit.transport.hid
+# Receiver tap personality checks (takeover plan 3.6, T4). plutil prints an integer as <integer> and a string as <string>,
+# so a match key that came out as a string (it would then never match the kernel's integer property) is caught here.
+P="$DEXT/Info.plist"
+for k in VendorID ProductID PrimaryUsagePage PrimaryUsage IOProbeScore; do
+  plutil -extract "IOKitPersonalities.GDHubReceiverTap.$k" xml1 -o - "$P" 2>/dev/null | grep -q '<integer>' \
+    || { echo "tap $k is not an integer"; exit 2; }
+done
+for p in GDHubVirtualHID GDHubReceiverTap; do
+  plutil -extract "IOKitPersonalities.$p.IOUserServerOneProcess" xml1 -o - "$P" 2>/dev/null | grep -q '<true/>' \
+    || { echo "$p lacks IOUserServerOneProcess"; exit 2; }
+done
+for k in IOMatchCategory Transport; do
+  plutil -extract "IOKitPersonalities.GDHubReceiverTap.$k" xml1 -o - "$P" >/dev/null 2>&1 \
+    && { echo "tap personality has a $k key (it must compete in the default category and match without Transport)"; exit 2; }
+done
+[[ $(plutil -extract IOKitPersonalities.GDHubReceiverTap.IOProviderClass raw -o - "$P" 2>/dev/null) == IOHIDInterface ]] \
+  || { echo "tap IOProviderClass != IOHIDInterface"; exit 2; }
 need "$APP" "$APP/Contents/embedded.provisionprofile" com.apple.developer.system-extension.install \
      com.apple.developer.team-identifier
 # The dext's own rules (GDHubVirtualHIDUserClient::callerIsGDHub) check the VALUES, and the engine runs this same binary.

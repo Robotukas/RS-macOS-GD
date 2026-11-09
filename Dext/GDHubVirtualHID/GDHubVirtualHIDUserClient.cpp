@@ -116,7 +116,11 @@ static kern_return_t sHello(OSObject * target, void * reference, IOUserClientMet
     ASTORE(iv->lastActivity, mach_absolute_time());
     a->scalarOutput[0] = GDHUB_PROTOCOL_VERSION;
     a->scalarOutput[1] = GDHUB_DEXT_BUILD;
-    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD;   // capabilities: keyboard and pointer arrive in D8
+#if GDHUB_TAP_DECLINE
+    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD;                       // a decline build has no tap: no CAP_TAP
+#else
+    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD | GDHUB_CAP_TAP;       // capabilities: keyboard and pointer arrive in D8
+#endif
     a->scalarOutputCount = 3;
     GDLog("hello: app protocol %llu build %llu, dext protocol %u build %u, protocolOK=%d",
           a->scalarInput[0], a->scalarInput[1], (unsigned)GDHUB_PROTOCOL_VERSION, (unsigned)GDHUB_DEXT_BUILD,
@@ -358,10 +362,17 @@ static kern_return_t sDevTerminate(OSObject * target, void * reference, IOUserCl
     (void)reference; (void)a;
 #if GDHUB_DEV_TERMINATE
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
-    GDLog("devTerminate: pad, then Terminate(0) on the root service (DEBUG-only)");
+    GDLog("devTerminate: pad, then the tap, then Terminate(0) on the root service (DEBUG-only)");
+    gdhr_set_terminating(GDHubReg());              // a tap that starts from now on declines, so no service keeps the process alive
     if (ALOAD(uc->ivars->padCreated)) destroyPad(uc);
+    GDHubTerminateTap();                           // asynchronous; the tap's Stop closes the interface
     kern_return_t kr = uc->ivars->root ? uc->ivars->root->Terminate(0) : kIOReturnNotReady;
     GDLog("devTerminate: Terminate returned 0x%x", (unsigned)kr);
+    if (kr != kIOReturnSuccess) {
+        // The process is not ending: taps must be allowed to attach again.
+        gdhr_clear_terminating(GDHubReg());
+        GDLog("devTerminate: failed, terminating flag cleared");
+    }
     return kr;
 #else
     (void)target;
@@ -412,16 +423,30 @@ static kern_return_t sGetStatus(OSObject * target, void * reference, IOUserClien
     return kIOReturnSuccess;
 }
 
-// T3, selector 9. INERT only: there is no tap yet, so the only state is "nothing forwards". Anything else, and any
-// flag, is refused with kIOReturnUnsupported. Outputs: appliedState, tapPresent, padSource, lastError.
+// Selector 9 (T3, T4 adds COUNT; behind CAP_ROOT_PAD, COUNT behind CAP_TAP). Runs on the ROOT's queue (ExternalMethod), so the
+// tap is reached by an atomic store of the desired state plus a DispatchAsync poke onto the tap's own queue; the tap's 50 ms
+// timer is the backstop. Nothing here waits for the tap, so the call returns before the interface is opened or closed:
+// `appliedState` in the reply is what was applied so far, and status2 shows the result. INERT and COUNT only, no flags;
+// anything else is kIOReturnUnsupported. Outputs: appliedState, tapPresent, padSource, lastError.
 static kern_return_t sSetForwarding(OSObject * target, void * reference, IOUserClientMethodArguments * a)
 {
-    (void)target; (void)reference;
-    if (a->scalarInput[0] != GDHUB_FWD_INERT || a->scalarInput[1] != 0) return kIOReturnUnsupported;
-    a->scalarOutput[0] = GDHUB_FWD_INERT;
-    a->scalarOutput[1] = 0;                                      // tapPresent
-    a->scalarOutput[2] = gdhr_pad_source(GDHubReg());
-    a->scalarOutput[3] = 0;                                      // lastError
+    (void)reference;
+    auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
+    if (gdh_fwd_validate(a->scalarInput[0], a->scalarInput[1]) != 0) return kIOReturnUnsupported;
+    gdhr * reg = GDHubReg();
+#if GDHUB_TAP_DECLINE
+    if (a->scalarInput[0] != GDHUB_FWD_INERT) return kIOReturnUnsupported;      // no tap in this build: only INERT exists
+#endif
+    // Only the CURRENT owner may set the state, decided under the registry lock: a late request from a client that is going
+    // away must not land after release_owner reset the state to INERT (the tap would count for nobody).
+    if (gdhr_set_desired_if_owner(reg, static_cast<OSObject *>(uc), (uint32_t)a->scalarInput[0]) != GDHR_OK) return kIOReturnNotPermitted;
+    GDHubPokeTap();
+    gdhr_snap s;
+    gdhr_snapshot(reg, &s);
+    a->scalarOutput[0] = s.tapApplied;
+    a->scalarOutput[1] = s.tapPresent;
+    a->scalarOutput[2] = s.padSource;
+    a->scalarOutput[3] = s.lastError;
     a->scalarOutputCount = 4;
     return kIOReturnSuccess;
 }
@@ -491,6 +516,7 @@ bool GDHubVirtualHIDUserClient::init()
 
 void GDHubVirtualHIDUserClient::free()
 {
+    GDLog("client free");        // paired with "client start": a count of the two shows whether user clients are freed (timerAction cycle, tap review m2)
     if (ivars) {
         OSSafeReleaseNULL(ivars->timerAction);
         OSSafeReleaseNULL(ivars->timer);

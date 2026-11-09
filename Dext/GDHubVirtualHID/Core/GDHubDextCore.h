@@ -58,6 +58,21 @@ enum gdhr_counter {
     GDHR_CTR_OUTPUTS_NO_OWNER,   /* ... of which there was no owner client to deliver them to */
     GDHR_CTR_CREATE_EARLY,       /* Create returned before the pad's Start registered it */
     GDHR_CTR_SYNC_INLINE,        /* a GDH_SYNC call whose target queue was already on this thread's queue stack (an inline nested call) */
+    /* T4: the receiver tap (all written on the tap's queue, so they accumulate across tap instances in this process) */
+    GDHR_CTR_TAP_STARTS,         /* tap Start calls that kept the service */
+    GDHR_CTR_FRAMES_IN,          /* ReportAvailable calls handled while opened and powered */
+    GDHR_CTR_FRAMES_R06,         /* ... of reportID 6 */
+    GDHR_CTR_FRAMES_OTHER,       /* ... of any other report ID */
+    GDHR_CTR_FRAMES_IGNORED,     /* ReportAvailable calls ignored because the Mac is going to sleep */
+    GDHR_CTR_FRAMES_BAD,         /* zero or oversized length */
+    GDHR_CTR_POOL_MISS,          /* the report was not one of our pool buffers (a kernel temporary buffer) */
+    GDHR_CTR_READD_FAIL,         /* AddReportToPool failed */
+    GDHR_CTR_OPEN_FAILURES,      /* Open returned an error */
+    GDHR_CTR_POKES_RUN,          /* pokes (DispatchAsync from selector 9 / owner loss) that ran on the tap's queue */
+    GDHR_CTR_TICK_APPLIES,       /* Open/Close attempts that the tap's own timer made (a poke would have made them first) */
+    GDHR_CTR_CLOSE_FAILURES,     /* Close returned an error */
+    GDHR_CTR_REOPENS,            /* Opens after an earlier Close in the same tap instance (each builds a fresh pool) */
+    GDHR_CTR_TAP_FREES,          /* tap objects freed: starts == frees + live instances */
     GDHR_CTR_COUNT
 };
 
@@ -83,6 +98,8 @@ typedef struct gdhr {
     uint32_t        padState;
     void           *pad;                  /* retained, LIVE only */
     void           *padSpec;              /* retained, STAGED..LIVE */
+    void           *tap;                  /* T4: retained receiver tap, or NULL (the tap never dereferences the root or the owner) */
+    void           *tapQueue;             /* retained default queue of that tap, for DispatchAsync pokes */
     uint32_t        padSpecCrc;
     uint64_t        padGen;               /* owner generation that staged the pad */
     /* atomic words (any thread, no lock) */
@@ -93,8 +110,11 @@ typedef struct gdhr {
     uint64_t        counters[GDHR_CTR_COUNT];
     /* topology probe (atomic): process-local index of each object's default queue (0 = not seen yet), and the OnQueue()
        bits recorded at the first ExternalMethod and the first submitInput */
-    uint32_t        queueIdx[3];
+    uint32_t        queueIdx[4];
     uint32_t        probe[2];
+    /* T4 tap words (atomic). opened/applied/powered belong to the registered tap and are written only through
+       gdhr_tap_publish / gdhr_tap_set_power, which ignore a stale tap. */
+    uint32_t        tapPresent, tapOpened, tapApplied, tapPowered, tapPid, tapLastPowerFlags, lastError, terminating;
 } gdhr;
 
 typedef struct gdhr_snap {
@@ -103,6 +123,7 @@ typedef struct gdhr_snap {
     uint32_t desiredState, padSource, padState, padSpecCrc;
     uint32_t ownerPresent, rootPresent;
     uint32_t topology, probeExt, probePad;
+    uint32_t tapPresent, tapOpened, tapApplied, tapPowered, tapPid, tapLastPowerFlags, lastError;
     uint64_t counters[GDHR_CTR_COUNT];
 } gdhr_snap;
 
@@ -110,6 +131,7 @@ typedef struct gdhr_snap {
 #define GDHR_Q_ROOT 0
 #define GDHR_Q_UC   1
 #define GDHR_Q_PAD  2
+#define GDHR_Q_TAP  3      /* index only: not part of the topology flags */
 /* gdhr_topology() bits: low nibble = the queues are the same object, high nibble = both sides known (set at their Start) */
 #define GDHR_TOPO_UC_EQ_ROOT   0x01u
 #define GDHR_TOPO_PAD_EQ_ROOT  0x02u
@@ -176,6 +198,61 @@ uint64_t gdhr_ctr_get(const gdhr *r, int id);
 void     gdhr_snapshot(gdhr *r, gdhr_snap *out);
 
 /* ---------------------------------------------------------------------------------------------------------------
+ * Receiver tap (T4). The armed state (`desiredState`) lives only in this process's memory and starts INERT: a relaunched
+ * dext never opens the interface until an owner asks again.
+ */
+#define GDH_FWD_INERT  0      /* attached, interface NOT opened: no per-frame code */
+#define GDH_FWD_COUNT  1      /* opened; counts frames and the kernel-to-driver delay; no translation, nothing posted */
+
+/* Registers the tap and reads the desired state in the same critical section, so no state change can be lost between the
+ * two. Returns 1 if it replaced a stale tap (two instances during a re-enumeration). Retains `tap` and `queue`. */
+int   gdhr_register_tap(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *desired);
+void  gdhr_unregister_tap(gdhr *r, void *tap);               /* only if it is the registered tap; clears opened/applied */
+void *gdhr_copy_tap(gdhr *r, void **queueOut);               /* +1 tap and +1 queue, or NULL */
+int   gdhr_tap_is(gdhr *r, void *tap);
+void  gdhr_tap_publish(gdhr *r, void *tap, uint32_t opened, uint32_t applied);   /* ignored for a stale tap */
+void  gdhr_tap_set_power(gdhr *r, void *tap, uint32_t powered, uint32_t flags);  /* ignored for a stale tap */
+void  gdhr_set_desired(gdhr *r, uint32_t state);
+/* Selector 9 stores the state only for the CURRENT owner, under the registry lock, so a late request from a client that is
+ * going away cannot land after release_owner reset the state. GDHR_OK, or GDHR_E_NOT_OWNER (and nothing changes). */
+int   gdhr_set_desired_if_owner(gdhr *r, void *uc, uint32_t state);
+void  gdhr_set_last_error(gdhr *r, uint32_t err);
+/* devTerminate in progress: a tap that starts now declines, so no service is left to keep the process alive. */
+void  gdhr_set_terminating(gdhr *r);
+void  gdhr_clear_terminating(gdhr *r);                       /* devTerminate failed: the process is not ending, taps may attach again */
+uint32_t gdhr_terminating(const gdhr *r);
+
+/* Selector 9 argument check: 0 = accepted (INERT or COUNT, no flags), 1 = Unsupported. */
+int   gdh_fwd_validate(uint64_t state, uint64_t flags);
+
+/* What the tap's queue does next. The only place that decides when Open is called (rule A): the owner asked for COUNT in
+ * this process (desired == COUNT, which only selector 9 sets and owner loss clears), the tap is not stopping, the Mac is
+ * not going to sleep, the interface is not open, and the retry timer allows it. */
+#define GDH_TAP_NONE   0
+#define GDH_TAP_OPEN   1
+#define GDH_TAP_CLOSE  2
+int   gdh_tap_decide(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t stopping, uint32_t retryDue);
+/* Cadence of the tap's timer: 1 = 50 ms (the tap has work to do or is waiting to retry, or the dext is terminating), 0 = 1 s.
+ * The poke covers the fast path; the timer is the backstop. */
+int   gdh_tap_fast_tick(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t stopping, uint32_t terminating);
+
+/* The tap's report pool bookkeeping (T4 review M3). The slots only record which buffers we own and whether each is in the
+ * kernel's pool; creating and releasing the buffers is the caller's job. On Close the whole pool is dropped (gdh_pool_reset)
+ * and a fresh one is built at the next Open, so a late report that carries an old buffer matches nothing. */
+#define GDH_POOL_SLOTS 8
+typedef struct gdh_pool {
+    void    *buf[GDH_POOL_SLOTS];
+    uint8_t  inPool[GDH_POOL_SLOTS];
+    uint32_t ready;                    /* 1 once the buffers of this generation have been built */
+} gdh_pool;
+int   gdh_pool_find(const gdh_pool *p, const void *report);          /* slot of `report`, or -1; NULL never matches */
+void  gdh_pool_set(gdh_pool *p, int slot, void *buf);                 /* records a new buffer in an empty slot */
+void  gdh_pool_delivered(gdh_pool *p, int slot);                      /* the kernel took it out of the pool to deliver a report */
+void  gdh_pool_added(gdh_pool *p, int slot);                          /* AddReportToPool succeeded */
+int   gdh_pool_next_missing(const gdh_pool *p, int from);            /* next slot >= from that holds a buffer not in the pool, or -1 */
+int   gdh_pool_reset(gdh_pool *p, void *old[GDH_POOL_SLOTS]);         /* clears every slot, hands back the buffers to release; returns how many */
+
+/* ---------------------------------------------------------------------------------------------------------------
  * Meter (plan §9.1). 61 bounded buckets: edges at 1, 2, 3, 5, 8, 12, 18 and 25 us (so a p50 of a few microseconds
  * can be told from 25), then 39 x 25 us up to 1 ms, 10 x 100 us up to 2 ms, then 3, 5, 10 and 20 ms; one overflow
  * bucket (62 in all). One writer (the pad's queue); any thread may read the published summary of the last completed
@@ -218,7 +295,7 @@ uint32_t gdh_crc32(const uint8_t *p, size_t len);
  * returns its size, or 0 when `cap` is smaller than 8 (version, size and build always fit). With a smaller `cap`
  * the first `cap` bytes are written and `cap` is returned. */
 size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
-                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows);
+                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows, const gdh_summary *k2d);
 
 #ifdef __cplusplus
 }

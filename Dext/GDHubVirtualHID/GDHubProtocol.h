@@ -28,9 +28,11 @@
 #define GDHUB_CAP_PAD                   1      // hello out[2] bits: 1 << slot
 #define GDHUB_CAP_KEYBOARD              2
 #define GDHUB_CAP_POINTER               4
+#define GDHUB_CAP_TAP                   (1u << 9)   /* T4: the receiver tap exists in this dext; selector 9 also accepts COUNT. Absent in a GDHUB_TAP_DECLINE build */
 #define GDHUB_CAP_ROOT_PAD              (1u << 8)   /* T3: the root service owns the pad; selectors 9 and 11 exist. Bits 0-2 stay the slot bits */
-/* Forwarding state (selector 9). T3 accepts INERT only; every other state, and any flag, answers kIOReturnUnsupported. */
-#define GDHUB_FWD_INERT                 0
+/* Forwarding state (selector 9). T4 accepts INERT and COUNT; every other state, and any flag, answers kIOReturnUnsupported. */
+#define GDHUB_FWD_INERT                 0      /* tap attached, interface NOT opened: no per-frame code. Every dext launch starts here */
+#define GDHUB_FWD_COUNT                 1      /* T4: opened; counts frames and the kernel-to-driver delay; translates and posts nothing */
 /* Pad source (GDHubStatus2 padSource, selector 9 output): who may post to the pad. */
 #define GDHUB_PADSRC_NONE               0      /* no pad */
 #define GDHUB_PADSRC_UC                 1      /* user client posts (the engine or the app) */
@@ -80,7 +82,7 @@
    maximum, the smallest bucket edge is 1 us; the mean is exact). */
 #define GDHUB_ST2_VERSION               1
 #define GDHUB_ST2_MAX_SIZE              512
-#define GDHUB_ST2_SIZE                  172
+#define GDHUB_ST2_SIZE                  316
 #define GDHUB_ST2_OFF_VERSION           0      /* u16 */
 #define GDHUB_ST2_OFF_SIZE              2      /* u16 */
 #define GDHUB_ST2_OFF_BUILD             4      /* u32 */
@@ -117,6 +119,34 @@
 #define GDHUB_ST2_OFF_TOPOLOGY          168    /* u8, GDHUB_TOPO_*: which of the root, user client and pad share a queue object */
 #define GDHUB_ST2_OFF_PROBE_EXT         169    /* u8, GDHUB_PROBE_*: OnQueue() of the root/UC/pad queue at the first ExternalMethod */
 #define GDHUB_ST2_OFF_PROBE_SUBMIT      170    /* u8, the same at the first submitInput */
+/* T4 receiver tap fields, appended. All zero when no tap is attached. */
+#define GDHUB_ST2_OFF_TAP_PRESENT       172    /* u8, 1 while a GDHubReceiverTap instance is registered */
+#define GDHUB_ST2_OFF_TAP_OPENED        173    /* u8, 1 while the interface is open (COUNT applied) */
+#define GDHUB_ST2_OFF_APPLIED_STATE     174    /* u8, GDHUB_FWD_*: what the tap's queue has applied (desiredState at offset 20 is what was asked) */
+#define GDHUB_ST2_OFF_POWERED           175    /* u8, 0 between SetPowerState(Off) and On */
+#define GDHUB_ST2_OFF_TAP_PID           176    /* u32, getpid() of the process the tap runs in: equal to rootPid when both share one process */
+#define GDHUB_ST2_OFF_TAP_STARTS        180    /* u32, tap Start calls kept in this process */
+#define GDHUB_ST2_OFF_LAST_POWER_FLAGS  184    /* u32, last SetPowerState argument */
+#define GDHUB_ST2_OFF_LAST_ERROR        188    /* u32, last Open error (kern_return), 0 if none */
+#define GDHUB_ST2_OFF_FRAMES_IN         192    /* u64 counters from here; they accumulate over tap instances in this process */
+#define GDHUB_ST2_OFF_FRAMES_R06        200
+#define GDHUB_ST2_OFF_FRAMES_OTHER      208
+#define GDHUB_ST2_OFF_FRAMES_IGNORED    216
+#define GDHUB_ST2_OFF_FRAMES_BAD        224
+#define GDHUB_ST2_OFF_POOL_MISS         232
+#define GDHUB_ST2_OFF_READD_FAIL        240
+#define GDHUB_ST2_OFF_OPEN_FAILURES     248
+#define GDHUB_ST2_OFF_K2D_COUNT         256    /* u32 each: count, p50, p99, max, mean (ns) of the kernel-to-driver delay, last 10 s window */
+#define GDHUB_ST2_OFF_K2D_P50_NS        260
+#define GDHUB_ST2_OFF_K2D_P99_NS        264
+#define GDHUB_ST2_OFF_K2D_MAX_NS        268
+#define GDHUB_ST2_OFF_K2D_MEAN_NS       272
+/* T4 review additions, appended after the k2d words. */
+#define GDHUB_ST2_OFF_POKES_RUN         276    /* u64, pokes (DispatchAsync) that ran on the tap's queue */
+#define GDHUB_ST2_OFF_TICK_APPLIES      284    /* u64, Open/Close attempts made by the tap's own timer (not by a poke) */
+#define GDHUB_ST2_OFF_CLOSE_FAILURES    292    /* u64, Close returned an error */
+#define GDHUB_ST2_OFF_REOPENS           300    /* u64, Opens after an earlier Close in one tap instance (each with a fresh pool) */
+#define GDHUB_ST2_OFF_TAP_FREES         308    /* u64, tap objects freed: tapStarts == tapFrees + live instances */
 /* 171 reserved. Topology: low nibble = the two queues are the same object, high nibble = both were known (set at Start). */
 #define GDHUB_TOPO_UC_EQ_ROOT           0x01
 #define GDHUB_TOPO_PAD_EQ_ROOT          0x02

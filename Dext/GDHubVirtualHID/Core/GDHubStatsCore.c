@@ -183,7 +183,7 @@ static void put64(uint8_t *b, size_t off, uint64_t v)
 }
 
 size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
-                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows)
+                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows, const gdh_summary *k2d)
 {
     uint8_t full[GDHUB_ST2_SIZE];
     size_t i;
@@ -210,6 +210,34 @@ size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
     put64(full, GDHUB_ST2_OFF_OUTPUTS_NO_OWNER, s->counters[GDHR_CTR_OUTPUTS_NO_OWNER]);
     put64(full, GDHUB_ST2_OFF_CREATE_EARLY, s->counters[GDHR_CTR_CREATE_EARLY]);
     put64(full, GDHUB_ST2_OFF_SYNC_INLINE, s->counters[GDHR_CTR_SYNC_INLINE]);
+    full[GDHUB_ST2_OFF_TAP_PRESENT] = (uint8_t)(s->tapPresent != 0);
+    full[GDHUB_ST2_OFF_TAP_OPENED] = (uint8_t)(s->tapOpened != 0);
+    full[GDHUB_ST2_OFF_APPLIED_STATE] = (uint8_t)s->tapApplied;
+    full[GDHUB_ST2_OFF_POWERED] = (uint8_t)(s->tapPowered != 0);
+    put32(full, GDHUB_ST2_OFF_TAP_PID, s->tapPid);
+    put32(full, GDHUB_ST2_OFF_TAP_STARTS, (uint32_t)s->counters[GDHR_CTR_TAP_STARTS]);
+    put32(full, GDHUB_ST2_OFF_LAST_POWER_FLAGS, s->tapLastPowerFlags);
+    put32(full, GDHUB_ST2_OFF_LAST_ERROR, s->lastError);
+    put64(full, GDHUB_ST2_OFF_FRAMES_IN, s->counters[GDHR_CTR_FRAMES_IN]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_R06, s->counters[GDHR_CTR_FRAMES_R06]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_OTHER, s->counters[GDHR_CTR_FRAMES_OTHER]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_IGNORED, s->counters[GDHR_CTR_FRAMES_IGNORED]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_BAD, s->counters[GDHR_CTR_FRAMES_BAD]);
+    put64(full, GDHUB_ST2_OFF_POOL_MISS, s->counters[GDHR_CTR_POOL_MISS]);
+    put64(full, GDHUB_ST2_OFF_READD_FAIL, s->counters[GDHR_CTR_READD_FAIL]);
+    put64(full, GDHUB_ST2_OFF_OPEN_FAILURES, s->counters[GDHR_CTR_OPEN_FAILURES]);
+    if (k2d) {
+        put32(full, GDHUB_ST2_OFF_K2D_COUNT, k2d->count);
+        put32(full, GDHUB_ST2_OFF_K2D_P50_NS, k2d->p50Ns);
+        put32(full, GDHUB_ST2_OFF_K2D_P99_NS, k2d->p99Ns);
+        put32(full, GDHUB_ST2_OFF_K2D_MAX_NS, k2d->maxNs);
+        put32(full, GDHUB_ST2_OFF_K2D_MEAN_NS, k2d->meanNs);
+    }
+    put64(full, GDHUB_ST2_OFF_POKES_RUN, s->counters[GDHR_CTR_POKES_RUN]);
+    put64(full, GDHUB_ST2_OFF_TICK_APPLIES, s->counters[GDHR_CTR_TICK_APPLIES]);
+    put64(full, GDHUB_ST2_OFF_CLOSE_FAILURES, s->counters[GDHR_CTR_CLOSE_FAILURES]);
+    put64(full, GDHUB_ST2_OFF_REOPENS, s->counters[GDHR_CTR_REOPENS]);
+    put64(full, GDHUB_ST2_OFF_TAP_FREES, s->counters[GDHR_CTR_TAP_FREES]);
     full[GDHUB_ST2_OFF_TOPOLOGY] = (uint8_t)s->topology;
     full[GDHUB_ST2_OFF_PROBE_EXT] = (uint8_t)s->probeExt;
     full[GDHUB_ST2_OFF_PROBE_SUBMIT] = (uint8_t)s->probePad;

@@ -51,6 +51,7 @@ targets:
             IOResourceMatch: IOKit
             IOUserClass: GDHubVirtualHID
             IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            IOUserServerOneProcess: true                        # T4: root and tap share one process (T0.2: proven with the probe)
             # T3: the pad is created by the ROOT (Create(root, "GDHubPadProperties")), so its properties sit at root level,
             # next to the user client's. They used to be nested in UserClientProperties.
             GDHubPadProperties: {IOClass: AppleUserHIDDevice, IOUserClass: GDHubVirtualPad}
@@ -58,13 +59,31 @@ targets:
             UserClientProperties:
               IOClass: IOUserUserClient
               IOUserClass: GDHubVirtualHIDUserClient
+          # T4: the receiver tap. It matches interface 3's IOHIDInterface only (page 0xFF58, usage 1; interface 4 is page 0x0C) of
+          # the wireless receiver 3A08 (not 3A09 and not the wired products). Every key below is an INTEGER (xcodegen writes a YAML
+          # integer as a plist integer; build-xcode.sh asserts it). IOProbeScore 1000 puts it at about 8200 against Apple's 1201.
+          # No IOMatchCategory (it competes in the default category) and no Transport key.
+          GDHubReceiverTap:
+            CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleIdentifierKernel: com.apple.kpi.iokit
+            IOClass: IOUserService
+            IOProviderClass: IOHIDInterface
+            IOUserClass: GDHubReceiverTap
+            IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            IOUserServerOneProcess: true
+            VendorID: 6940
+            ProductID: 14856
+            PrimaryUsagePage: 65368
+            PrimaryUsage: 1
+            IOProbeScore: 1000
     entitlements:
       path: Dext/GDHubVirtualHID/GDHubVirtualHID.entitlements
       properties: {com.apple.developer.driverkit: true, com.apple.developer.driverkit.family.hid.device: true,
-                   com.apple.developer.driverkit.allow-any-userclient-access: true}
+                   com.apple.developer.driverkit.allow-any-userclient-access: true,
+                   com.apple.developer.driverkit.transport.hid: true}      # T4: IOHIDInterface requires it for the tap
     settings:
       base: {PRODUCT_BUNDLE_IDENTIFIER: com.interlinked.gdhub.VirtualHID, PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER),
              SDKROOT: driverkit, SUPPORTED_PLATFORMS: driverkit, DRIVERKIT_DEPLOYMENT_TARGET: "23.0",
              CLANG_CXX_LANGUAGE_STANDARD: gnu++20,
-             GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GDHUB_DEXT_BUILD=$(CURRENT_PROJECT_VERSION)"],
+             GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GDHUB_DEXT_BUILD=$(CURRENT_PROJECT_VERSION)", "GDHUB_TAP_DECLINE=0"],   # =1: the tap declines Start (rollback lever)
              ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development"}

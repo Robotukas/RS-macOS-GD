@@ -10,6 +10,7 @@
 #include "GDHubVirtualHID.h"
 #include "GDHubVirtualHIDUserClient.h"
 #include "GDHubVirtualPad.h"
+#include "GDHubReceiverTap.h"
 
 static void * opLockNew(void)               { return IOLockAlloc(); }
 static void   opLockFree(void * l)          { IOLockFree(static_cast<IOLock *>(l)); }
@@ -66,6 +67,7 @@ void GDHubReleaseOwner(GDHubVirtualHIDUserClient * uc)
     // The core hands back the owner's pad if it is still registered ("no pad outlives its owner"); terminate it here,
     // outside the registry lock.
     OSObject * left = static_cast<OSObject *>(gdhr_release_owner(GDHubReg(), static_cast<OSObject *>(uc)));
+    GDHubPokeTap();                       // the core reset the desired state to INERT with the owner; the tap closes the interface (rule C)
     if (left) {
         GDLog("owner released with a pad still registered: terminating it");
         gdhr_ctr_add(GDHubReg(), GDHR_CTR_PAD_DESTROYS, 1);
@@ -145,6 +147,34 @@ void GDHubProbeFirst(int probe, const char * where, int which, IODispatchQueue *
     if (gdhr_probe_once(r, probe, bits)) probeLog(where, bits);
 }
 
+// Called from the root's queue (selector 9, user client Stop). The tap and its queue are +1 copies; the block owns the tap
+// reference and releases it on the tap's queue. DispatchAsync (IODispatchQueue.iig:132-133) never waits.
+void GDHubPokeTap(void)
+{
+    void * q = nullptr;
+    OSObject * t = static_cast<OSObject *>(gdhr_copy_tap(GDHubReg(), &q));
+    IODispatchQueue * queue = static_cast<IODispatchQueue *>(q);
+    if (!t || !queue) {
+        if (t) t->release();
+        if (queue) queue->release();
+        return;
+    }
+    GDHubReceiverTap * tap = static_cast<GDHubReceiverTap *>(t);
+    queue->DispatchAsync(^{
+        GDHubTapApply(tap);
+        tap->release();
+    });
+    queue->release();
+}
+
+void GDHubTerminateTap(void)
+{
+    void * q = nullptr;
+    OSObject * t = static_cast<OSObject *>(gdhr_copy_tap(GDHubReg(), &q));
+    if (q) static_cast<OSObject *>(q)->release();
+    GDHubTerminateAndRelease(t);          // asynchronous: the tap's own Stop closes the interface
+}
+
 size_t GDHubBuildStatus2(uint8_t * buf, size_t cap)
 {
     gdhr * r = GDHubReg();
@@ -157,5 +187,14 @@ size_t GDHubBuildStatus2(uint8_t * buf, size_t cap)
         GDHubPadReadMeter(pad, &hop, &hr, &windows);
         pad->release();
     }
-    return gdh_status2_pack(buf, cap, &snap, &hop, &hr, windows);
+    gdh_summary k2d = {};
+    uint32_t tapWindows = 0;
+    void * q = nullptr;
+    GDHubReceiverTap * tap = static_cast<GDHubReceiverTap *>(static_cast<OSObject *>(gdhr_copy_tap(r, &q)));
+    if (q) static_cast<OSObject *>(q)->release();
+    if (tap) {
+        GDHubTapReadMeter(tap, &k2d, &tapWindows);
+        tap->release();
+    }
+    return gdh_status2_pack(buf, cap, &snap, &hop, &hr, windows, &k2d);
 }
