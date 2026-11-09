@@ -19,7 +19,7 @@
       "controls" : [
         "rt"
       ],
-      "detail" : "Keep it held the whole time. The app hands the controller between Driver and App 12 times meanwhile (about 40 s); the pad must never let go of RT. Let go when it says so.",
+      "detail" : "Only hold RT. Do not press or move anything else, and do not let go until the screen says \"Let go now\" (about 40 s). You have nothing else to do: the app itself switches who drives the controller, App and Driver in turn, 12 times while you hold.",
       "expect" : {
         "item" : "RT",
         "minLevel" : 0.5
@@ -27,9 +27,9 @@
       "id" : "rt-hold",
       "kind" : "held",
       "seconds" : 45,
-      "title" : "Pull RT fully and hold it"
+      "title" : "Pull RT all the way in and just hold it still"
     }
   ],
-  "title" : "RT held while the driver is handed over (T7)",
+  "title" : "Hold RT while the app switches App ↔ Driver (T7)",
   "version" : 1
 }

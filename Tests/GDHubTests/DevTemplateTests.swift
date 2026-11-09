@@ -193,7 +193,7 @@ final class DevTemplateTests: XCTestCase {
 
     func testT7HoldToggleTemplateIsAsSpecifiedAndValidates() throws {
         let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "t7-rt-hold-toggle" })
-        XCTAssertEqual(t.title, "RT held while the driver is handed over (T7)")
+        XCTAssertEqual(t.title, "Hold RT while the app switches App ↔ Driver (T7)")
         XCTAssertFalse(t.notes.isEmpty)
         XCTAssertNil(t.paths)
         XCTAssertEqual(t.validate(layout: layout), [])
@@ -202,7 +202,7 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(step.id, "rt-hold")
         XCTAssertEqual(step.devKind, .held)
         XCTAssertEqual(step.controls, ["rt"])
-        XCTAssertEqual(step.title, "Pull RT fully and hold it")
+        XCTAssertEqual(step.title, "Pull RT all the way in and just hold it still")
         XCTAssertEqual(step.seconds, 45)
         XCTAssertEqual(step.expect?.item, "RT")
         XCTAssertEqual(step.expect?.minLevel, 0.5)

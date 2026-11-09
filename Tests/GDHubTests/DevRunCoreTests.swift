@@ -94,7 +94,7 @@ private final class Rig {
 
     /// RT held, with hand-overs between Driver and App (`count` writes, `intervalMs` apart).
     static func heldStep(interval: Int = 100, count: Int? = 3, seconds: Double = 45) -> DevStep {
-        var s = DevStep(id: "rt-hold", kind: .held, controls: ["rt"], title: "Pull RT fully and hold it", seconds: seconds, readySeconds: 1)
+        var s = DevStep(id: "rt-hold", kind: .held, controls: ["rt"], title: "Pull RT all the way in and just hold it still", seconds: seconds, readySeconds: 1)
         var e = DevExpect(); e.item = "RT"; e.minLevel = 0.5
         s.expect = e
         if let count {
@@ -1015,12 +1015,12 @@ final class DevRunCoreTests: XCTestCase {
         r.frame = f
         r.advance(5)
         r.setPad(p)
-        XCTAssertEqual(r.lastInstruction?.title, "Pull RT fully and hold it")
-        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding — hand-over 1 of 5 (Driver)")
+        XCTAssertEqual(r.lastInstruction?.title, "Pull RT all the way in and just hold it still")
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding RT still, nothing else to do — switch 1 of 5, now driven by Driver")
         r.advanceAnswering(1500)
-        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding — hand-over 2 of 5 (App)")
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding RT still, nothing else to do — switch 2 of 5, now driven by App")
         r.advanceAnswering(2000)
-        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding — hand-over 4 of 5 (App)")
+        XCTAssertEqual(r.lastInstruction?.detail, "Keep holding RT still, nothing else to do — switch 4 of 5, now driven by App")
         r.advanceAnswering(1000)                                 // 4.5 s in: 2 s left
         XCTAssertEqual(r.lastInstruction?.detail, "Keep holding…")
         XCTAssertEqual(r.pathWrites.count, 5)

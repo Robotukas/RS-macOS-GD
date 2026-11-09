@@ -159,8 +159,8 @@ enum DevBuiltins {
     /// RT held while the app hands the controller between Driver and App (the T7 driver check the stopwatch kept
     /// failing): the window opens when RT is held and the pad's RT must never drop for the whole of it.
     static func t7RTHoldToggle() -> DevTemplate {
-        var hold = DevStep(id: "rt-hold", kind: .held, controls: ["rt"], title: "Pull RT fully and hold it",
-                           detail: "Keep it held the whole time. The app hands the controller between Driver and App 12 times meanwhile (about 40 s); the pad must never let go of RT. Let go when it says so.",
+        var hold = DevStep(id: "rt-hold", kind: .held, controls: ["rt"], title: "Pull RT all the way in and just hold it still",
+                           detail: "Only hold RT. Do not press or move anything else, and do not let go until the screen says \"Let go now\" (about 40 s). You have nothing else to do: the app itself switches who drives the controller, App and Driver in turn, 12 times while you hold.",
                            seconds: 45)
         var toggle = DevToggleInputPath()
         toggle.values = ["driver", "engine"]
@@ -174,7 +174,7 @@ enum DevBuiltins {
         expect.minLevel = 0.5
         hold.expect = expect
         return DevTemplate(
-            id: "t7-rt-hold-toggle", title: "RT held while the driver is handed over (T7)",
+            id: "t7-rt-hold-toggle", title: "Hold RT while the app switches App ↔ Driver (T7)",
             notes: "Pull RT all the way down and keep it there. While you hold it the app switches who drives the controller, "
                 + "Driver then App, 12 times (every 3 s, about 40 s in all), and the check is that the virtual pad's RT never "
                 + "drops below 0.5 in that time: no hand-over may let the trigger go. Use it after any change to pad "

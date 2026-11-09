@@ -1430,7 +1430,7 @@ struct DevRunCore {
         case "shadow": who = "App, driver alongside"
         default: who = last.value
         }
-        return "Keep holding — hand-over \(c.handOvers.count) of \(c.schedule.count) (\(who))"
+        return "Keep holding RT still, nothing else to do — switch \(c.handOvers.count) of \(c.schedule.count), now driven by \(who)"
     }
 
     private var lastFinishedText: (title: String, detail: String, total: UInt64?, ringStart: UInt64?) {
