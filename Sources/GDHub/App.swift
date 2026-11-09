@@ -126,7 +126,7 @@ struct GDHubApp: App {
         .commands {
             CommandMenu("Layout") { LayoutCommands(device: model.envision, editor: model.envision.editor) }
             CommandMenu("Controller") { ControllerCommands(control: model.control) }
-            CommandMenu("Driver") { DriverCommands(driver: model.driver) }
+            CommandMenu("Driver") { DriverCommands(driver: model.driver, device: model.envision) }
         }
     }
 }
@@ -212,6 +212,7 @@ struct LayoutCommands: View {
             if editor.isEditing { device.lockLayout() } else { device.beginEditingLayout() }
         }
         .keyboardShortcut("e", modifiers: [.command, .shift])
+        .disabled(device.dev != nil)
         Button("Cancel editing") { device.cancelEditingLayout() }
             .keyboardShortcut(".", modifiers: [.command, .shift])
             .disabled(!editor.isEditing)

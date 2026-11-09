@@ -3,6 +3,8 @@ import SwiftUI
 /// Driver menu: status line plus the actions that apply to the current state (design §5.1).
 struct DriverCommands: View {
     @ObservedObject var driver: DriverManager
+    /// Developer mode: a run owns the input path while it is on, so the menu is disabled then.
+    var device: EnvisionProDevice?
 
     var statusText: String {
         switch driver.state {
@@ -88,7 +90,11 @@ struct DriverCommands: View {
     @ViewBuilder private var engineBody: some View {
         Text(driver.engineStatus.menuText)
         Text(driver.inputPathStatusText)
-        inputPathMenu
+        if let device {
+            DevRunWatcher(device: device) { inputPathMenu(devRunActive: $0) }
+        } else {
+            inputPathMenu(devRunActive: false)
+        }
         Text("Pad is controlled by the background engine")
         Button("Restart engine") { driver.restartEngine() }
             .disabled(driver.engineUninstalled)
@@ -110,7 +116,7 @@ struct DriverCommands: View {
     /// T6: the choice writes the `inputPath` key the engine polls (App = engine, Driver (shadow) = the tap translates and is compared, Driver = LIVE once the driver reports it; a driver without LIVE runs it as shadow).
     /// Explicit buttons with a hand-drawn checkmark, not a `Picker`: a click on the item that is already selected must still
     /// reach the engine ("choose Driver to try again" after a fallback), and a Picker is not known to call its setter then.
-    @ViewBuilder private var inputPathMenu: some View {
+    @ViewBuilder private func inputPathMenu(devRunActive: Bool) -> some View {
         Menu("Input path") {
             ForEach(Self.inputPathItems, id: \.value) { item in
                 Button {
@@ -120,7 +126,7 @@ struct DriverCommands: View {
                 }
             }
         }
-        .disabled(driver.runningEnginePid == nil)
+        .disabled(driver.runningEnginePid == nil || devRunActive)
     }
 
     static let inputPathItems: [(value: String, title: String)] = [("engine", "App"), ("shadow", "Driver (shadow)"), ("driver", "Driver")]
@@ -175,5 +181,16 @@ struct DriverCommands: View {
             .disabled(!isConnected)
         Divider()
         driverButtons
+    }
+}
+
+
+/// Hands its content whether a Developer run is active, following both the mode being switched on and the run's state.
+private struct DevRunWatcher<Content: View>: View {
+    @ObservedObject var device: EnvisionProDevice
+    let content: (Bool) -> Content
+
+    var body: some View {
+        DevObserved(session: device.dev) { content($0?.isRunning == true) }
     }
 }

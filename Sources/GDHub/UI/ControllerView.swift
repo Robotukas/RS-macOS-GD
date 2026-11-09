@@ -22,8 +22,12 @@ struct ControllerView: View {
     var body: some View {
         if let layout = device.layout {
             VStack(spacing: 12) {
+                if let dev = device.dev {
+                    DevPanel(session: dev)
+                }
                 // One scale factor for all four views: each gets a width proportional to its image,
                 // so resizing the window grows or shrinks every view by the same amount.
+                DevObserved(session: device.dev) { dev in
                 GeometryReader { geo in
                     let columns = layout.columns
                     let spacing: CGFloat = 16
@@ -44,7 +48,7 @@ struct ControllerView: View {
                             VStack(spacing: spacing) {
                                 ForEach(columns[ci], id: \.self) { side in
                                     let info = layout.images.info(for: side)
-                                    ControllerSideView(device: device, layout: layout, side: side)
+                                    ControllerSideView(device: device, layout: layout, side: side, dev: dev)
                                         .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
                                 }
                             }
@@ -65,15 +69,29 @@ struct ControllerView: View {
                     }
                 }
                 .padding(.horizontal)
-                if !device.editor.isEditing && device.learn == nil {
+                .frame(minHeight: device.dev == nil ? 0 : 240)
+                }
+                if let dev = device.dev, dev.finishedWithResults || !dev.rows.isEmpty {
+                    DevResultTable(session: dev)
+                }
+                if !device.editor.isEditing && device.learn == nil && device.dev == nil {
                     ControllerStatusStrip(device: device, control: control)
                 }
                 LayoutToolbar(device: device, editor: device.editor)
-                HStack(alignment: .top, spacing: 16) {
-                    LearnToolbar(device: device)
-                    if let current = device.learn?.currentControl {
-                        MagnifierView(device: device, layout: layout, control: current)
-                            .padding(.trailing)
+                if device.dev == nil {
+                    HStack(alignment: .top, spacing: 16) {
+                        LearnToolbar(device: device)
+                        if let current = device.learn?.currentControl {
+                            MagnifierView(device: device, layout: layout, control: current)
+                                .padding(.trailing)
+                        }
+                    }
+                } else {
+                    // The loupe follows the control the step asks for while a run is on.
+                    DevObserved(session: device.dev) { dev in
+                        if let dev, dev.isRunning, let wanted = dev.wantedControl(in: layout) {
+                            MagnifierView(device: device, layout: layout, control: wanted, dev: dev)
+                        }
                     }
                 }
             }
@@ -92,6 +110,7 @@ private struct ControllerSideView: View {
     @ObservedObject var device: EnvisionProDevice
     let layout: ControlLayout
     let side: ControlLayout.Side
+    let dev: DevOverlay?
 
     var body: some View {
         let info = layout.images.info(for: side)
@@ -126,12 +145,14 @@ private struct ControllerSideView: View {
                             stick: c.kind == .stick ? device.mapping.stickPosition(c.id, device.frame) : nil,
                             trigger: c.kind == .trigger ? device.mapping.triggerValue(c.id, device.frame) : nil,
                             coverage: learningId == c.id ? device.learn?.circleCovered : nil,
-                            onTap: { if !device.editor.isEditing { device.startLearn(controlId: c.id) } }
+                            dev: dev?.control(c),
+                            onTap: { if !device.editor.isEditing && device.dev == nil { device.startLearn(controlId: c.id) } }
                         )
+                        .allowsHitTesting(device.dev == nil)
                         .position(x: originX + c.x * imgW, y: c.y * imgH)
                     }
                     CalloutLayer(controls: controls, layout: layout, size: imgSize, origin: CGPoint(x: originX, y: 0),
-                                 frameSize: geo.size, device: device, editor: device.editor, learningId: learningId)
+                                 frameSize: geo.size, device: device, editor: device.editor, learningId: learningId, dev: dev)
                         .allowsHitTesting(device.editor.isEditing)
                 }
             }
@@ -156,6 +177,7 @@ private struct MagnifierView: View {
     @ObservedObject var device: EnvisionProDevice
     let layout: ControlLayout
     let control: ControlLayout.Control
+    var dev: DevOverlay?
 
     private let size: CGFloat = 200
     private let zoom: CGFloat = 3.2
@@ -181,10 +203,11 @@ private struct MagnifierView: View {
                     diameter: diameter,
                     active: device.mapping.isActive(control.id, device.frame),
                     mapped: device.mapping.isMapped(control.id),
-                    learning: true,
+                    learning: dev == nil,
                     stick: control.kind == .stick ? device.mapping.stickPosition(control.id, device.frame) : nil,
                     trigger: control.kind == .trigger ? device.mapping.triggerValue(control.id, device.frame) : nil,
-                    coverage: device.learn?.circleCovered,
+                    coverage: dev == nil ? device.learn?.circleCovered : nil,
+                    dev: dev?.control(control),
                     onTap: {}
                 )
                 .allowsHitTesting(false)
@@ -210,6 +233,7 @@ private struct HotspotView: View {
     let trigger: Double?
     /// Circle-capture sectors while this stick is being learned (nil otherwise).
     let coverage: [Bool]?
+    var dev: DevControlOverlay?
     let onTap: () -> Void
 
     private var width: CGFloat { control.isPill ? diameter * 2 : diameter }
@@ -244,6 +268,10 @@ private struct HotspotView: View {
                 LearningPulse(shape: shape)
             }
 
+            if let dev {
+                devOverlay(dev)
+            }
+
             if let cov = coverage, !cov.isEmpty {
                 CoverageRing(covered: cov)
                     .frame(width: diameter * 1.25, height: diameter * 1.25)
@@ -253,9 +281,81 @@ private struct HotspotView: View {
         .frame(width: width, height: diameter)
         .contentShape(shape)
         .onTapGesture(perform: onTap)
-        .help("Click to learn \(control.label)")
+        .help(dev == nil ? "Click to learn \(control.label)" : control.label)
     }
 
+    /// Developer mode: the purple pad state, then the ring that says what the step wants or how it ended.
+    @ViewBuilder private func devOverlay(_ d: DevControlOverlay) -> some View {
+        let purple = DevPalette.purple
+        if let pad = d.pad {
+            if pad.pressed {
+                shape.fill(purple.opacity(0.55))
+            }
+            if let t = pad.trigger, t > 0.02 {
+                ZStack(alignment: .bottomTrailing) {
+                    Color.clear
+                    Rectangle().fill(purple.opacity(0.85)).frame(width: width * 0.4, height: diameter * t)
+                }
+                .clipShape(shape)
+            }
+            if let p = pad.stick {
+                let travel = diameter / 2 * 0.65
+                Circle()
+                    .fill(purple)
+                    .overlay(Circle().stroke(Color.white.opacity(0.8), lineWidth: 0.75))
+                    .frame(width: diameter * 0.18, height: diameter * 0.18)
+                    .offset(x: p.x * travel, y: p.y * travel)
+            }
+        }
+        switch d.highlight {
+        case .wanted?:
+            if d.paused {
+                shape.fill(purple.opacity(0.2))
+                shape.stroke(purple, lineWidth: 3)
+                Text("❚❚").font(.system(size: max(diameter * 0.35, 9), weight: .heavy)).foregroundStyle(purple)
+            } else {
+                DevPulse(shape: shape)
+            }
+        case .linked?:
+            shape.stroke(purple.opacity(0.55), lineWidth: 2)
+        case .passed?:
+            shape.stroke(DevPalette.pass, lineWidth: 2.5)
+        case .failed?:
+            shape.stroke(DevPalette.fail, lineWidth: 2.5)
+        case .inconclusive?:
+            shape.stroke(DevPalette.inconclusive, lineWidth: 2.5)
+        case .skipped?:
+            shape.stroke(DevPalette.skipped, lineWidth: 2)
+            Path { p in
+                p.move(to: CGPoint(x: width * 0.15, y: diameter * 0.85))
+                p.addLine(to: CGPoint(x: width * 0.85, y: diameter * 0.15))
+            }
+            .stroke(DevPalette.skipped, lineWidth: 1.5)
+            .frame(width: width, height: diameter)
+        case .restOutline?:
+            shape.stroke(purple.opacity(0.25), lineWidth: 1)
+        case nil:
+            EmptyView()
+        }
+    }
+}
+
+/// The purple pulse of the control a step asks for.
+private struct DevPulse: View {
+    let shape: AnyShape
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let phase = 0.5 + 0.5 * sin(t * 2 * .pi / 1.1)
+            ZStack {
+                shape.fill(DevPalette.purple.opacity(0.25))
+                shape.stroke(DevPalette.purple, lineWidth: 3)
+            }
+            .scaleEffect(1 + 0.12 * phase)
+            .shadow(color: DevPalette.purple.opacity(0.4 + 0.3 * phase), radius: 8)
+        }
+    }
 }
 
 /// Callout labels beside each control with a thin leader line to it. Orange while the control is
@@ -270,6 +370,7 @@ private struct CalloutLayer: View {
     @ObservedObject var device: EnvisionProDevice
     @ObservedObject var editor: LayoutEditor
     let learningId: String?
+    var dev: DevOverlay?
 
     /// Where a label's anchor point is (frame coordinates) and which pill edge the anchor refers to.
     struct Placed {
@@ -441,8 +542,19 @@ private struct CalloutLayer: View {
     private func color(_ c: ControlLayout.Control) -> Color {
         if editor.isEditing && editor.selection.contains(c.id) { return .yellow }
         if learningId == c.id { return .blue }
+        if let h = dev?.highlights[c.id], h != .restOutline { return DevPalette.color(for: h) }
         if device.mapping.isActive(c.id, device.frame) { return .orange }
         return device.mapping.isMapped(c.id) ? .white : .gray
+    }
+
+    /// ✓ / ✗ after the label once a step has a verdict.
+    private func devMark(_ c: ControlLayout.Control) -> String {
+        switch dev?.highlights[c.id] {
+        case .passed?: return " ✓"
+        case .failed?: return " ✗"
+        case .inconclusive?: return " ?"
+        default: return ""
+        }
     }
 
     // MARK: Editing
@@ -802,7 +914,9 @@ private struct CalloutLayer: View {
     private func labelView(_ c: ControlLayout.Control, _ pl: Placed, _ placed: [String: Placed]) -> some View {
         let col = color(c)
         let fs = fontSize
-        let pill = Text(c.label)
+        let mark = devMark(c)
+        let dimmed = dev.map { $0.isRunning && $0.highlights[c.id] == nil } ?? false
+        let pill = Text(c.label + mark)
             .font(.system(size: fs, weight: .medium))
             .foregroundStyle(col)
             .padding(.horizontal, fs * 0.5)
@@ -810,6 +924,7 @@ private struct CalloutLayer: View {
             .background(Color.black.opacity(0.6), in: Capsule())
             .overlay(Capsule().stroke(col.opacity(editor.isEditing ? 0.9 : 0.5),
                                       style: StrokeStyle(lineWidth: editor.isEditing ? 1 : 0.5, dash: editor.isEditing ? [3, 2] : [])))
+            .opacity(dimmed ? 0.45 : 1)
             .fixedSize()
             .background(GeometryReader { g in Color.clear.preference(key: PillSizeKey.self, value: [c.id: g.frame(in: .named("grid"))]) })
             .onTapGesture {
@@ -1003,6 +1118,20 @@ private struct LayoutToolbar: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else {
                 Button("Edit layout") { device.beginEditingLayout() }
+                    .disabled(device.dev != nil)
+                Button(device.dev == nil ? "Developer" : "Developer ✓ Done") {
+                    if let dev = device.dev {
+                        if dev.isRunning { dev.stop() }
+                        device.endDeveloper()
+                    } else {
+                        _ = device.beginDeveloper()
+                    }
+                }
+                .disabled(editor.isEditing)
+                .help("Record what the virtual pad sends while the app tells you what to press")
+                if let dev = device.dev {
+                    DevToolbarHint(session: dev)
+                }
                 Spacer()
             }
         }
@@ -1011,6 +1140,22 @@ private struct LayoutToolbar: View {
             FontToolbar(device: device)
                 .padding(.horizontal)
         }
+    }
+}
+
+/// The line next to the Developer button: what to do in the current state.
+private struct DevToolbarHint: View {
+    @ObservedObject var session: DevSession
+
+    var body: some View {
+        Text(text).font(.caption).foregroundStyle(DevPalette.purple).lineLimit(2)
+    }
+
+    private var text: String {
+        if session.isPaused { return "Paused. Space resumes, Esc stops." }
+        if session.isRunning { return "Follow the purple control. Space pauses, ← back, → skip, Esc stops." }
+        if session.finishedWithResults { return "Run finished. Click a red or amber chip to run that step again, or press Start for a new run." }
+        return "Pick where to record and a template, then press Start. Press Developer ✓ Done to leave."
     }
 }
 
