@@ -34,13 +34,13 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T0 | Probe dext: does it load, does it win the match, one process, raw reads intact, reports in-driver, crash relaunch, downgrade | Probe dext only (4 probe operations; production untouched) | done (passed 2026-11-09, see "T0 results"; probe removed) |
 | T1 | Engine limiter fix (rank 5) and the new baseline | No | done (passed 2026-11-09, see "T1 results"; Game Mode baseline still to take) |
 | T2 | One shared C translator; the engine runs it | No | done (passed 2026-11-09, see "T2 results"; 10 min play check still to do) |
-| T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | ▶ current |
-| T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | pending |
+| T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | done (passed 2026-11-09, dext builds 18 and 19, see "T3 results") |
+| T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | ▶ current |
 | T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | pending |
 | T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | pending |
 | T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | pending |
 | T8 | Gate and play test; LIVE becomes the default | No | pending |
-| T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending |
+| T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending (T3 measured the hop at about 1 µs, so unlikely to be needed) |
 | T10 | Rumble (after the 0x09 capture) | Yes | pending |
 | T11 | Macro overlay (MERGE with TTL) and D8 slots under the root | Yes | pending |
 | T12 | AutoArm: pad with no user process (optional; needs a measured relaunch signal) | Yes | blocked (T0.3: no in-dext relaunch signal) |
@@ -1566,6 +1566,40 @@ All **M**, engine path, Release build 17, owner moving both sticks, Game Mode of
   The difference is within the ±0.15 ms criterion and smaller than the window-to-window spread; the translation step itself costs under 1 µs either way.
 - **Engine path now:** total p50 0.17–0.26 ms in these windows, at or below the §1 estimate for the in-dext path (0.15–0.35 ms).
 - **Not yet verified:** 10 min of play on the C core; parity with the C compiled at Xcode's `-Os` (tested at `-O0` and `-O2`); the Game Mode baseline (carried over from T1).
+
+---
+
+## T3 results (2026-11-09): passed (production dext builds 18 and 19)
+
+All **M**. Dext lines were read from a `log stream` capture started before each step.
+
+| Check | Result |
+|---|---|
+| Upgrade 17 → 18 (U1–U7) | Replaced without reboot or prompt. New app + old dext (`hello … dext build 17`) and new app + new dext both worked during the swap. |
+| Upgrade 18 → 19 (L8, from T3 code) | `systemextensionsctl` showed 19 `activated enabled` and the new process answered 4 s after U4. devTerminate order `pad stop` → `root stop` as designed. The third replacement in the plan's "twice in a row" was not run. |
+| A15: root-level `Create` | **Holds.** `GDHubPadProperties` at root level is found; `vhid-check` prints PASS (pad is a child of `GDHubVirtualHID`). `pad start` is logged before `createDevice … created`, so `Create` returns after the pad's Start (`createEarly` 0). |
+| A16: fixed-length buffers | **Holds.** No post error; hosts see the pad (GameController adopted it). The removed per-post `SetLength` is not visible in the numbers: IOConnect stage p50 0.19 ms before and after at ~900 posts/s. |
+| A19: hop user client → pad | **In-process and cheap.** `hop` p50 1–2 µs, p99 3–5 µs, max 20–60 µs, mean 0.6–1.4 µs. `handleReport` itself: mean 19–26 µs, p99 ≤ 75 µs, max 229–349 µs. **T9 (shared queue) is not needed for the hop.** |
+| L6: no regression | Engine total p50 0.26–0.34 ms, p99 0.73–1.18 ms at 540–940 posts/s (T1/T2: 0.17–0.33 ms). |
+| G5: `kill -9` of the engine | Pad gone at the first poll (≤ 0.02 s); root still present; launchd restarted the engine and the pad was recreated. Twice (builds 18 and 19). |
+| Watchdog: SIGSTOP 3.5 s | One `watchdog: no activity for more than 2000 ms, neutral reports posted`; the pad stayed. Twice. |
+| Capabilities | `connected: driver build 19 protocol 1 capabilities 257` (CAP_ROOT_PAD). |
+
+**Queue topology (measured by the build-19 probe; the §4.2 assumption was wrong):**
+- Root, user client and pad each have their own default queue object (`rootq=1 ucq=4 padq=5`).
+- `ExternalMethod` does **not** run on the user client's default queue: inside it `OnQueue()` is true for the root's queue and false for the user client's. So external methods are dispatched on the provider's (root's) queue, and a call from there to `CreatePad`/`DestroyPad` is an inline nested call (build 18 logged these as `SYNC VIOLATION`; build 19 counts them as `syncInline`).
+- The user client's Start and the pad's Start run nested under the root's queue.
+- The watchdog timer runs on the user client's own queue, so it is concurrent with external methods. The fields they share are atomic from build 19 (build 17 had the same topology without that).
+- `submitInput` is a cross-queue call from the root's queue to the pad's queue and costs about 1 µs.
+
+**Consequences for T4 and later:**
+- §4.2/§4.4: describe calls as "root queue → pad queue"; the "user client queue" only runs the watchdog timer.
+- The tap will have its own queue; its hop to the pad queue should cost the same ~1 µs as the user client's (to be measured in T5).
+- Anything written for T4–T7 that relies on "external methods are serialized with the watchdog" is wrong; anything that relies on "external methods are serialized with root methods" is right.
+
+**Pre-install review** (independent, before build 18): no blocker; four findings fixed before install (`CreatePad` no longer assumes `Create` waits for Start, finer meter buckets plus mean, neutral before destroy, slot emptied on every `createDevice` failure).
+
+Tests: 295. Rollback copy of the T2 app: `~/GDHub-rollback/T3-pre/`.
 
 ---
 

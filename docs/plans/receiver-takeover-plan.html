@@ -49,14 +49,15 @@ details.toc a{text-decoration:none}
 <main>
 <p class="note">GDHub · generated from <code>docs/plans/receiver-takeover-plan.md</code>, which is the source of truth</p>
 <section class="card" id="plain-summary">
-<p class="status">Approved 2026-11-09 · T0, T1 and T2 passed · T3 (first real driver change) next</p>
+<p class="status">Approved 2026-11-09 · T0 to T3 passed · installed driver is build 19 · T4 next</p>
 <h2>In plain words</h2>
 <h3>Where it stands</h3>
 <ul>
 <li><b>T0, the throwaway test driver, passed.</b> macOS loads our driver with the extra permission, it wins the receiver's controller interface over Apple's handler, both driver parts share one process, and it reads every controller update while the app's own reader keeps working. Games saw no change.</li>
 <li><b>Crash test:</b> the test driver was crashed 7 times in 27 seconds. macOS restarted it in about 0.04 seconds each time, did not restart the Mac, and the engine never lost the controller.</li>
 <li><b>Rollback works:</b> macOS accepted an older driver version, and removing the test driver handed the interface back to Apple's handler at once.</li>
-<li>The test driver is removed. The installed driver is still build 17 and nothing in the real driver has changed yet.</li>
+<li>The test driver is removed.</li>
+<li><b>T3, the first real driver change, passed.</b> The virtual pad is now owned by the driver itself. The driver was replaced twice (17 → 18 → 19) without a reboot. Force-quitting the engine still removes the pad at once, freezing it still releases all controls after 2 seconds, and the last hop inside the driver costs about a millionth of a second.</li>
 <li><b>T2, the shared translator, passed.</b> The engine now translates the controller data with the same code the driver will use later. It gives byte-identical output to the old translator on a million test inputs, and a side-by-side measurement showed no difference in delay.</li>
 <li><b>T1, the rate-limiter fix, passed.</b> The engine's typical delay is now about 0.3 ms (it was 1.19 ms this morning), with no driver change. That is already close to what the takeover was estimated to reach, so what the takeover still adds is mostly robustness and a tighter worst case, not a lower typical delay.</li>
 </ul>
@@ -190,6 +191,7 @@ details.toc a{text-decoration:none}
 </li>
 <li><a href="#t1-results-2026-11-09-passed-with-one-extension">T1 results (2026-11-09): passed, with one extension</a></li>
 <li><a href="#t2-results-2026-11-09-passed">T2 results (2026-11-09): passed</a></li>
+<li><a href="#t3-results-2026-11-09-passed-production-dext-builds-18-and-19">T3 results (2026-11-09): passed (production dext builds 18 and 19)</a></li>
 <li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
 <li><a href="#review-resolution">Review resolution</a></li>
 </ul>
@@ -251,13 +253,13 @@ details.toc a{text-decoration:none}
 <td>T3</td>
 <td>Root owns the pad; registry; fixed-length post buffers; DextClient matching fix</td>
 <td>Yes</td>
-<td>▶ current</td>
+<td>done (passed 2026-11-09, dext builds 18 and 19, see "T3 results")</td>
 </tr>
 <tr>
 <td>T4</td>
 <td>Tap in production, INERT and COUNT only; soak; upgrade and rollback drills</td>
 <td>Yes</td>
-<td>pending</td>
+<td>▶ current</td>
 </tr>
 <tr>
 <td>T5</td>
@@ -287,7 +289,7 @@ details.toc a{text-decoration:none}
 <td>T9</td>
 <td>Shared Hot queue (only if G11 or G12 fails)</td>
 <td>Yes (conditional)</td>
-<td>pending</td>
+<td>pending (T3 measured the hop at about 1 µs, so unlikely to be needed)</td>
 </tr>
 <tr>
 <td>T10</td>
@@ -3183,6 +3185,67 @@ The last line must be `status is now on` or `Game mode enabled`.
 <li><strong>Engine path now:</strong> total p50 0.17–0.26 ms in these windows, at or below the §1 estimate for the in-dext path (0.15–0.35 ms).</li>
 <li><strong>Not yet verified:</strong> 10 min of play on the C core; parity with the C compiled at Xcode's <code>-Os</code> (tested at <code>-O0</code> and <code>-O2</code>); the Game Mode baseline (carried over from T1).</li>
 </ul>
+<hr />
+<h2 id="t3-results-2026-11-09-passed-production-dext-builds-18-and-19">T3 results (2026-11-09): passed (production dext builds 18 and 19)</h2>
+<p>All <span class="tag">M</span>. Dext lines were read from a <code>log stream</code> capture started before each step.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Upgrade 17 → 18 (U1–U7)</td>
+<td>Replaced without reboot or prompt. New app + old dext (<code>hello … dext build 17</code>) and new app + new dext both worked during the swap.</td>
+</tr>
+<tr>
+<td>Upgrade 18 → 19 (L8, from T3 code)</td>
+<td><code>systemextensionsctl</code> showed 19 <code>activated enabled</code> and the new process answered 4 s after U4. devTerminate order <code>pad stop</code> → <code>root stop</code> as designed. The third replacement in the plan's "twice in a row" was not run.</td>
+</tr>
+<tr>
+<td>A15: root-level <code>Create</code></td>
+<td><strong>Holds.</strong> <code>GDHubPadProperties</code> at root level is found; <code>vhid-check</code> prints PASS (pad is a child of <code>GDHubVirtualHID</code>). <code>pad start</code> is logged before <code>createDevice … created</code>, so <code>Create</code> returns after the pad's Start (<code>createEarly</code> 0).</td>
+</tr>
+<tr>
+<td>A16: fixed-length buffers</td>
+<td><strong>Holds.</strong> No post error; hosts see the pad (GameController adopted it). The removed per-post <code>SetLength</code> is not visible in the numbers: IOConnect stage p50 0.19 ms before and after at ~900 posts/s.</td>
+</tr>
+<tr>
+<td>A19: hop user client → pad</td>
+<td><strong>In-process and cheap.</strong> <code>hop</code> p50 1–2 µs, p99 3–5 µs, max 20–60 µs, mean 0.6–1.4 µs. <code>handleReport</code> itself: mean 19–26 µs, p99 ≤ 75 µs, max 229–349 µs. <strong>T9 (shared queue) is not needed for the hop.</strong></td>
+</tr>
+<tr>
+<td>L6: no regression</td>
+<td>Engine total p50 0.26–0.34 ms, p99 0.73–1.18 ms at 540–940 posts/s (T1/T2: 0.17–0.33 ms).</td>
+</tr>
+<tr>
+<td>G5: <code>kill -9</code> of the engine</td>
+<td>Pad gone at the first poll (≤ 0.02 s); root still present; launchd restarted the engine and the pad was recreated. Twice (builds 18 and 19).</td>
+</tr>
+<tr>
+<td>Watchdog: SIGSTOP 3.5 s</td>
+<td>One <code>watchdog: no activity for more than 2000 ms, neutral reports posted</code>; the pad stayed. Twice.</td>
+</tr>
+<tr>
+<td>Capabilities</td>
+<td><code>connected: driver build 19 protocol 1 capabilities 257</code> (CAP_ROOT_PAD).</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Queue topology (measured by the build-19 probe; the §4.2 assumption was wrong):</strong>
+- Root, user client and pad each have their own default queue object (<code>rootq=1 ucq=4 padq=5</code>).
+- <code>ExternalMethod</code> does <strong>not</strong> run on the user client's default queue: inside it <code>OnQueue()</code> is true for the root's queue and false for the user client's. So external methods are dispatched on the provider's (root's) queue, and a call from there to <code>CreatePad</code>/<code>DestroyPad</code> is an inline nested call (build 18 logged these as <code>SYNC VIOLATION</code>; build 19 counts them as <code>syncInline</code>).
+- The user client's Start and the pad's Start run nested under the root's queue.
+- The watchdog timer runs on the user client's own queue, so it is concurrent with external methods. The fields they share are atomic from build 19 (build 17 had the same topology without that).
+- <code>submitInput</code> is a cross-queue call from the root's queue to the pad's queue and costs about 1 µs.</p>
+<p><strong>Consequences for T4 and later:</strong>
+- §4.2/§4.4: describe calls as "root queue → pad queue"; the "user client queue" only runs the watchdog timer.
+- The tap will have its own queue; its hop to the pad queue should cost the same ~1 µs as the user client's (to be measured in T5).
+- Anything written for T4–T7 that relies on "external methods are serialized with the watchdog" is wrong; anything that relies on "external methods are serialized with root methods" is right.</p>
+<p><strong>Pre-install review</strong> (independent, before build 18): no blocker; four findings fixed before install (<code>CreatePad</code> no longer assumes <code>Create</code> waits for Start, finer meter buckets plus mean, neutral before destroy, slot emptied on every <code>createDevice</code> failure).</p>
+<p>Tests: 295. Rollback copy of the T2 app: <code>~/GDHub-rollback/T3-pre/</code>.</p>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
 <div class="tw"><table>
