@@ -112,6 +112,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         // changing it needs a relaunch. `Config()` itself stays at 250 Hz.
         var config = VirtualPadSink.Config()
         config.maxRateHz = VirtualPadSink.runtimeMaxRateHz()
+        config.xlateCore = VirtualPadSink.runtimeXlateCore()
         let padSink = VirtualPadSink(queue: vhidQueue, transport: backend, config: config)
         sink = padSink
         // `--latency-log` (dev aid): print the `latency` log line every 2 s instead of every 10 s.
@@ -199,6 +200,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         dext = client
         var config = VirtualPadSink.Config()
         config.maxRateHz = VirtualPadSink.runtimeMaxRateHz()
+        config.xlateCore = VirtualPadSink.runtimeXlateCore()
         let padSink = VirtualPadSink(queue: vhidQueue, transport: client, config: config)
         sink = padSink
         poller = DextStatusPoller(queue: vhidQueue, dext: client, sink: padSink,

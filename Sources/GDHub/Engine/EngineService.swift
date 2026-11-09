@@ -36,6 +36,7 @@ final class EngineService: @unchecked Sendable {
         dext = client
         var config = VirtualPadSink.Config()
         config.maxRateHz = VirtualPadSink.runtimeMaxRateHz()
+        config.xlateCore = VirtualPadSink.runtimeXlateCore()
         let padSink = VirtualPadSink(queue: vhidQueue, transport: client, config: config)
         sink = padSink
         let mapping = store.load()

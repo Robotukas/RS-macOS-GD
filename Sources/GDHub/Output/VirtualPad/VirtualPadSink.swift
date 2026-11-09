@@ -119,6 +119,9 @@ final class VirtualPadSink: @unchecked Sendable {
         var axisDeadband = 0.002
         var triggerDeadband = 0.002
         var heartbeatMs = 500
+        /// Which translator turns frames into reports. `Config()` runs the shared C core; production reads the
+        /// `xlateCore` key (`runtimeXlateCore`).
+        var xlateCore = XlateCoreChoice.c
     }
 
     /// `UserDefaults` key for the runtime rate cap (Hz), read when the sink is built.
@@ -132,6 +135,14 @@ final class VirtualPadSink: @unchecked Sendable {
     static func runtimeMaxRateHz(defaults: UserDefaults = .standard) -> Double {
         guard let v = (defaults.object(forKey: maxRateKey) as? NSNumber)?.doubleValue, v.isFinite else { return runtimeDefaultRateHz }
         return min(max(v, 60), 4000)
+    }
+
+    /// `UserDefaults` key selecting the translator, read when the sink is built: `defaults write com.interlinked.gdhub
+    /// xlateCore -string swift` runs the original Swift mapper and builder; any other value or none runs the C core.
+    static let xlateCoreKey = "xlateCore"
+
+    static func runtimeXlateCore(defaults: UserDefaults = .standard) -> XlateCoreChoice {
+        (defaults.string(forKey: xlateCoreKey)?.lowercased() == "swift") ? .swift : .c
     }
 
     /// Queue-confined counters, read by the Driver menu's status poller.
@@ -167,6 +178,14 @@ final class VirtualPadSink: @unchecked Sendable {
     private var connected = false
     private var created = false                         // a device exists in the dext for `createdIdentity`
     private var createdIdentity: PadIdentity?
+    private var createdSpecBytes: [UInt8]?              // the encoded DeviceSpec of the created device (GDHM targets its CRC)
+
+    // C translator (queue-confined). The blob is compiled from the mapping on the first frame after any mapping, identity
+    // or device change; `xlateCache.core == nil` means the Swift path runs for that mapping.
+    private struct XlateCache { var mapping: ControlMapping; var identityID: String; var core: XlateCore? }
+    private var xlateCache: XlateCache?
+    private var xlateRevision: UInt32 = 0
+    private var xlateNote: String
     private var generation = 0                          // invalidates delayed create/retry closures
 
     // Frame mailbox (any thread). Controller frames arrive at ~1 kHz, mostly identical at rest; identical frames are
@@ -186,6 +205,7 @@ final class VirtualPadSink: @unchecked Sendable {
     private var lastSentState: PadState?                // nil: unknown, the next state is sent whatever it is
     private var lastSentBytes: [UInt8: [UInt8]] = [:]
     private var lastPostAt: UInt64?
+    private var pendingCore: XlateCore?                 // set when `pending` came from the C core (it builds the bytes too)
     private var flushTimer: SinkTimer?
     private var heartbeatTimer: SinkTimer?
     private var lastHeartbeatTickAt: UInt64 = 0
@@ -214,7 +234,12 @@ final class VirtualPadSink: @unchecked Sendable {
         self.duplicateCheck = duplicateCheck ?? { id in
             DuplicatePadGuard.conflict(vendorID: id.vendorID, productID: id.productID, ownSerial: id.serialNumber)
         }
+        xlateNote = config.xlateCore == .c ? "c" : "swift (xlateCore=swift)"
+        Self.log.notice("xlate core: \(self.xlateNote, privacy: .public)")
     }
+
+    /// Which translator is running, as logged: "c", "swift (xlateCore=swift)" or "swift (fallback, <reason>)". Queue-confined.
+    var xlateStatus: String { xlateNote }
 
     var isPatternRunning: Bool { patternTimer != nil }
     var isPublished: Bool { created }
@@ -310,6 +335,7 @@ final class VirtualPadSink: @unchecked Sendable {
                 return
             }
             created = true; createdIdentity = id
+            createdSpecBytes = try? spec.encoded()
             resetDeliveryState()
             _ = transport.postNeutral(slot: Self.slot)
             lastSentState = .neutral
@@ -325,12 +351,14 @@ final class VirtualPadSink: @unchecked Sendable {
 
     private func destroyCurrent() {
         if created { _ = transport.destroyDevice(slot: Self.slot) }
-        created = false; createdIdentity = nil
+        created = false; createdIdentity = nil; createdSpecBytes = nil
         resetDeliveryState()
     }
 
     /// Forgets everything about what was sent and stops the timers tied to a device.
     private func resetDeliveryState() {
+        xlateCache = nil                            // the device (hence the spec the blob targets) may be a different one
+        pendingCore = nil
         mailbox.withLock { $0.last = nil }          // frames dropped while no device existed must not hide a held state
         pending = nil
         pendingStamp = nil
@@ -424,7 +452,41 @@ final class VirtualPadSink: @unchecked Sendable {
     func handle(frame: GamepadFrame, mapping: ControlMapping, stamp: LatencyStamp? = nil) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard created, !isPatternRunning else { return }
-        submit(state: PassthroughPadMapper.padState(frame, mapping), stamp: stamp)
+        if let core = xlateCore(for: mapping) {
+            let pad = core.eval(frame)                  // already snapped by the C core
+            let same = lastSentState.map { core.unchanged(pad, XlateCore.pad(from: $0)) } ?? false
+            deliver(XlateCore.state(from: pad), unchanged: same, core: core, stamp: stamp)
+        } else {
+            submit(state: PassthroughPadMapper.padState(frame, mapping), stamp: stamp)
+        }
+    }
+
+    /// The C translator for `mapping`, or nil when the Swift path runs (key says so, or the mapping or blob is refused;
+    /// the reason is logged once).
+    private func xlateCore(for mapping: ControlMapping) -> XlateCore? {
+        guard config.xlateCore == .c, let id = createdIdentity else { return nil }
+        if let c = xlateCache, c.identityID == id.id, c.mapping == mapping { return c.core }
+        xlateRevision &+= 1
+        var core: XlateCore?
+        var note = "c"
+        if let spec = createdSpecBytes {
+            switch MapBlobEncoder.encode(mapping, identity: id, spec: spec, revision: xlateRevision,
+                                         axisDeadband: config.axisDeadband, triggerDeadband: config.triggerDeadband) {
+            case .unsupported(let why):
+                note = "swift (fallback, mapping not expressible in GDHM v1: \(why))"
+            case .blob(let blob):
+                do { core = try XlateCore(blob: blob, spec: spec) }
+                catch { note = "swift (fallback, \(error))" }
+            }
+        } else {
+            note = "swift (fallback, device spec unavailable)"
+        }
+        xlateCache = XlateCache(mapping: mapping, identityID: id.id, core: core)
+        if note != xlateNote {
+            xlateNote = note
+            Self.log.notice("xlate core: \(note, privacy: .public)")
+        }
+        return core
     }
 
     /// Delivers `state` subject to the deadband, the rate cap and send-on-change.
@@ -432,7 +494,13 @@ final class VirtualPadSink: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         guard created, createdIdentity != nil else { return }
         let s = snapped(raw)
-        if let last = lastSentState, unchanged(s, last) {
+        deliver(s, unchanged: lastSentState.map { unchanged(s, $0) } ?? false, core: nil, stamp: stamp)
+    }
+
+    /// `s` is already snapped. `unchanged`: it would not change what the host has. `core` is the C translator that
+    /// produced it (it also builds the bytes), nil for the Swift path.
+    private func deliver(_ s: PadState, unchanged same: Bool, core: XlateCore?, stamp: LatencyStamp?) {
+        if same {
             // Back to what the host already has: drop whatever was waiting for the trailing flush.
             pending = nil
             pendingStamp = nil
@@ -444,6 +512,7 @@ final class VirtualPadSink: @unchecked Sendable {
         meter.noteChanged()
         if pending != nil { meter.noteCoalesced() }
         pending = s
+        pendingCore = core
         // A coalesced state is attributed to the oldest input still waiting. Unstamped states (test pattern, tests)
         // count from now.
         if pendingStamp == nil { pendingStamp = stamp ?? LatencyStamp(tK: now, tC: now, tD: now) }
@@ -472,12 +541,15 @@ final class VirtualPadSink: @unchecked Sendable {
     private func flush() {
         guard let s = pending, created, let id = createdIdentity else { return }
         pending = nil
+        let core = pendingCore
+        pendingCore = nil
         let stamp = pendingStamp
         pendingStamp = nil
         flushTimer?.cancel(); flushTimer = nil
         let tS = clock()
         var posted = false
-        for r in id.reports(for: s) where lastSentBytes[r.id] != r.bytes {
+        let reports = core.map { $0.reports(XlateCore.pad(from: s)) } ?? id.reports(for: s)
+        for r in reports where lastSentBytes[r.id] != r.bytes {
             let kr = transport.post(slot: Self.slot, report: r.bytes)
             guard kr == KERN_SUCCESS else {
                 postFailed(kr, reportID: r.id)
@@ -526,6 +598,7 @@ final class VirtualPadSink: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         mailbox.withLock { $0.last = nil }          // the next frame must be processed even if it equals the last
         pending = nil
+        pendingCore = nil
         pendingStamp = nil
         flushTimer?.cancel(); flushTimer = nil
         guard created, let id = createdIdentity else { return }
@@ -537,9 +610,14 @@ final class VirtualPadSink: @unchecked Sendable {
     // MARK: Quantisation
 
     private func snapped(_ s: PadState) -> PadState {
+        Self.snapped(s, axisDeadband: config.axisDeadband, triggerDeadband: config.triggerDeadband)
+    }
+
+    /// The Swift deadband. The C core's `gdx_eval` must equal this bit for bit (the parity tests call it as the oracle).
+    static func snapped(_ s: PadState, axisDeadband: Double, triggerDeadband: Double) -> PadState {
         var s = s
-        func ax(_ v: Double) -> Double { abs(v) < config.axisDeadband ? 0 : v }
-        func tr(_ v: Double) -> Double { v < config.triggerDeadband ? 0 : v }
+        func ax(_ v: Double) -> Double { abs(v) < axisDeadband ? 0 : v }
+        func tr(_ v: Double) -> Double { v < triggerDeadband ? 0 : v }
         s.lx = ax(s.lx); s.ly = ax(s.ly); s.rx = ax(s.rx); s.ry = ax(s.ry)
         s.lt = tr(s.lt); s.rt = tr(s.rt)
         return s
@@ -549,12 +627,15 @@ final class VirtualPadSink: @unchecked Sendable {
     /// full deflection is never left one deadband short; moves back to 0 count because `snapped` makes the
     /// difference at least one deadband.
     private func unchanged(_ s: PadState, _ last: PadState) -> Bool {
+        Self.unchanged(s, last, axisDeadband: config.axisDeadband, triggerDeadband: config.triggerDeadband)
+    }
+
+    static func unchanged(_ s: PadState, _ last: PadState, axisDeadband ad: Double, triggerDeadband td: Double) -> Bool {
         func same(_ a: Double, _ b: Double, _ db: Double) -> Bool {
             if a == b { return true }
             if abs(a) >= 1 { return false }
             return abs(a - b) < db
         }
-        let ad = config.axisDeadband, td = config.triggerDeadband
         return s.buttons == last.buttons
             && same(s.lx, last.lx, ad) && same(s.ly, last.ly, ad)
             && same(s.rx, last.rx, ad) && same(s.ry, last.ry, ad)

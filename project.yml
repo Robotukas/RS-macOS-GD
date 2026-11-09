@@ -9,6 +9,8 @@ targets:
     scheme: {}
     sources:
       - Sources/GDHub
+      - path: Shared                 # GDHubXlate.c: the translator shared with the dext (compiled into the dext from T5)
+        excludes: [module.modulemap, GDHubDefaults.h]
       - Xcode/App/BundleModule+Xcode.swift
       - path: Xcode/Engine/com.interlinked.gdhub.engine.plist
         buildPhase: resources            # -> Contents/Resources/com.interlinked.gdhub.engine.plist
@@ -22,11 +24,14 @@ targets:
     entitlements: {path: Xcode/App/GDHub.entitlements, properties: {com.apple.developer.system-extension.install: true}}
     settings:
       base: {PRODUCT_BUNDLE_IDENTIFIER: com.interlinked.gdhub, PRODUCT_NAME: GDHub, SWIFT_VERSION: "5.0",
-             ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development"}
+             ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development",
+             SWIFT_OBJC_BRIDGING_HEADER: Xcode/App/GDHub-Bridging-Header.h,
+             HEADER_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/Shared"],
+             OTHER_CFLAGS: ["$(inherited)", "-ffp-contract=off"]}      # the translator must not fuse multiply-adds (Swift does not)
   GDHubVirtualHID:
     type: driver-extension
     platform: macOS                                      # xcodegen has no DriverKit platform; SDKROOT does it
-    sources: [Dext/GDHubVirtualHID]
+    sources: [Dext/GDHubVirtualHID]       # no Shared/ here until T5 (it would add `Shared/GDHubXlate.c` and -ffp-contract=off)
     dependencies: [{sdk: DriverKit.framework}, {sdk: HIDDriverKit.framework}]
     info:
       path: Dext/GDHubVirtualHID/Info.plist

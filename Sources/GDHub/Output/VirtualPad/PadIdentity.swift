@@ -42,10 +42,9 @@ struct PadIdentity: Equatable {
     func reports(for state: PadState) -> [PadReport] { builder(state) }
 
     /// Builds the DeviceSpec. `UserDefaults` `vhid.pad.productOverride` replaces the product string (cosmetic test only).
-    func spec() throws -> DeviceSpec {
+    func spec(productOverride override: String? = UserDefaults.standard.string(forKey: "vhid.pad.productOverride")) throws -> DeviceSpec {
         let inputs = try HIDReportSizer.inputs(descriptor)
         let neutral = Dictionary(uniqueKeysWithValues: reports(for: .neutral).map { ($0.id, $0.bytes) })
-        let override = UserDefaults.standard.string(forKey: "vhid.pad.productOverride")
         return DeviceSpec(slot: .pad, vendorID: vendorID, productID: productID, versionNumber: versionNumber,
                           locationID: locationID, reportIntervalUs: reportIntervalUs,
                           transport: transport, manufacturer: manufacturer,

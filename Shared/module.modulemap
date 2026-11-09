@@ -1,0 +1,7 @@
+// SwiftPM clang module for the shared translator. The Xcode app target imports GDHubXlate.h through its bridging header
+// instead and ignores this file.
+module GDHubXlate {
+    header "GDHubXlate.h"
+    header "GDHubDefaults.h"
+    export *
+}
