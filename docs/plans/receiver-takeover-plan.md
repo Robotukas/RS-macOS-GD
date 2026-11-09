@@ -36,8 +36,8 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T2 | One shared C translator; the engine runs it | No | done (passed 2026-11-09, see "T2 results"; 10 min play check still to do) |
 | T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | done (passed 2026-11-09, dext builds 18 and 19, see "T3 results") |
 | T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | done (passed 2026-11-09, dext builds 20–22, see "T4 results") |
-| T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | ▶ current |
-| T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | pending |
+| T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | done (passed 2026-11-09, dext build 23, see "T5 results") |
+| T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | ▶ current |
 | T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | pending |
 | T8 | Gate and play test; LIVE becomes the default | No | pending |
 | T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending (T3 measured the hop at about 1 µs, so unlikely to be needed) |
@@ -1634,6 +1634,45 @@ All **M**. Dext lines from a `log stream` capture; counters from status2 through
 - The controller's sleep timer still read 3,600,000 ms after 22 power cycles, unlike the T0 run where it had reset to 600,000; what reset it then is unknown.
 
 **State left:** `inputPath = engine` (tap attached, INERT). Rollback copy of the T3 app: `~/GDHub-rollback/T4-pre/`. Tests: 363.
+
+---
+
+## T5 results (2026-11-09): passed (production dext build 23)
+
+All **M**. Play session 17:18:52–17:50:48 in SHADOW, a fullscreen game, Game Mode on from 17:21:35 to the end apart from two pauses of 5–7 s (gamepolicyd log); 123 windows of 10 s with movement.
+
+| Check | Result |
+|---|---|
+| Upgrade 22 → 23 | 4 s, no reboot. `capabilities 1793` (CAP_XLATE). First meter line after the upgrade: `tap: state=0/0` (INERT, no map) until `inputPath = shadow` was written. |
+| Self-test | `selftest pass vectors=192 build=23`, run on the first SHADOW request only. |
+| Mapping push | `SHADOW: mapping revision 1 accepted by the driver (408 bytes)` 1 ms after arming. |
+| Parity | `parity: first match` on the first sample: the engine's IOHIDManager timestamp equals the tap's `ReportAvailable` timestamp (A7 holds on the production path). **ok = 3864, mismatch = 0**, of which 1841 during play; `(checked)`. About one third of samples are `noMatch` (the tap holds a frame the engine has not received yet). The tap saw 386,108 state changes in the session. |
+| Translate time in the dext | p50 ≤ 2 µs, p99 ≤ 5 µs, max 0.22 ms. |
+| Frames | `xlate` = `frames` = `r06` (3.27 million); no `framesUnmapped`, no pool miss reported. |
+| Stability | Same dext pid for the whole session; no new crash report. |
+| L6 under Game Mode (also the T1 and T2 leftovers) | Engine total p50 median **0.59 ms** (0.41–0.65), p99 median **1.76 ms** (1.26–2.25), max median 3.6 ms, worst 7.16 ms; `cap` p50 0.00 ms; IOConnect p50 mean 0.40 ms; coalesced 0 %. The E1 gate in the morning, same conditions: 1.19 / 2.69 / 8.88 ms. |
+
+**What the in-dext path would cost under the same load (measured parts, not yet a LIVE path):**
+
+| Part | Mean | p99 | Max |
+|---|---|---|---|
+| Kernel → tap (`k2d`), 184 windows | 0.158 ms | 0.36 ms (worst window 0.43) | 2.9 ms once, otherwise ≤ 0.9 ms |
+| Translate | 0.002 ms | 0.005 ms | 0.22 ms |
+| Hop to the pad queue (T3: user client → pad) | 0.001 ms | 0.005 ms | 0.18 ms |
+| `handleReport` | 0.060 ms | 0.22 ms | 0.85 ms |
+| **Sum of means** | **about 0.22 ms** | | |
+
+Against the engine's 0.59 ms p50 and 1.76 ms p99 under Game Mode, the takeover's latency gain with a game running is about **0.35–0.4 ms at p50 and about 1 ms at p99**. The T1/T2 numbers (0.2–0.3 ms) were taken on an idle desktop, where the engine's IOConnect stage is half as long; under game load the engine path slows down more than the in-dext path does. G·T8 will measure the real LIVE path.
+
+**Pre-install review** (independent): no blocker; no way found to crash the dext from a validated map or any 16-byte frame. Fixed before install: self-test moved out of tap Start (it ran outside the fuse), armed mark set before the arming call, parity can no longer pass with zero comparisons, status2 at 2 Hz in SHADOW, final refusals, learned-range golden vectors, same compare shape on both sides, no read of kernel-owned buffers.
+
+**Not verified:**
+- A mapping change while in SHADOW (`appliedRevision` within 100 ms): re-saving the identical mapping file did not make the engine reload, so this needs a real learn edit in the GUI.
+- S1 soak in SHADOW (the T4 soak covered the Stop path; T5 adds only per-frame code, which ran for 3.3 million frames).
+- The owner's judgement of how the controller felt in the session.
+- Open for T7: a frame delivered in a kernel buffer (pool miss) is skipped by the translator; LIVE must not drop it.
+
+**State left:** `inputPath = shadow` (engine drives the pad, the tap translates and is compared). Rollback copy: `~/GDHub-rollback/T5-pre/`. Tests: 425.
 
 ---
 
