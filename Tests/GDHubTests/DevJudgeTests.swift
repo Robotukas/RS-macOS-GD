@@ -376,6 +376,24 @@ final class DevJudgeTests: XCTestCase {
         XCTAssertTrue(o.metrics.detail.hasPrefix("RT stayed held for 37.9 s through 12 hand-overs; lowest 0.98;"), o.metrics.detail)
     }
 
+    /// What the first real run showed (2026-11-09): every source switch posts the design's switch neutral and the new
+    /// source reposts the full state 0.4-0.9 ms later. Those are blips, counted and reported, not drops.
+    func testHeldSwitchBlipsUnderFiveMillisecondsPass() {
+        var rig = Rig()
+        holdRT(&rig, until: 30_000, letGoAt: nil)
+        for t in [5_000.0, 11_000.0, 17_000.0] {
+            rig.set(PadState(), at: t)                                // the switch neutral ...
+            rig.set(state { $0.rt = 1.0 }, at: t + 0.9)              // ... reposted under a millisecond later
+        }
+        rig.set(PadState(), at: 38_200)
+        let o = run(rtHold, rig: rig, windowMs: holdMs, releaseMs: 500, handOvers: 12)
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["held.drops"], 0)
+        XCTAssertEqual(o.metrics.values["held.blips"], 3)
+        XCTAssertEqual(o.metrics.values["held.longestReleaseMs"] ?? 0, 0.9, accuracy: 0.05)
+        XCTAssertTrue(o.metrics.detail.contains("3 switch blips of at most 0.90 ms"), o.metrics.detail)
+    }
+
     func testHeldFailsOnADropEvenOneReportLong() {
         for low in [0.0, 0.3] {
             var rig = Rig()

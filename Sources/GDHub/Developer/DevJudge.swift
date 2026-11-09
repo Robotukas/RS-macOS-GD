@@ -37,6 +37,12 @@ enum DevJudge {
         var heldMinLevel = 0.5
         var heldEngageMs = 2000.0
 
+        /// A release shorter than this is a switch blip, not a drop: the pad posts a neutral on every source switch by design
+
+        /// (plan 6.2) and the new source reposts the full state with its next frame, about 1 ms later. Measured 0.39-0.87 ms.
+
+        var heldMaxBlipMs: Double = 5
+
         /// The rules with a step's own overrides applied.
         func applying(_ e: DevExpect?) -> Rules {
             guard let e else { return self }
@@ -412,17 +418,24 @@ enum DevJudge {
                 return finish(["\(label) never became held in the window\(how)"], passText: "",
                               summary: "\(m.padReports) pad reports, \(m.padChanged) changed.", &m)
             }
-            var drops = 0
+            // A release that ends within heldMaxBlipMs is a switch blip (the design's switch neutral, reposted at once); a
+            // longer one, or one that lasts to the end of the window, is a drop.
+            var drops = 0, blips = 0
             var firstDropNs: UInt64?
+            var longestMs = 0.0
             for i in (engage + 1)..<max(count, engage + 1) where held(states[i - 1]) && !held(states[i]) {
+                let back = states.indices.first { $0 > i && held(states[$0]) }
+                let lengthMs = Double((back.map { times[$0] } ?? endNs) &- times[i]) / 1e6
+                longestMs = max(longestMs, lengthMs)
+                if back != nil && lengthMs <= rules.heldMaxBlipMs { blips += 1; continue }
                 drops += 1
                 if firstDropNs == nil { firstDropNs = times[i] }
             }
             let engageMs = Double(times[engage] - times[0]) / 1e6
             let heldMs = Double(endNs &- times[engage]) / 1e6
             let low = lowest(from: engage)
-            m.values = ["held.minLevel": low ?? (drops == 0 ? 1 : 0), "held.drops": Double(drops),
-                        "held.padReports": Double(m.padReports), "held.ms": heldMs]
+            m.values = ["held.minLevel": low ?? (drops == 0 ? 1 : 0), "held.drops": Double(drops), "held.blips": Double(blips),
+                        "held.longestReleaseMs": longestMs, "held.padReports": Double(m.padReports), "held.ms": heldMs]
 
             var fails: [String] = []
             if drops > 0 {
@@ -436,8 +449,9 @@ enum DevJudge {
             }
             let overs = input.handOvers > 0 ? " through \(input.handOvers) hand-over\(input.handOvers == 1 ? "" : "s")" : ""
             let lowText = low.map { "; lowest \(DevJudge.fmt($0))" } ?? ""
-            let pass = "\(label) stayed held for \(String(format: "%.1f", heldMs / 1000)) s\(overs)\(lowText); \(m.padReports) pad reports."
-            let summary = "\(label) held \(String(format: "%.1f", heldMs / 1000)) s of a \(String(format: "%.1f", windowMs / 1000)) s window\(overs)\(lowText); \(m.padReports) pad reports, \(m.padChanged) changed."
+            let blipText = blips > 0 ? String(format: "; %d switch blip%@ of at most %.2f ms (the design's switch neutral, reposted at once)", blips, blips == 1 ? "" : "s", longestMs) : ""
+            let pass = "\(label) stayed held for \(String(format: "%.1f", heldMs / 1000)) s\(overs)\(lowText)\(blipText); \(m.padReports) pad reports."
+            let summary = "\(label) held \(String(format: "%.1f", heldMs / 1000)) s of a \(String(format: "%.1f", windowMs / 1000)) s window\(overs)\(lowText)\(blipText); \(m.padReports) pad reports, \(m.padChanged) changed."
             return finish(fails, passText: pass, summary: summary, &m)
         }
 
