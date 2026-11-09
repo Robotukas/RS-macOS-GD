@@ -1,7 +1,8 @@
 name: GDHub
 options: {bundleIdPrefix: com.interlinked, deploymentTarget: {macOS: "14.0"}, createIntermediateGroups: true}
 settings:
-  base: {DEVELOPMENT_TEAM: 79XF6HYX8A, CODE_SIGN_STYLE: Automatic, MARKETING_VERSION: "0.1.0", CURRENT_PROJECT_VERSION: "1"}
+  base: {DEVELOPMENT_TEAM: 79XF6HYX8A, CODE_SIGN_STYLE: Automatic, MARKETING_VERSION: "0.1.0", CURRENT_PROJECT_VERSION: "1",
+         PROBE_BUILD: "1", PROBE_CRASH: "0"}     # T0 probe only (docs/plans/receiver-takeover-plan.md §3.3); build-xcode.sh --probe overrides both
 targets:
   GDHub:
     type: application
@@ -12,7 +13,7 @@ targets:
       - Xcode/App/BundleModule+Xcode.swift
       - path: Xcode/Engine/com.interlinked.gdhub.engine.plist
         buildPhase: resources            # -> Contents/Resources/com.interlinked.gdhub.engine.plist
-    dependencies: [{target: GDHubVirtualHID}]          # embedded in Contents/Library/SystemExtensions
+    dependencies: [{target: GDHubVirtualHID}, {target: GDHubTapProbe}]   # embedded in Contents/Library/SystemExtensions (the probe: T0 only)
     info:
       path: Xcode/App/Info.plist
       properties: {CFBundleDisplayName: GDHub, CFBundleShortVersionString: $(MARKETING_VERSION),
@@ -61,4 +62,52 @@ targets:
              SDKROOT: driverkit, SUPPORTED_PLATFORMS: driverkit, DRIVERKIT_DEPLOYMENT_TARGET: "23.0",
              CLANG_CXX_LANGUAGE_STANDARD: gnu++20,
              GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GDHUB_DEXT_BUILD=$(CURRENT_PROJECT_VERSION)"],
+             ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development"}
+  # T0 probe dext (throwaway, removed in T0.5): does it load, win interface 3, share the root's process, read reports, relaunch.
+  GDHubTapProbe:
+    type: driver-extension
+    platform: macOS
+    scheme: {}
+    sources: [Dext/GDHubTapProbe]
+    dependencies: [{sdk: DriverKit.framework}, {sdk: HIDDriverKit.framework}]
+    info:
+      path: Dext/GDHubTapProbe/Info.plist
+      properties:
+        CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)   # = DEXT; xcodegen omits it for driver-extension
+        CFBundleDisplayName: GDHub Tap Probe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(PROBE_BUILD)                        # never $(CURRENT_PROJECT_VERSION): build-xcode.sh overrides that for every target
+        OSBundleUsageDescription: Throwaway probe for reading the receiver's HID interface from a driver.
+        IOKitPersonalities:
+          GDHubProbeRoot:
+            CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleIdentifierKernel: com.apple.kpi.iokit
+            IOClass: IOUserService
+            IOMatchCategory: $(PRODUCT_BUNDLE_IDENTIFIER)
+            IOProviderClass: IOUserResources
+            IOResourceMatch: IOKit
+            IOUserClass: GDHubProbeRoot
+            IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            IOUserServerOneProcess: true
+          GDHubProbeTap:
+            CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleIdentifierKernel: com.apple.kpi.iokit
+            IOClass: IOUserService
+            IOProviderClass: IOHIDInterface
+            IOUserClass: GDHubProbeTap
+            IOUserServerName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            IOUserServerOneProcess: true
+            VendorID: 6940
+            ProductID: 14856
+            PrimaryUsagePage: 65368
+            PrimaryUsage: 1
+            IOProbeScore: 50
+    entitlements:
+      path: Dext/GDHubTapProbe/GDHubTapProbe.entitlements
+      properties: {com.apple.developer.driverkit: true, com.apple.developer.driverkit.transport.hid: true}
+    settings:
+      base: {PRODUCT_BUNDLE_IDENTIFIER: com.interlinked.gdhub.TapProbe, PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER),
+             SDKROOT: driverkit, SUPPORTED_PLATFORMS: driverkit, DRIVERKIT_DEPLOYMENT_TARGET: "23.0",
+             CLANG_CXX_LANGUAGE_STANDARD: gnu++20,
+             GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GDHUB_PROBE_BUILD=$(PROBE_BUILD)", "GDHUB_PROBE_CRASH=$(PROBE_CRASH)"],
              ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development"}

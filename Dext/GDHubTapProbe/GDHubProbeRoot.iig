@@ -1,0 +1,11 @@
+#ifndef GDHubProbeRoot_h
+#define GDHubProbeRoot_h
+#include <Availability.h>
+#include <DriverKit/IOService.iig>
+// T0 probe root: matches on IOUserResources like the production root, only records that it ran in this process.
+class GDHubProbeRoot : public IOService {
+public:
+    virtual kern_return_t Start(IOService * provider) override;   // Start(SUPERDISPATCH) then RegisterService()
+    virtual kern_return_t Stop(IOService * provider) override;
+};
+#endif

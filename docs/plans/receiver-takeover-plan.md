@@ -31,7 +31,7 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 
 | Phase | Title | Needs dext replacement? | Status |
 |---|---|---|---|
-| T0 | Probe dext: does it load, does it win the match, one process, raw reads intact, reports in-driver, crash relaunch, downgrade | Probe dext only (4 probe operations; production untouched) | pending |
+| T0 | Probe dext: does it load, does it win the match, one process, raw reads intact, reports in-driver, crash relaunch, downgrade | Probe dext only (4 probe operations; production untouched) | ▶ current (T0.1: probe written, sign-only build passes; not installed) |
 | T1 | Engine limiter fix (rank 5) and the new baseline | No | pending |
 | T2 | One shared C translator; the engine runs it | No | pending |
 | T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | pending |
