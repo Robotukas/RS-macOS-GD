@@ -187,6 +187,11 @@ details.toc a{text-decoration:none}
 </li>
 <li><a href="#12-risks-symptom-action">12. Risks (symptom → action)</a></li>
 <li><a href="#13-open-questions">13. Open questions</a></li>
+<li><a href="#t0-results-2026-11-09-in-progress">T0 results (2026-11-09, in progress)</a><ul>
+<li><a href="#t01-and-t02-probe-build-1-passed">T0.1 and T0.2 (probe build 1): passed</a></li>
+<li><a href="#t03t05-pending">T0.3–T0.5: pending</a></li>
+</ul>
+</li>
 <li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
 <li><a href="#review-resolution">Review resolution</a></li>
 </ul>
@@ -2937,6 +2942,91 @@ The last line must be `status is now on` or `Game mode enabled`.
 - A SetPowerState override must make the driver safe and then pass the call to super (<span class="tag">R</span> IOService.iig:253-262). This is now a rule in §6.4.
 - <code>mach_absolute_time()</code> has an arbitrary origin and does not count during sleep (<span class="tag">R</span> IOLib.h:177-181). This is now handled in T12.
 - Whether an SDL tool exists: <code>scuf-envision/tools/sdlmatch</code> (<span class="tag">R</span>), now in L5.</p>
+<hr />
+<h2 id="t0-results-2026-11-09-in-progress">T0 results (2026-11-09, in progress)</h2>
+<p>All <span class="tag">M</span>, probe dext <code>com.interlinked.gdhub.TapProbe</code>. Raw captures are in <code>~/GDHub-rollback/T0-facts/</code> (not in the repo).</p>
+<h3 id="t01-and-t02-probe-build-1-passed">T0.1 and T0.2 (probe build 1): passed</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Assumption</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td>Root and tap in one process</td>
+<td><strong>Holds.</strong> Every <code>tap start</code> line shows <code>rootSeen=1 rootPid=&lt;pid&gt;</code> equal to the tap's own pid; <code>pgrep</code> shows one probe process.</td>
+</tr>
+<tr>
+<td>A2</td>
+<td>AMFI loads a dev-signed dext with <code>transport.hid</code></td>
+<td><strong>Holds.</strong> Activated after one approval in System Settings; later replacements needed no approval.</td>
+</tr>
+<tr>
+<td>A3</td>
+<td>The tap wins interface 3 only</td>
+<td><strong>Holds.</strong> <code>receiver-check</code>: interface 3 child <code>GDHubProbeTap</code>, IOProbeScore 7250 (= 50 + 5000 + 1000 + 1100 + 100, so the production tap at 1000 scores 8200); interface 4 child stays <code>AppleUserHIDEventDriver</code> (1151).</td>
+</tr>
+<tr>
+<td>A4</td>
+<td>A plain IOService can Open the IOHIDInterface</td>
+<td><strong>Holds.</strong> Open returned 0 on the first try every time; frames arrive at the engine's rate (887–948/s in both, same 10 s windows). The "940–970/s" figure in §10.2 is too narrow: the receiver itself delivers 887–948/s.</td>
+</tr>
+<tr>
+<td>A5</td>
+<td>Framing</td>
+<td><strong>Holds.</strong> <code>reportID=6 len=16 type=0</code>, ID byte first. No other report ID seen (<code>other=0</code>).</td>
+</tr>
+<tr>
+<td>A6</td>
+<td>Pool</td>
+<td><strong>Holds for behaviour, not for the counter.</strong> Strategy B (re-add per frame): <code>poolMiss=0</code>, <code>readdFail=0</code>. Strategy A (no re-add): after 8 frames every report arrives in a kernel buffer (<code>poolMiss</code> ≈ all frames). The registry <code>DebugState</code> counters (<code>CreatedBuffers</code>, <code>ReportAvailableCalls</code>) stay 0 while the tap is the client, so L3 must use the tap's own counters.</td>
+</tr>
+<tr>
+<td>A7</td>
+<td>Timestamp</td>
+<td><strong>Holds.</strong> Mach absolute time; kernel-to-driver delay p50 ≤ 55–85 µs, p99 ≤ 110–205 µs, max ≤ 0.41 ms (0.74 ms once right after wake). Engine callback in the same windows: p50 0.05–0.08 ms, p99 0.20–0.35 ms, max 0.84–4.19 ms.</td>
+</tr>
+<tr>
+<td>A8</td>
+<td>After a declined Start, Apple's driver attaches</td>
+<td><strong>Indirect only.</strong> The declined first Start happened before the live capture ran; <code>receiver-check</code> 4 s after activation showed Apple's driver on interface 3. Repeat with capture in T0.4.</td>
+</tr>
+<tr>
+<td>A10</td>
+<td>A new personality only takes interface 3 at the next enumeration</td>
+<td><strong>Refuted.</strong> Loading new personalities re-probes interface 3 at once: on the 1 → 2 replacement the tap was stopped and started again 6 ms later with the receiver linked throughout.</td>
+</tr>
+<tr>
+<td>A11</td>
+<td>Games see no change</td>
+<td><strong>Holds.</strong> <code>gcprobe</code> identical; <code>sdlmatch</code> same four devices; <code>hidutil list</code> loses only the raw 0xFF58 <code>AppleUserHIDEventService</code> entry. Engine reader unaffected (<code>cb(all frames)</code> 887–945 Hz).</td>
+</tr>
+<tr>
+<td>A12</td>
+<td>Controller sleep timer</td>
+<td><strong>Answered.</strong> The controller slept exactly 600 s after link; the receiver re-enumerated to 3A09 and the tap got <code>Stop</code>. Also: the 60 min timer written earlier was back at the factory 600000 ms after a controller power cycle, so the setting does not persist and must be re-applied at each link.</td>
+</tr>
+<tr>
+<td>A13</td>
+<td>Mac sleep</td>
+<td><strong>Answered.</strong> <code>SetPowerState flags=0x0</code> (Off) arrives about 1 s after sleep starts. On wake the receiver re-enumerates (interface down 12:07:01, up 12:07:02) and a new tap instance opens; the engine recovers too.</td>
+</tr>
+<tr>
+<td>A14</td>
+<td>Competing personalities</td>
+<td><strong>Holds on disk.</strong> 801 bundles / 2,868 personalities; the only vendor-6940 entry is USB mass storage 6940:6659. Kernel-collection kexts are not covered.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Other findings:
+- <strong>Dext log lines are live-only.</strong> <code>os_log</code> from a dext shows as <code>kernel () GDHub…</code> in <code>log stream</code> but is not kept in the log store, and <code>log stream</code> drops lines under load. A line is cut at about 256 characters. Checks that use <code>log show</code> for dext lines (L2) must use a running <code>log stream</code> capture instead.
+- <strong>Upgrade with <code>IOUserServerOneProcess</code> keeps the old process.</strong> After the 1 → 2 replacement sysextd reported <code>activated enabled</code> for build 2 and <code>terminating for upgrade</code> for build 1, but the build-1 process stayed (its root service is still matched) and the re-probed tap started in it again, running build-1 code. The production upgrade path therefore depends on devTerminate ending the old process (A18); for the probe it takes a reboot.
+- Parallels Desktop can capture the whole receiver for a VM; while it does, no macOS driver is attached to any interface.</p>
+<h3 id="t03t05-pending">T0.3–T0.5: pending</h3>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
 <div class="tw"><table>

@@ -132,10 +132,12 @@ static void windowLog(GDHubProbeTap_IVars * iv, uint64_t now)
     for (uint32_t i = 0; i < kPoolCount; i++) if (iv->inPool[i]) inPool++;
     PLog("window #%u strategy=%{public}s frames=%llu rate=%llu.%llu/s r06=%llu other=%llu "
          "k2d_us(n=%llu p50<=%llu p99<=%llu max=%llu future=%llu) poolMiss=%llu slowMap=%llu rangeFail=%llu badLen=%llu "
-         "readdFail=%llu openFail=%llu poolIn=%u gapTs_us=%llu gapArr_us=%llu total=%llu",
+         "readdFail=%llu openFail=%llu poolIn=%u",
          iv->windowNo, strategyName(iv->strategy), w.frames, rate10 / 10, rate10 % 10, w.r06, w.other,
          w.k2dN, histPercentile(w.hist, w.k2dN, 50, w.k2dMaxUs), histPercentile(w.hist, w.k2dN, 99, w.k2dMaxUs),
-         w.k2dMaxUs, w.tsFuture, w.poolMiss, w.slowMap, w.rangeFail, w.badLen, w.readdFail, w.openFail, inPool,
+         w.k2dMaxUs, w.tsFuture, w.poolMiss, w.slowMap, w.rangeFail, w.badLen, w.readdFail, w.openFail, inPool);
+    // Separate line: the kernel log cuts a dext line at about 256 characters (measured in T0.2).
+    PLog("gaps #%u gapTs_us=%llu gapArr_us=%llu total=%llu", iv->windowNo,
          (uint64_t)((double)w.gapTsMaxTicks * iv->usPerTick), (uint64_t)((double)w.gapArrMaxTicks * iv->usPerTick),
          iv->totalFrames);
 }

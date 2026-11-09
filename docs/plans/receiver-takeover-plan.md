@@ -1461,6 +1461,37 @@ Closed by the SDK headers:
 
 ---
 
+## T0 results (2026-11-09, in progress)
+
+All **M**, probe dext `com.interlinked.gdhub.TapProbe`. Raw captures are in `~/GDHub-rollback/T0-facts/` (not in the repo).
+
+### T0.1 and T0.2 (probe build 1): passed
+
+| # | Assumption | Result |
+|---|---|---|
+| A1 | Root and tap in one process | **Holds.** Every `tap start` line shows `rootSeen=1 rootPid=<pid>` equal to the tap's own pid; `pgrep` shows one probe process. |
+| A2 | AMFI loads a dev-signed dext with `transport.hid` | **Holds.** Activated after one approval in System Settings; later replacements needed no approval. |
+| A3 | The tap wins interface 3 only | **Holds.** `receiver-check`: interface 3 child `GDHubProbeTap`, IOProbeScore 7250 (= 50 + 5000 + 1000 + 1100 + 100, so the production tap at 1000 scores 8200); interface 4 child stays `AppleUserHIDEventDriver` (1151). |
+| A4 | A plain IOService can Open the IOHIDInterface | **Holds.** Open returned 0 on the first try every time; frames arrive at the engine's rate (887–948/s in both, same 10 s windows). The "940–970/s" figure in §10.2 is too narrow: the receiver itself delivers 887–948/s. |
+| A5 | Framing | **Holds.** `reportID=6 len=16 type=0`, ID byte first. No other report ID seen (`other=0`). |
+| A6 | Pool | **Holds for behaviour, not for the counter.** Strategy B (re-add per frame): `poolMiss=0`, `readdFail=0`. Strategy A (no re-add): after 8 frames every report arrives in a kernel buffer (`poolMiss` ≈ all frames). The registry `DebugState` counters (`CreatedBuffers`, `ReportAvailableCalls`) stay 0 while the tap is the client, so L3 must use the tap's own counters. |
+| A7 | Timestamp | **Holds.** Mach absolute time; kernel-to-driver delay p50 ≤ 55–85 µs, p99 ≤ 110–205 µs, max ≤ 0.41 ms (0.74 ms once right after wake). Engine callback in the same windows: p50 0.05–0.08 ms, p99 0.20–0.35 ms, max 0.84–4.19 ms. |
+| A8 | After a declined Start, Apple's driver attaches | **Indirect only.** The declined first Start happened before the live capture ran; `receiver-check` 4 s after activation showed Apple's driver on interface 3. Repeat with capture in T0.4. |
+| A10 | A new personality only takes interface 3 at the next enumeration | **Refuted.** Loading new personalities re-probes interface 3 at once: on the 1 → 2 replacement the tap was stopped and started again 6 ms later with the receiver linked throughout. |
+| A11 | Games see no change | **Holds.** `gcprobe` identical; `sdlmatch` same four devices; `hidutil list` loses only the raw 0xFF58 `AppleUserHIDEventService` entry. Engine reader unaffected (`cb(all frames)` 887–945 Hz). |
+| A12 | Controller sleep timer | **Answered.** The controller slept exactly 600 s after link; the receiver re-enumerated to 3A09 and the tap got `Stop`. Also: the 60 min timer written earlier was back at the factory 600000 ms after a controller power cycle, so the setting does not persist and must be re-applied at each link. |
+| A13 | Mac sleep | **Answered.** `SetPowerState flags=0x0` (Off) arrives about 1 s after sleep starts. On wake the receiver re-enumerates (interface down 12:07:01, up 12:07:02) and a new tap instance opens; the engine recovers too. |
+| A14 | Competing personalities | **Holds on disk.** 801 bundles / 2,868 personalities; the only vendor-6940 entry is USB mass storage 6940:6659. Kernel-collection kexts are not covered. |
+
+Other findings:
+- **Dext log lines are live-only.** `os_log` from a dext shows as `kernel () GDHub…` in `log stream` but is not kept in the log store, and `log stream` drops lines under load. A line is cut at about 256 characters. Checks that use `log show` for dext lines (L2) must use a running `log stream` capture instead.
+- **Upgrade with `IOUserServerOneProcess` keeps the old process.** After the 1 → 2 replacement sysextd reported `activated enabled` for build 2 and `terminating for upgrade` for build 1, but the build-1 process stayed (its root service is still matched) and the re-probed tap started in it again, running build-1 code. The production upgrade path therefore depends on devTerminate ending the old process (A18); for the probe it takes a reboot.
+- Parallels Desktop can capture the whole receiver for a VM; while it does, no macOS driver is attached to any interface.
+
+### T0.3–T0.5: pending
+
+---
+
 ## Appendix A: Judges' mustFix items and where each is handled
 
 | Item (judge) | Where |
