@@ -49,7 +49,7 @@ details.toc a{text-decoration:none}
 <main>
 <p class="note">GDHub · generated from <code>docs/plans/receiver-takeover-plan.md</code>, which is the source of truth</p>
 <section class="card" id="plain-summary">
-<p class="status">Approved 2026-11-09 · T0 to T5 passed · installed driver is build 23, in shadow mode · T6 next</p>
+<p class="status">Approved 2026-11-09 · T0 to T6 passed · installed driver is build 23, in shadow mode · T7 (driver drives the pad) next</p>
 <h2>In plain words</h2>
 <h3>Where it stands</h3>
 <ul>
@@ -57,6 +57,7 @@ details.toc a{text-decoration:none}
 <li><b>Crash test:</b> the test driver was crashed 7 times in 27 seconds. macOS restarted it in about 0.04 seconds each time, did not restart the Mac, and the engine never lost the controller.</li>
 <li><b>Rollback works:</b> macOS accepted an older driver version, and removing the test driver handed the interface back to Apple's handler at once.</li>
 <li>The test driver is removed.</li>
+<li><b>T6, the engine as supervisor, passed.</b> The engine now watches the driver's takeover part and switches it off with a stated reason if anything looks wrong. The Driver menu shows which path is active and lets you switch. A real mapping change reaches the driver within a millisecond.</li>
 <li><b>T5, in-driver translation in shadow mode, passed.</b> During 30 minutes of real play with Game Mode on, the driver translated every controller update itself and the engine compared results: 3,864 compared, all identical. The driver did not crash. With a game running, the engine's typical delay was 0.59 ms; the measured parts of the driver's own path add up to about 0.22 ms.</li>
 <li><b>T4, the takeover part inside the real driver, passed.</b> It is attached to the receiver's controller interface and switched off by default. In its counting-only test mode it saw every controller update with no misses. It survived 22 controller off/on cycles and 3 Mac sleeps with no crash, and the driver was upgraded, rolled back and upgraded again without a reboot. The engine still does all the real work.</li>
 <li><b>T3, the first real driver change, passed.</b> The virtual pad is now owned by the driver itself. The driver was replaced twice (17 → 18 → 19) without a reboot. Force-quitting the engine still removes the pad at once, freezing it still releases all controls after 2 seconds, and the last hop inside the driver costs about a millionth of a second.</li>
@@ -196,6 +197,7 @@ details.toc a{text-decoration:none}
 <li><a href="#t3-results-2026-11-09-passed-production-dext-builds-18-and-19">T3 results (2026-11-09): passed (production dext builds 18 and 19)</a></li>
 <li><a href="#t4-results-2026-11-09-passed-production-dext-builds-20-21-and-22">T4 results (2026-11-09): passed (production dext builds 20, 21 and 22)</a></li>
 <li><a href="#t5-results-2026-11-09-passed-production-dext-build-23">T5 results (2026-11-09): passed (production dext build 23)</a></li>
+<li><a href="#t6-results-2026-11-09-passed-app-only-dext-build-23-unchanged">T6 results (2026-11-09): passed (app only; dext build 23 unchanged)</a></li>
 <li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
 <li><a href="#review-resolution">Review resolution</a></li>
 </ul>
@@ -275,13 +277,13 @@ details.toc a{text-decoration:none}
 <td>T6</td>
 <td>Engine supervisor in SHADOW; input-path switch</td>
 <td>No (app only)</td>
-<td>▶ current</td>
+<td>done (passed 2026-11-09, see "T6 results")</td>
 </tr>
 <tr>
 <td>T7</td>
 <td>LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together)</td>
 <td>Yes (+1 fix replacement allowed)</td>
-<td>pending</td>
+<td>▶ current</td>
 </tr>
 <tr>
 <td>T8</td>
@@ -3423,9 +3425,58 @@ The last line must be `status is now on` or `Game mode enabled`.
 <p><strong>Not verified:</strong>
 - A mapping change while in SHADOW (<code>appliedRevision</code> within 100 ms): re-saving the identical mapping file did not make the engine reload, so this needs a real learn edit in the GUI.
 - S1 soak in SHADOW (the T4 soak covered the Stop path; T5 adds only per-frame code, which ran for 3.3 million frames).
-- The owner's judgement of how the controller felt in the session.
+- (The owner reported afterwards that the controller felt fine in the session.)
 - Open for T7: a frame delivered in a kernel buffer (pool miss) is skipped by the translator; LIVE must not drop it.</p>
 <p><strong>State left:</strong> <code>inputPath = shadow</code> (engine drives the pad, the tap translates and is compared). Rollback copy: <code>~/GDHub-rollback/T5-pre/</code>. Tests: 425.</p>
+<hr />
+<h2 id="t6-results-2026-11-09-passed-app-only-dext-build-23-unchanged">T6 results (2026-11-09): passed (app only; dext build 23 unchanged)</h2>
+<p>All <span class="tag">M</span> unless marked.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Install</td>
+<td><code>scripts/build-xcode.sh --release --same-build</code>; dext still 0.1.0/23; the engine reconnected and armed SHADOW from the stored <code>inputPath</code>.</td>
+</tr>
+<tr>
+<td>Driver menu</td>
+<td>"Input path: Driver (shadow, parity not yet checked)", later "… parity checked"; the Input path submenu offers "App" and "Driver (shadow)". Picking App then Driver (shadow) from the menu was followed by the engine each time (<code>inputPathChoice</code> counted 2 picks).</td>
+</tr>
+<tr>
+<td>A20: 20 toggles <code>engine ↔ shadow</code></td>
+<td>20 of 20 followed in the engine's status file, slowest 0.71 s (limit 1.2 s). No fallback, trip or latch.</td>
+</tr>
+<tr>
+<td>Controller on in SHADOW</td>
+<td><code>tap: attached 23 ms after the controller interface came up</code>; no F2.</td>
+</tr>
+<tr>
+<td>Real mapping edits while in SHADOW</td>
+<td>Two real saves from the GUI and one direct edit: <code>mapping reloaded (rev N)</code> followed within 1 ms by <code>SHADOW: mapping revision N accepted by the driver (408 bytes)</code> (revisions 12 and 13). Re-saving identical content is ignored by design (content compare in <code>MappingWatcher</code> and <code>EngineCore</code>).</td>
+</tr>
+<tr>
+<td>Status file</td>
+<td><code>state/engine-tap-status.json</code> written by the engine, read by the GUI; pid matches the running agent.</td>
+</tr>
+<tr>
+<td>Posting path</td>
+<td>Unchanged; the T5 play numbers stand.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Pre-install review</strong> (independent): no blocker. Fixed before install: re-picking Driver had no effect after a latch or a final fallback (every pick now bumps a choice counter), the breaker counted driver restarts on the App path and persisted, a stale arming mark after choosing App, status reads while latched, INERT not actually sent on a counter regression, the status file only written on change, a possible false "tap absent" on wake.</p>
+<p><strong>Not verified:</strong>
+- F1 live drill (<code>tapDrill pause5</code>): build 23 has no pause flag; moved to T7 (L10).
+- Mac sleep/wake in SHADOW with the new supervisor (unit tests only; the T7 soak includes it).
+- A21 logout / fast user switching, A22 a seizing reader: not run.
+- Breaker and limiter: unit tests only, as planned.</p>
+<p><strong>Found while checking (not part of this plan):</strong> the mapping editor binds an on-screen control to a physical button; it has no "this control acts as that button" remap. Re-learning G1 with Y pressed therefore made the G1 drawing light up with Y and left the physical G1 button unbound. G1 was restored to button 12. Remapping G-keys and paddles to pad buttons is the "mapping engine" item on the to-do list; GDHM v1 already allows two sources per output item, so the translator side exists.</p>
+<p>Tests: 478.</p>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
 <div class="tw"><table>

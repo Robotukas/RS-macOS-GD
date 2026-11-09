@@ -37,8 +37,8 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | done (passed 2026-11-09, dext builds 18 and 19, see "T3 results") |
 | T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | done (passed 2026-11-09, dext builds 20–22, see "T4 results") |
 | T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | done (passed 2026-11-09, dext build 23, see "T5 results") |
-| T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | ▶ current |
-| T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | pending |
+| T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | done (passed 2026-11-09, see "T6 results") |
+| T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | ▶ current |
 | T8 | Gate and play test; LIVE becomes the default | No | pending |
 | T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending (T3 measured the hop at about 1 µs, so unlikely to be needed) |
 | T10 | Rumble (after the 0x09 capture) | Yes | pending |
@@ -1669,10 +1669,38 @@ Against the engine's 0.59 ms p50 and 1.76 ms p99 under Game Mode, the takeover's
 **Not verified:**
 - A mapping change while in SHADOW (`appliedRevision` within 100 ms): re-saving the identical mapping file did not make the engine reload, so this needs a real learn edit in the GUI.
 - S1 soak in SHADOW (the T4 soak covered the Stop path; T5 adds only per-frame code, which ran for 3.3 million frames).
-- The owner's judgement of how the controller felt in the session.
+- (The owner reported afterwards that the controller felt fine in the session.)
 - Open for T7: a frame delivered in a kernel buffer (pool miss) is skipped by the translator; LIVE must not drop it.
 
 **State left:** `inputPath = shadow` (engine drives the pad, the tap translates and is compared). Rollback copy: `~/GDHub-rollback/T5-pre/`. Tests: 425.
+
+---
+
+## T6 results (2026-11-09): passed (app only; dext build 23 unchanged)
+
+All **M** unless marked.
+
+| Check | Result |
+|---|---|
+| Install | `scripts/build-xcode.sh --release --same-build`; dext still 0.1.0/23; the engine reconnected and armed SHADOW from the stored `inputPath`. |
+| Driver menu | "Input path: Driver (shadow, parity not yet checked)", later "… parity checked"; the Input path submenu offers "App" and "Driver (shadow)". Picking App then Driver (shadow) from the menu was followed by the engine each time (`inputPathChoice` counted 2 picks). |
+| A20: 20 toggles `engine ↔ shadow` | 20 of 20 followed in the engine's status file, slowest 0.71 s (limit 1.2 s). No fallback, trip or latch. |
+| Controller on in SHADOW | `tap: attached 23 ms after the controller interface came up`; no F2. |
+| Real mapping edits while in SHADOW | Two real saves from the GUI and one direct edit: `mapping reloaded (rev N)` followed within 1 ms by `SHADOW: mapping revision N accepted by the driver (408 bytes)` (revisions 12 and 13). Re-saving identical content is ignored by design (content compare in `MappingWatcher` and `EngineCore`). |
+| Status file | `state/engine-tap-status.json` written by the engine, read by the GUI; pid matches the running agent. |
+| Posting path | Unchanged; the T5 play numbers stand. |
+
+**Pre-install review** (independent): no blocker. Fixed before install: re-picking Driver had no effect after a latch or a final fallback (every pick now bumps a choice counter), the breaker counted driver restarts on the App path and persisted, a stale arming mark after choosing App, status reads while latched, INERT not actually sent on a counter regression, the status file only written on change, a possible false "tap absent" on wake.
+
+**Not verified:**
+- F1 live drill (`tapDrill pause5`): build 23 has no pause flag; moved to T7 (L10).
+- Mac sleep/wake in SHADOW with the new supervisor (unit tests only; the T7 soak includes it).
+- A21 logout / fast user switching, A22 a seizing reader: not run.
+- Breaker and limiter: unit tests only, as planned.
+
+**Found while checking (not part of this plan):** the mapping editor binds an on-screen control to a physical button; it has no "this control acts as that button" remap. Re-learning G1 with Y pressed therefore made the G1 drawing light up with Y and left the physical G1 button unbound. G1 was restored to button 12. Remapping G-keys and paddles to pad buttons is the "mapping engine" item on the to-do list; GDHM v1 already allows two sources per output item, so the translator side exists.
+
+Tests: 478.
 
 ---
 
