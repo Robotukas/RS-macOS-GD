@@ -26,7 +26,7 @@ struct PadIdentity: Equatable {
     private static func xbox(id: String, title: String, productID: UInt32) -> PadIdentity {
         PadIdentity(id: id, title: title, vendorID: 0x045E, productID: productID, versionNumber: 0x0513,
                     transport: "Bluetooth Low Energy", manufacturer: "Microsoft", product: "Xbox Wireless Controller",
-                    serialNumber: serial, locationID: 0x4744_4801, reportIntervalUs: 4000,
+                    serialNumber: serial, locationID: 0x4744_4801, reportIntervalUs: 1000,
                     descriptor: PadDescriptors.xboxBT16, sendLengths: [:], builder: PadReportBuilders.xboxBT16)
     }
 

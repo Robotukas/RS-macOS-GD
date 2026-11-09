@@ -149,7 +149,7 @@ final class DextProtocolTests: XCTestCase {
         XCTAssertEqual(Array(b[O.product..<O.product + 4]), [0x13, 0x0B, 0x00, 0x00])
         XCTAssertEqual(Array(b[O.versionNumber..<O.versionNumber + 4]), [0x13, 0x05, 0x00, 0x00])
         XCTAssertEqual(Array(b[O.location..<O.location + 4]), [0x01, 0x48, 0x44, 0x47])
-        XCTAssertEqual(Array(b[O.intervalUs..<O.intervalUs + 4]), [0xA0, 0x0F, 0x00, 0x00])
+        XCTAssertEqual(Array(b[O.intervalUs..<O.intervalUs + 4]), [0xE8, 0x03, 0x00, 0x00])      // 1000 µs (fix #6)
         XCTAssertEqual(Array(b[O.usagePage..<O.usagePage + 4]), [1, 0, 0, 0])
         XCTAssertEqual(Array(b[O.usage..<O.usage + 4]), [5, 0, 0, 0])
         XCTAssertEqual(Array(b[O.descLen..<O.descLen + 2]), [0x1D, 0x01])      // 285

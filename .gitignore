@@ -15,3 +15,10 @@ scuf-envision/tools/gcprobe
 Xcode/build-number
 
 scuf-envision/tools/bragi
+
+# latency probes (scuf-envision/tools/latency/README.md)
+scuf-envision/tools/latency/padlat
+scuf-envision/tools/latency/napwatch
+scuf-envision/tools/latency/hops
+scuf-envision/tools/latency/latprobe
+scuf-envision/tools/latency/hidprobe

@@ -38,6 +38,12 @@ final class HIDMonitor {
     var onDeviceMatched: ((IOHIDDevice, Int) -> Void)?
     var onDeviceRemoved: ((IOHIDDevice) -> Void)?
     var onInputReport: ((IOHIDDevice, UInt32, [UInt8]) -> Void)?
+    /// Interfaces on these usage pages deliver reports synchronously from the IOKit callback (which already runs on
+    /// the main run loop): the report buffer is passed as is, valid only during the call, with the kernel timestamp
+    /// and the callback entry time, both in nanoseconds on the `CLOCK_UPTIME_RAW` timeline. No copy, no `main.async`.
+    /// Set before `start()`. Other interfaces keep the copying path (`onInputReport`).
+    var synchronousUsagePages: Set<Int> = []
+    var onSynchronousInputReport: ((IOHIDDevice, UInt32, UnsafeBufferPointer<UInt8>, _ tK: UInt64, _ tC: UInt64) -> Void)?
     var onLog: ((String) -> Void)?
 
     private var manager: IOHIDManager?
@@ -129,16 +135,30 @@ final class HIDMonitor {
         if r != kIOReturnSuccess {
             onLog?("IOHIDDeviceOpen page 0x" + String(info.usagePage, radix: 16) + " failed: " + String(format: "0x%08x", r))
         }
-        IOHIDDeviceRegisterInputReportCallback(device, ctx.buffer, ctx.bufferSize, { context, _, sender, _, reportID, report, length in
-            guard let context = context, let sender = sender else { return }
-            let ctx = Unmanaged<HIDDeviceContext>.fromOpaque(context).takeUnretainedValue()
-            let bytes = Array(UnsafeBufferPointer(start: report, count: length))
-            let device = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
-            guard let monitor = ctx.monitor else { return }
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { monitor.onInputReport?(device, reportID, bytes) }
-            }
-        }, Unmanaged.passUnretained(ctx).toOpaque())
+        if synchronousUsagePages.contains(info.usagePage) {
+            IOHIDDeviceRegisterInputReportWithTimeStampCallback(device, ctx.buffer, ctx.bufferSize, { context, _, sender, _, reportID, report, length, timeStamp in
+                let tC = LatencyMeter.nowNs()
+                guard let context = context, let sender = sender else { return }
+                let ctx = Unmanaged<HIDDeviceContext>.fromOpaque(context).takeUnretainedValue()
+                let device = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
+                let tK = LatencyMeter.nanos(fromMach: timeStamp)
+                // The callback runs on the main run loop (the device is scheduled on it below).
+                MainActor.assumeIsolated {
+                    ctx.monitor?.onSynchronousInputReport?(device, reportID, UnsafeBufferPointer(start: report, count: length), tK, tC)
+                }
+            }, Unmanaged.passUnretained(ctx).toOpaque())
+        } else {
+            IOHIDDeviceRegisterInputReportCallback(device, ctx.buffer, ctx.bufferSize, { context, _, sender, _, reportID, report, length in
+                guard let context = context, let sender = sender else { return }
+                let ctx = Unmanaged<HIDDeviceContext>.fromOpaque(context).takeUnretainedValue()
+                let bytes = Array(UnsafeBufferPointer(start: report, count: length))
+                let device = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
+                guard let monitor = ctx.monitor else { return }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { monitor.onInputReport?(device, reportID, bytes) }
+                }
+            }, Unmanaged.passUnretained(ctx).toOpaque())
+        }
         IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), runLoopMode)
 
         onDeviceMatched?(device, info.usagePage)

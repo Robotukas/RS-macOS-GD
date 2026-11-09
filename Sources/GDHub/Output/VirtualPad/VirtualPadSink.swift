@@ -32,8 +32,16 @@ protocol SinkTimer: AnyObject {
 /// Timers for the sink. Production uses `DispatchSinkScheduler`; tests use a manual clock. Blocks run on the sink's
 /// queue.
 protocol SinkScheduler: AnyObject {
-    @discardableResult func after(_ ns: UInt64, _ block: @escaping () -> Void) -> SinkTimer
+    /// One-shot timer. `strict` asks the system not to coalesce the wake-up with others (`DISPATCH_TIMER_STRICT`):
+    /// used for the trailing flush that delivers the last state.
+    @discardableResult func after(_ ns: UInt64, strict: Bool, _ block: @escaping () -> Void) -> SinkTimer
     @discardableResult func every(_ ns: UInt64, _ block: @escaping () -> Void) -> SinkTimer
+}
+
+extension SinkScheduler {
+    @discardableResult func after(_ ns: UInt64, _ block: @escaping () -> Void) -> SinkTimer {
+        after(ns, strict: false, block)
+    }
 }
 
 final class DispatchSinkScheduler: SinkScheduler {
@@ -45,8 +53,8 @@ final class DispatchSinkScheduler: SinkScheduler {
     private let queue: DispatchQueue
     init(queue: DispatchQueue) { self.queue = queue }
 
-    func after(_ ns: UInt64, _ block: @escaping () -> Void) -> SinkTimer {
-        let s = DispatchSource.makeTimerSource(queue: queue)
+    func after(_ ns: UInt64, strict: Bool, _ block: @escaping () -> Void) -> SinkTimer {
+        let s = DispatchSource.makeTimerSource(flags: strict ? .strict : [], queue: queue)
         s.schedule(deadline: .now() + .nanoseconds(Int(ns)), leeway: .microseconds(100))
         // Strong capture on purpose: fire-and-forget callers drop the token, and the source must outlive it. The cycle
         // ends when the handler cancels the source.
@@ -113,6 +121,17 @@ final class VirtualPadSink: @unchecked Sendable {
         var heartbeatMs = 500
     }
 
+    /// `UserDefaults` key for the runtime rate cap (Hz), read when the sink is built.
+    static let maxRateKey = "vpadMaxRateHz"
+    static let runtimeDefaultRateHz = 1000.0
+
+    /// The cap GDHub runs with: `vpadMaxRateHz` clamped to 60…1000, 1000 when unset or not a finite number.
+    /// `Config()` itself stays at 250 Hz so the unit tests keep their meaning.
+    static func runtimeMaxRateHz(defaults: UserDefaults = .standard) -> Double {
+        guard let v = (defaults.object(forKey: maxRateKey) as? NSNumber)?.doubleValue, v.isFinite else { return runtimeDefaultRateHz }
+        return min(max(v, 60), 1000)
+    }
+
     /// Queue-confined counters, read by the Driver menu's status poller.
     struct Stats: Equatable {
         var statesChanged = 0       // states that passed the deadband test
@@ -134,6 +153,8 @@ final class VirtualPadSink: @unchecked Sendable {
     private let scheduler: SinkScheduler
     private let config: Config
     private let duplicateCheck: (PadIdentity) -> String?
+    /// Latency meter (plan §3); written on `queue`, read by the status poller on `queue`.
+    let meter: LatencyMeter
 
     var onPadState: ((PadPublishState) -> Void)?       // called on queue
     var onTestPattern: ((Bool) -> Void)?               // called on queue; true while the pattern runs
@@ -150,6 +171,7 @@ final class VirtualPadSink: @unchecked Sendable {
     // dropped before they cost a queue hop, and a busy queue only ever processes the newest frame.
     private struct Mailbox {
         var slot: (frame: GamepadFrame, mapping: ControlMapping)?
+        var tK: UInt64 = 0, tC: UInt64 = 0          // oldest stamp since the last drain; valid while `slot` is set
         var last: (frame: GamepadFrame, revision: Int)?
         var drainScheduled = false
         var received = 0
@@ -158,6 +180,7 @@ final class VirtualPadSink: @unchecked Sendable {
 
     // Delivery state
     private var pending: PadState?
+    private var pendingStamp: LatencyStamp?             // oldest input behind `pending`
     private var lastSentState: PadState?                // nil: unknown, the next state is sent whatever it is
     private var lastSentBytes: [UInt8: [UInt8]] = [:]
     private var lastPostAt: UInt64?
@@ -171,7 +194,7 @@ final class VirtualPadSink: @unchecked Sendable {
     private var patternStartNs: UInt64 = 0
     private var patternLoop = false
 
-    static func realClock() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+    static func realClock() -> UInt64 { LatencyMeter.nowNs() }
 
     init(queue: DispatchQueue, transport: PadTransport,
          clock: @escaping () -> UInt64 = VirtualPadSink.realClock,
@@ -185,6 +208,7 @@ final class VirtualPadSink: @unchecked Sendable {
         self.scheduler = scheduler ?? DispatchSinkScheduler(queue: queue)
         self.config = config
         self.defaults = defaults
+        self.meter = LatencyMeter(clock: clock)
         self.duplicateCheck = duplicateCheck ?? { id in
             DuplicatePadGuard.conflict(vendorID: id.vendorID, productID: id.productID, ownSerial: id.serialNumber)
         }
@@ -307,6 +331,7 @@ final class VirtualPadSink: @unchecked Sendable {
     private func resetDeliveryState() {
         mailbox.withLock { $0.last = nil }          // frames dropped while no device existed must not hide a held state
         pending = nil
+        pendingStamp = nil
         lastSentState = nil
         lastSentBytes = [:]
         lastPostAt = nil
@@ -361,11 +386,15 @@ final class VirtualPadSink: @unchecked Sendable {
     /// Frame entry point. Callable from any thread; the work happens on the sink's queue. `revision` identifies the
     /// mapping: bump it whenever the mapping changes, because a frame equal to the previous one is dropped only while
     /// the revision is unchanged too.
-    func submit(frame: GamepadFrame, mapping: ControlMapping, revision: Int = 0) {
+    ///
+    /// `tK` / `tC` are the report's kernel timestamp and the HID callback's entry time (nanoseconds, `LatencyMeter.nowNs`
+    /// timeline; 0 = unknown). Frames coalesced before a drain keep the oldest pair.
+    func submit(frame: GamepadFrame, mapping: ControlMapping, revision: Int = 0, tK: UInt64 = 0, tC: UInt64 = 0) {
         let schedule: Bool = mailbox.withLock { m in
             m.received += 1
             if let l = m.last, l.frame == frame, l.revision == revision { return false }
             m.last = (frame, revision)
+            if m.slot == nil { m.tK = tK; m.tC = tC }
             m.slot = (frame, mapping)
             if m.drainScheduled { return false }
             m.drainScheduled = true
@@ -375,39 +404,51 @@ final class VirtualPadSink: @unchecked Sendable {
     }
 
     private func drainMailbox() {
-        let item = mailbox.withLock { m -> (frame: GamepadFrame, mapping: ControlMapping)? in
+        let tD = clock()
+        let item = mailbox.withLock { m -> (frame: GamepadFrame, mapping: ControlMapping, tK: UInt64, tC: UInt64)? in
             m.drainScheduled = false
             defer { m.slot = nil }
-            return m.slot
+            guard let s = m.slot else { return nil }
+            return (s.frame, s.mapping, m.tK, m.tC)
         }
-        if let item { handle(frame: item.frame, mapping: item.mapping) }
+        if let item {
+            // Unstamped frames (tests, anything not from the timestamped HID callback) count from the drain.
+            let stamp = LatencyStamp(tK: item.tK == 0 ? tD : item.tK, tC: item.tC == 0 ? tD : item.tC, tD: tD)
+            handle(frame: item.frame, mapping: item.mapping, stamp: stamp)
+        }
     }
 
     /// Queue-confined body of the frame path. While the test pattern runs, frames are ignored.
-    func handle(frame: GamepadFrame, mapping: ControlMapping) {
+    func handle(frame: GamepadFrame, mapping: ControlMapping, stamp: LatencyStamp? = nil) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard created, !isPatternRunning else { return }
-        submit(state: PassthroughPadMapper.padState(frame, mapping))
+        submit(state: PassthroughPadMapper.padState(frame, mapping), stamp: stamp)
     }
 
     /// Delivers `state` subject to the deadband, the rate cap and send-on-change.
-    func submit(state raw: PadState) {
+    func submit(state raw: PadState, stamp: LatencyStamp? = nil) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard created, createdIdentity != nil else { return }
         let s = snapped(raw)
         if let last = lastSentState, unchanged(s, last) {
             // Back to what the host already has: drop whatever was waiting for the trailing flush.
             pending = nil
+            pendingStamp = nil
             flushTimer?.cancel(); flushTimer = nil
             return
         }
         stats.statesChanged += 1
-        pending = s
         let now = clock()
+        meter.noteChanged()
+        if pending != nil { meter.noteCoalesced() }
+        pending = s
+        // A coalesced state is attributed to the oldest input still waiting. Unstamped states (test pattern, tests)
+        // count from now.
+        if pendingStamp == nil { pendingStamp = stamp ?? LatencyStamp(tK: now, tC: now, tD: now) }
         if let last = lastPostAt, now < last &+ intervalNs {
             if flushTimer == nil {
                 let due = last &+ intervalNs
-                flushTimer = scheduler.after(due &- now) { [weak self] in self?.flushTimerFired() }
+                flushTimer = scheduler.after(due &- now, strict: true) { [weak self] in self?.flushTimerFired() }
             }
             return
         }
@@ -419,7 +460,7 @@ final class VirtualPadSink: @unchecked Sendable {
         // Never post early: if the timer fired before the interval elapsed, wait out the remainder.
         let now = clock()
         if let last = lastPostAt, now < last &+ intervalNs, pending != nil {
-            flushTimer = scheduler.after(last &+ intervalNs &- now) { [weak self] in self?.flushTimerFired() }
+            flushTimer = scheduler.after(last &+ intervalNs &- now, strict: true) { [weak self] in self?.flushTimerFired() }
             return
         }
         flush()
@@ -429,7 +470,10 @@ final class VirtualPadSink: @unchecked Sendable {
     private func flush() {
         guard let s = pending, created, let id = createdIdentity else { return }
         pending = nil
+        let stamp = pendingStamp
+        pendingStamp = nil
         flushTimer?.cancel(); flushTimer = nil
+        let tS = clock()
         var posted = false
         for r in id.reports(for: s) where lastSentBytes[r.id] != r.bytes {
             let kr = transport.post(slot: Self.slot, report: r.bytes)
@@ -442,7 +486,12 @@ final class VirtualPadSink: @unchecked Sendable {
             posted = true
         }
         lastSentState = s
-        if posted { lastPostAt = clock(); stats.flushes += 1 }
+        if posted {
+            let tR = clock()
+            lastPostAt = tR
+            stats.flushes += 1
+            if let stamp { meter.record(tK: stamp.tK, tC: stamp.tC, tD: stamp.tD, tS: tS, tR: tR) }
+        }
     }
 
     private func postFailed(_ kr: kern_return_t, reportID: UInt8) {
@@ -475,6 +524,7 @@ final class VirtualPadSink: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         mailbox.withLock { $0.last = nil }          // the next frame must be processed even if it equals the last
         pending = nil
+        pendingStamp = nil
         flushTimer?.cancel(); flushTimer = nil
         guard created, let id = createdIdentity else { return }
         _ = transport.postNeutral(slot: Self.slot)

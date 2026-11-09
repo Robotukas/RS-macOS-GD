@@ -51,6 +51,18 @@ struct DriverCommands: View {
         return "Posts: \(s.totalPosts) total, \(rate)/s (controller frames in: \(Int(s.framesPerSecond.rounded()))/s)"
     }
 
+    /// Warning shown while macOS GameController has made its own Xbox 360 copy of the published pad.
+    var syntheticWarning: String? {
+        guard isPublished, driver.syntheticPadCount > 0 else { return nil }
+        return "macOS made a 2nd pad (Xbox 360) from GDHub — Shadow forwards both"
+    }
+
+    /// Latency meter lines (latency plan §3), shown while the pad is published.
+    var latencyLines: [String] {
+        guard isPublished else { return [] }
+        return (driver.latency ?? LatencySnapshot()).menuLines
+    }
+
     var isConnected: Bool { if case .connected = driver.connection { return true } else { return false } }
     var isPublished: Bool { if case .published = driver.padState { return true } else { return false } }
     var connectionNeedsRetry: Bool {
@@ -65,6 +77,8 @@ struct DriverCommands: View {
         if let connectionText { Text(connectionText) }
         Text(padText)
         if let trafficText { Text(trafficText) }
+        if let syntheticWarning { Text(syntheticWarning) }
+        ForEach(Array(latencyLines.enumerated()), id: \.offset) { _, line in Text(line) }
         Divider()
         Toggle("Publish virtual pad when the controller is connected", isOn: $driver.autoPublish)
         Menu("Publish virtual pad") {

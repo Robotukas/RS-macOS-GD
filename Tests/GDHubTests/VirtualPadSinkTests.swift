@@ -14,8 +14,11 @@ final class ManualScheduler: SinkScheduler {
 
     private(set) var now: UInt64 = 10_000_000_000
     private var entries: [Entry] = []
+    /// Every one-shot timer requested, in order, with its `strict` flag.
+    private(set) var oneShots: [(ns: UInt64, strict: Bool)] = []
 
-    func after(_ ns: UInt64, _ block: @escaping () -> Void) -> SinkTimer {
+    func after(_ ns: UInt64, strict: Bool, _ block: @escaping () -> Void) -> SinkTimer {
+        oneShots.append((ns, strict))
         let t = Timer(); entries.append(Entry(timer: t, due: now + ns, interval: nil, block: block)); return t
     }
     func every(_ ns: UInt64, _ block: @escaping () -> Void) -> SinkTimer {
@@ -573,6 +576,138 @@ final class VirtualPadSinkTests: XCTestCase {
         queue.sync { env.advance(by: VirtualPadSink.testPatternDurationMs + 50) }
         XCTAssertFalse(sink.isPatternRunning)
         XCTAssertGreaterThanOrEqual(transport.neutrals, 1)
+    }
+
+    // MARK: 1000 Hz cap, strict flush timers (latency plan fix #4)
+
+    func testThousandHertzCapPostsEveryMillisecondAndDeliversTheLastState() {
+        var cfg = VirtualPadSink.Config(); cfg.maxRateHz = 1000
+        let sink = publishedSink(cfg)
+        let t0 = env.now
+        var last = PadState()
+        queue.sync {
+            for i in 0..<1000 {
+                env.advance(to: t0 + UInt64(i) * 1_000_000)
+                last = PadState(lx: -1 + 2 * Double(i) / 999, ly: 0.25)
+                sink.submit(state: last)
+            }
+            env.advance(by: 20)
+        }
+        let n = transport.posts.count
+        XCTAssertLessThanOrEqual(n, 1001)
+        XCTAssertGreaterThan(n, 990)
+        XCTAssertEqual(transport.posts.last, report1(last), "the last state is always delivered")
+    }
+
+    func testThousandHertzTrailingFlushIsOneIntervalAfterTheFirstPost() {
+        var cfg = VirtualPadSink.Config(); cfg.maxRateHz = 1000
+        let sink = publishedSink(cfg)
+        let a = PadState(lx: 0.2), b = PadState(lx: 0.4)
+        queue.sync {
+            sink.submit(state: a)                          // posted at once
+            env.advance(by: UInt64(500_000)); sink.submit(state: b)      // 0.5 ms later: inside the interval
+            XCTAssertEqual(transport.posts, [report1(a)])
+            env.advance(by: UInt64(500_000))
+        }
+        XCTAssertEqual(transport.posts, [report1(a), report1(b)])
+        XCTAssertEqual(transport.calls.last!.at - transport.calls.first!.at, 1_000_000)
+    }
+
+    func testOnlyTheFlushTimersAreStrict() {
+        let sink = publishedSink()
+        let a = PadState(lx: 0.2), b = PadState(lx: 0.4)
+        queue.sync {
+            sink.submit(state: a)
+            env.advance(by: 1); sink.submit(state: b)       // trailing flush timer, from submit(state:)
+            env.advance(by: 10)
+        }
+        XCTAssertEqual(env.oneShots.map(\.strict), [true], "the trailing flush is strict")
+
+        queue.sync { sink.publish(.xboxBT16, persist: false) }      // identity switch: 300 ms gap timer
+        queue.sync { env.advance(by: 400) }
+        XCTAssertEqual(env.oneShots.map(\.strict), [true, false], "the identity-switch gap is not strict")
+
+        transport.postResult = DextProtocol.krNotReady               // the next post loses the device: 1 s recreate timer
+        queue.sync { env.advance(by: 20); sink.submit(state: PadState(lx: -0.5)) }
+        XCTAssertEqual(env.oneShots.map(\.strict), [true, false, false], "the recreate timer is not strict")
+    }
+
+    func testTheRuntimeRateDefaultsTo1000AndIsClamped() {
+        XCTAssertEqual(VirtualPadSink.Config().maxRateHz, 250, "Config's own default keeps the tests' meaning")
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 1000, "unset key")
+        defaults.set(125.0, forKey: VirtualPadSink.maxRateKey)
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 125)
+        defaults.set(Float(500), forKey: VirtualPadSink.maxRateKey)
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 500)
+        defaults.set(5.0, forKey: VirtualPadSink.maxRateKey)
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 60)
+        defaults.set(9000.0, forKey: VirtualPadSink.maxRateKey)
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 1000)
+        defaults.set("fast", forKey: VirtualPadSink.maxRateKey)
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 1000, "not a number")
+    }
+
+    // MARK: Latency meter wiring (latency plan §3)
+
+    func testAPostedStateRecordsAllFiveStages() {
+        let sink = publishedSink()
+        let t = env.now
+        queue.sync { sink.submit(state: PadState(lx: 0.5), stamp: LatencyStamp(tK: t - 300_000, tC: t - 200_000, tD: t)) }
+        let e = sink.meter.entries()
+        XCTAssertEqual(e, [LatencyMeter.Entry(tK: t - 300_000, tC: t - 200_000, tD: t, tS: t, tR: t)])
+        XCTAssertEqual(sink.meter.flushes, 1)
+        XCTAssertEqual(sink.meter.changed, 1)
+        XCTAssertEqual(sink.meter.coalesced, 0)
+    }
+
+    func testACoalescedStateIsAttributedToTheOldestInput() {
+        let sink = publishedSink()
+        let t0 = env.now
+        let a = PadState(lx: 0.2), b = PadState(lx: 0.4), c = PadState(lx: 0.6)
+        queue.sync {
+            sink.submit(state: a, stamp: LatencyStamp(tK: 1000, tC: 1100, tD: 1200))        // posted at once
+            env.advance(by: 1); sink.submit(state: b, stamp: LatencyStamp(tK: 2000, tC: 2100, tD: 2200))
+            env.advance(by: 1); sink.submit(state: c, stamp: LatencyStamp(tK: 3000, tC: 3100, tD: 3200))
+            env.advance(by: 2)                                                              // trailing flush at +4 ms
+        }
+        let e = sink.meter.entries()
+        XCTAssertEqual(e.count, 2)
+        XCTAssertEqual(e[1].tK, 2000, "the flush carries c but counts from b, the oldest input still waiting")
+        XCTAssertEqual(e[1].tC, 2100)
+        XCTAssertEqual(e[1].tD, 2200)
+        XCTAssertEqual(e[1].tS, t0 + 4_000_000)
+        XCTAssertEqual(e[1].tR, t0 + 4_000_000)
+        XCTAssertEqual(sink.meter.coalesced, 1, "b was replaced by c before it was sent")
+        XCTAssertEqual(sink.meter.changed, 3)
+    }
+
+    func testFramesCoalescedInTheMailboxKeepTheOldestTimestamp() {
+        let sink = publishedSink()
+        let gate = DispatchSemaphore(value: 0)
+        queue.async { gate.wait() }                             // keep the sink's queue busy
+        for i in 0..<5 {
+            var f = GamepadFrame(); f.x = Int16(i * 600)
+            sink.submit(frame: f, mapping: .default, tK: UInt64(100 + i * 100), tC: UInt64(150 + i * 100))
+        }
+        gate.signal()
+        queue.sync {}
+        let e = sink.meter.entries()
+        XCTAssertEqual(e.count, 1)
+        XCTAssertEqual(e[0].tK, 100)
+        XCTAssertEqual(e[0].tC, 150)
+    }
+
+    func testReturningToTheSentStateDropsTheWaitingStamp() {
+        let sink = publishedSink()
+        let a = PadState(lx: 0.2), b = PadState(lx: 0.9)
+        queue.sync {
+            sink.submit(state: a, stamp: LatencyStamp(tK: 1, tC: 2, tD: 3))
+            env.advance(by: 1); sink.submit(state: b, stamp: LatencyStamp(tK: 10, tC: 20, tD: 30))
+            env.advance(by: 1); sink.submit(state: a, stamp: LatencyStamp(tK: 100, tC: 200, tD: 300))   // back to what the host has
+            env.advance(by: 20)
+            sink.submit(state: PadState(lx: 0.5), stamp: LatencyStamp(tK: 7, tC: 8, tD: 9))
+        }
+        XCTAssertEqual(sink.meter.entries().map(\.tK), [1, 7], "the abandoned b left no stale stamp behind")
     }
 }
 

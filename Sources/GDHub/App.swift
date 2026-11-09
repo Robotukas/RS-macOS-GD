@@ -34,6 +34,12 @@ final class AppModel: ObservableObject {
             guard let self, let route = self.routes.removeValue(forKey: ObjectIdentifier(device)) else { return }
             route.module.interfaceDisconnected(usagePage: route.usagePage)
         }
+        // The gamepad interface (0xFF58, ~1 kHz) is handled synchronously in the HID callback; the Bragi control
+        // interface keeps the copying path because its handler can send output reports.
+        monitor.synchronousUsagePages = [EnvisionProDevice.gamepadUsagePage]
+        monitor.onSynchronousInputReport = { [weak self] _, reportID, report, tK, tC in
+            self?.envision.handleGamepadReport(reportID: reportID, report: report, tK: tK, tC: tC)
+        }
         monitor.onInputReport = { [weak self] device, reportID, bytes in
             guard let self, let route = self.routes[ObjectIdentifier(device)] else { return }
             if reportID == UInt32(BragiPacket.inputReportID),
@@ -60,8 +66,8 @@ final class AppModel: ObservableObject {
         let driver = driver
         // One async hop per frame onto vhidQueue; the UI path is unchanged.
         let envision = envision
-        envision.onFrame = { frame, mapping in
-            sink.submit(frame: frame, mapping: mapping, revision: envision.mappingRevision)
+        envision.onFrame = { frame, mapping, stamp in
+            sink.submit(frame: frame, mapping: mapping, revision: envision.mappingRevision, tK: stamp.tK, tC: stamp.tC)
         }
         envision.onStatusChange = { status in driver.controllerStatusChanged(status) }
 

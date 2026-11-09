@@ -21,8 +21,14 @@ struct GamepadFrame: Equatable {
     static let idle = GamepadFrame()
 
     static let axisNames = ["x", "y", "z", "rz"]
+    static let triggerNames = ["lt", "rt"]
 
     static func parse(_ bytes: [UInt8]) -> GamepadFrame? {
+        bytes.withUnsafeBufferPointer { parse($0) }
+    }
+
+    /// Parses straight from the IOKit report buffer: no copy, and nothing is kept after it returns.
+    static func parse(_ bytes: UnsafeBufferPointer<UInt8>) -> GamepadFrame? {
         guard bytes.count == 16, bytes[0] == 6 else { return nil }
         func s16(_ lo: UInt8, _ hi: UInt8) -> Int16 {
             Int16(bitPattern: UInt16(lo) | UInt16(hi) << 8)
@@ -68,6 +74,7 @@ struct GamepadFrame: Equatable {
 
     /// Events describing what changed from `previous` to `self`.
     func diff(from previous: GamepadFrame) -> [InputEvent] {
+        if self == previous { return [] }       // ≈1 kHz of identical reports at rest: no work, no allocation
         var events: [InputEvent] = []
         let changed = buttons ^ previous.buttons
         if changed != 0 {
@@ -85,7 +92,7 @@ struct GamepadFrame: Equatable {
             guard let new = axis(name), let old = previous.axis(name) else { continue }
             if abs(new - old) > 2000 { events.append(.axis(name: name, value: new)) }
         }
-        for name in ["lt", "rt"] {
+        for name in GamepadFrame.triggerNames {
             guard let new = trigger(name), let old = previous.trigger(name) else { continue }
             if new - old > 40 { events.append(.trigger(name: name, value: new)) }
         }

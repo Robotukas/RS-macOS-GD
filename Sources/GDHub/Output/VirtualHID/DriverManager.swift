@@ -38,11 +38,22 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     /// Pad publication state (design §5.4) and whether the test pattern is running.
     @Published private(set) var padState: PadPublishState = .off {
-        didSet { if padState == .off, oldValue != .off { evaluateAutoPublish() } }
+        didSet {
+            updatePadActivity()
+            if padState == .off, oldValue != .off { evaluateAutoPublish() }
+        }
     }
     @Published private(set) var testPatternRunning = false
     /// Live traffic from `getStatus` (nil while not connected).
     @Published private(set) var padStats: PadStats?
+    /// Latency of the last 10 s (nil while not connected). Shown in the Driver menu; also written to the `latency` log.
+    @Published private(set) var latency: LatencySnapshot?
+    /// Number of synthetic pads macOS GameController made from our pad (normally 1 while published).
+    @Published private(set) var syntheticPadCount = 0
+
+    /// Holds the App Nap opt-out while the pad is published (latency plan fix #1).
+    private let padActivity = PadActivity()
+    private let syntheticWatcher = SyntheticPadWatcher()
 
     // Auto-publish policy: publish the pad when the controller connects (the pad then stays, reporting neutral, while
     // the controller sleeps). An explicit Unpublish holds auto-publish off until the user publishes again or the app
@@ -76,10 +87,26 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         embeddedBuild = Bundle(url: embeddedDextURL)?.infoDictionary?["CFBundleVersion"] as? String
         let client = DextClient(queue: vhidQueue)
         dext = client
-        let padSink = VirtualPadSink(queue: vhidQueue, transport: client)
+        // 1000 Hz unless `defaults write com.interlinked.gdhub vpadMaxRateHz -float <60…1000>` says otherwise; read here, so
+        // changing it needs a relaunch. `Config()` itself stays at 250 Hz.
+        var config = VirtualPadSink.Config()
+        config.maxRateHz = VirtualPadSink.runtimeMaxRateHz()
+        let padSink = VirtualPadSink(queue: vhidQueue, transport: client, config: config)
         sink = padSink
-        poller = DextStatusPoller(queue: vhidQueue, dext: client, sink: padSink)
+        // `--latency-log` (dev aid): print the `latency` log line every 2 s instead of every 10 s.
+        poller = DextStatusPoller(queue: vhidQueue, dext: client, sink: padSink,
+                                  latencyLogEvery: CommandLine.arguments.contains("--latency-log") ? 2 : 10)
         super.init()
+        Self.log.info("virtual pad rate cap \(Int(config.maxRateHz)) Hz")
+        poller.onLatency = { [weak self] snapshot in
+            Task { @MainActor in
+                guard let self, self.latency != snapshot else { return }
+                self.latency = snapshot
+            }
+        }
+        syntheticWatcher.onCount = { [weak self] count in
+            Task { @MainActor in self?.syntheticPadCount = count }
+        }
         poller.onUpdate = { [weak self] stats in
             Task { @MainActor in
                 guard let self, self.padStats != stats else { return }
@@ -149,6 +176,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     func start() {
         guard !started else { return }
         started = true
+        syntheticWatcher.start()
         // Always start the client: it waits for the service, which also lets a SwiftPM build be refused by the
         // dext's Team ID check (design §5.1 step 4).
         vhidQueue.async { [dext] in dext.start() }
@@ -217,7 +245,24 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
     func neutralNow() { vhidQueue.sync { sink.neutral() } }
 
     /// App is quitting: destroy the pad and close the connection so the devices disappear at once.
-    func prepareForTermination() { vhidQueue.sync { sink.shutdown(); dext.stop() } }
+    func prepareForTermination() {
+        vhidQueue.sync { sink.shutdown(); dext.stop() }
+        padActivity.setHeld(false)
+        syntheticWatcher.stop()
+    }
+
+    /// Fix #1: no App Nap while the pad is published. A pad that is only re-publishing (identity switch, lost device)
+    /// keeps the activity; off, blocked and error release it.
+    private func updatePadActivity() {
+        switch padState {
+        case .published:
+            if padActivity.setHeld(true) { Self.log.info("App Nap opt-out on (pad published)") }
+        case .off, .blockedDuplicate, .error:
+            if padActivity.setHeld(false) { Self.log.info("App Nap opt-out off") }
+        case .publishing:
+            break
+        }
+    }
 
     /// Publishes the persisted (or default) identity when the policy says so. `retryBlocked` also re-tries a pad that
     /// was blocked by a duplicate device.

@@ -69,7 +69,8 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
 
     /// Every parsed report 0x06 with the current mapping, on the main actor (virtual pad feed, design §5.6).
     /// Called after `status` has been set to `.active` for that frame.
-    var onFrame: ((GamepadFrame, ControlMapping) -> Void)?
+    /// `stamp` carries the report's kernel timestamp and callback entry time for the latency meter (zeros when unknown).
+    var onFrame: ((GamepadFrame, ControlMapping, LatencyStamp) -> Void)?
     /// Called when `status` changes: asleep, receiver idle and disconnected all mean "pad neutral".
     var onStatusChange: ((Status) -> Void)?
 
@@ -138,6 +139,24 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
             logRaw(reportID: reportID, bytes: bytes, usagePage: usagePage, prefix: "malformed 0x06")
             return
         }
+        ingest(new, stamp: LatencyStamp())
+    }
+
+    /// Synchronous entry for the gamepad interface (page 0xFF58), called from the HID callback on the main run loop.
+    /// `report` is the IOKit buffer: it is parsed before this returns and never kept. `tK` / `tC`: see `HIDMonitor`.
+    func handleGamepadReport(reportID: UInt32, report: UnsafeBufferPointer<UInt8>, tK: UInt64, tC: UInt64) {
+        guard reportID == 6 else {
+            handle(reportID: reportID, bytes: Array(report), usagePage: Self.gamepadUsagePage)
+            return
+        }
+        guard let new = GamepadFrame.parse(report) else {
+            handle(reportID: reportID, bytes: Array(report), usagePage: Self.gamepadUsagePage)      // logs it as malformed
+            return
+        }
+        ingest(new, stamp: LatencyStamp(tK: tK, tC: tC, tD: 0))
+    }
+
+    private func ingest(_ new: GamepadFrame, stamp: LatencyStamp) {
         let now = Date()
         lastReportAt = now
         if status != .active { status = .active }
@@ -146,7 +165,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         for e in new.diff(from: previous) { log(e.text, at: now) }
         latestFrame = new
         hasFrame = true
-        onFrame?(new, mapping)
+        onFrame?(new, mapping, stamp)
         publish(new)
         learn?.feed(new, now: now)
     }

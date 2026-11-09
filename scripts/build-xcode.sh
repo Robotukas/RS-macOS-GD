@@ -1,26 +1,32 @@
 #!/bin/zsh
 # Build GDHub.app + embedded dext (signed, development), verify, install to /Applications, launch.
-# Usage: scripts/build-xcode.sh [--no-install | --no-open] [--same-build]
+# Usage: scripts/build-xcode.sh [--no-install | --no-open] [--same-build] [--release]
 #   --same-build: reuse the current number in Xcode/build-number (app-only change; the embedded dext keeps
 #   its version, so no driver replacement is triggered). Combine as e.g. `--same-build --no-open`.
+#   --release: build and install the Release configuration (-O, no GDHub.debug.dylib) for play sessions; Debug is the
+#   default. Combine with --same-build so the installed driver (same version) is not replaced.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 DEXT_ID=com.interlinked.gdhub.VirtualHID; UDID=00006031-001851E126E1001C; NUMFILE=Xcode/build-number
 installed=$(systemextensionsctl list 2>/dev/null | sed -nE "s/.*${DEXT_ID//./\\.} \([^/]*\/([0-9]+)\).*/\1/p" | sort -n | tail -1)
 last=$(cat "$NUMFILE" 2>/dev/null || echo 1); installed=${installed:-0}
-SAME=0; ARGS=()
-for a in "$@"; do [[ $a == --same-build ]] && SAME=1 || ARGS+=("$a"); done
+SAME=0; CONFIG=Debug; ARGS=()
+for a in "$@"; do
+  if [[ $a == --same-build ]]; then SAME=1
+  elif [[ $a == --release ]]; then CONFIG=Release
+  else ARGS+=("$a"); fi
+done
 set -- "${ARGS[@]}"
 if (( SAME )); then BUILD=$(( installed > last ? installed : last )); else BUILD=$(( (installed > last ? installed : last) + 1 )); fi
 (( BUILD <= 9999 )) || { echo "build number $BUILD > 9999 is not a valid dext CFBundleVersion"; exit 1; }
 print -r -- $BUILD > "$NUMFILE"
 mkdir -p .xcodebuild
 /opt/homebrew/bin/xcodegen generate --spec project.yml --quiet
-if ! xcodebuild -project GDHub.xcodeproj -scheme GDHub -configuration Debug -derivedDataPath .xcodebuild \
+if ! xcodebuild -project GDHub.xcodeproj -scheme GDHub -configuration $CONFIG -derivedDataPath .xcodebuild \
      -allowProvisioningUpdates -allowProvisioningDeviceRegistration CURRENT_PROJECT_VERSION=$BUILD build \
      > .xcodebuild/last-build.log 2>&1; then grep -E "error:|No profiles" .xcodebuild/last-build.log | head -20; exit 1; fi
-APP=.xcodebuild/Build/Products/Debug/GDHub.app
+APP=.xcodebuild/Build/Products/$CONFIG/GDHub.app
 DEXT=$APP/Contents/Library/SystemExtensions/$DEXT_ID.dext
 [[ -d $DEXT ]] || { echo "dext not embedded at $DEXT"; exit 1; }
 codesign --verify --strict --deep "$APP"
@@ -44,9 +50,9 @@ need "$APP" "$APP/Contents/embedded.provisionprofile" com.apple.developer.system
      com.apple.developer.team-identifier
 [[ $(plutil -extract CFBundleVersion raw "$DEXT/Info.plist") == $BUILD ]] || { echo "dext version mismatch"; exit 1; }
 [[ $(plutil -extract CFBundlePackageType raw "$DEXT/Info.plist" 2>/dev/null) == DEXT ]] || { echo "dext CFBundlePackageType != DEXT (sysextd would reject it)"; exit 1; }
-echo "built build $BUILD"
+echo "built build $BUILD ($CONFIG)"
 [[ ${1:-} == --no-install ]] && exit 0
 pkill -x GDHub 2>/dev/null && sleep 1 || true
 rm -rf /Applications/GDHub.app && ditto "$APP" /Applications/GDHub.app
-echo "installed /Applications/GDHub.app (build $BUILD)"
+echo "installed /Applications/GDHub.app (build $BUILD, $CONFIG)"
 [[ ${1:-} == --no-open ]] || open /Applications/GDHub.app
