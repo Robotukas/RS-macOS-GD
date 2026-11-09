@@ -85,6 +85,34 @@ ENGINE_PLIST=$APP/Contents/Resources/com.interlinked.gdhub.engine.plist
 [[ -f $ENGINE_PLIST ]] && plutil -lint "$ENGINE_PLIST" >/dev/null || { echo "engine plist missing or invalid in $APP"; exit 1; }
 [[ $(plutil -extract CFBundleVersion raw "$DEXT/Info.plist") == $BUILD ]] || { echo "dext version mismatch"; exit 1; }
 [[ $(plutil -extract CFBundlePackageType raw "$DEXT/Info.plist" 2>/dev/null) == DEXT ]] || { echo "dext CFBundlePackageType != DEXT (sysextd would reject it)"; exit 1; }
+# T5: the translator in the dext must be compiled WITHOUT fused multiply-adds (the Swift pipeline it must equal does not fuse
+# either; clang's arm64 default is -ffp-contract=on). The generated project must carry -ffp-contract=off both on the dext's
+# copy of Shared/GDHubXlate.c and in the dext target's OTHER_CFLAGS, and no fast-math flag may be set; any compile of that file
+# in this build's log must show the flag. The self-test in the dext covers the golden vectors on the finished binary.
+plutil -convert json -o - GDHub.xcodeproj/project.pbxproj | python3 -I -c '
+import json, sys
+p = json.load(sys.stdin)["objects"]
+def objs(kind): return {k: v for k, v in p.items() if v.get("isa") == kind}
+dext = [v for v in objs("PBXNativeTarget").values() if v.get("name") == "GDHubVirtualHID"]
+if len(dext) != 1: sys.exit("dext target not found in the project")
+t = dext[0]
+perfile = False
+for ph in t["buildPhases"]:
+    o = p[ph]
+    if o.get("isa") != "PBXSourcesBuildPhase": continue
+    for f in o["files"]:
+        bf = p[f]; ref = p.get(bf.get("fileRef", ""), {})
+        if ref.get("path") == "GDHubXlate.c" and "-ffp-contract=off" in bf.get("settings", {}).get("COMPILER_FLAGS", ""): perfile = True
+if not perfile: sys.exit("GDHubXlate.c in the dext target has no -ffp-contract=off compiler flag")
+for c in p[t["buildConfigurationList"]]["buildConfigurations"]:
+    bs = p[c]["buildSettings"]; flags = bs.get("OTHER_CFLAGS", [])
+    flags = flags if isinstance(flags, list) else [flags]
+    if "-ffp-contract=off" not in flags: sys.exit("dext target %s: OTHER_CFLAGS lacks -ffp-contract=off" % p[c]["name"])
+    if any("fast-math" in f or "ffp-contract=fast" in f for f in flags): sys.exit("dext target %s: fast-math flag set" % p[c]["name"])
+' || { echo "dext build flags: the translator would not be bit-identical to the Swift pipeline"; exit 2; }
+if grep -E '/clang .* -c .*Shared/GDHubXlate\.c' .xcodebuild/last-build.log | grep -F driverkit | grep -vqF -e 'ffp-contract\=off' -e 'ffp-contract=off'; then
+  echo "a compile of Shared/GDHubXlate.c for the dext in .xcodebuild/last-build.log lacks -ffp-contract=off"; exit 2
+fi
 echo "built build $BUILD ($CONFIG)"
 [[ ${1:-} == --no-install ]] && exit 0
 # The engine runs under the same process name, and a running engine would keep executing the old inode: boot it out first.

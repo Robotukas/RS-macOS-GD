@@ -93,6 +93,8 @@ void *gdhr_copy_root(gdhr *r)
 /* ------------------------------------------------------------------------------------------------------------- */
 /* Pad slot helpers (lock held) */
 
+static void map_clear_locked(gdhr *r);
+
 /* Empties the slot. The registry's references move to the caller through *specOut and the return value. */
 static void *take_locked(gdhr *r, void **specOut)
 {
@@ -104,6 +106,7 @@ static void *take_locked(gdhr *r, void **specOut)
     r->padSpecCrc = 0;
     r->padGen = 0;
     r->padState = GDHR_PAD_NONE;
+    map_clear_locked(r);                                 /* the mapping targeted this pad's spec: it goes with the pad */
     return pad;
 }
 
@@ -137,6 +140,7 @@ void *gdhr_release_owner(gdhr *r, void *uc)
         r->owner = 0;
         r->ownerGen = 0;
         ATOMIC_STORE(&r->desiredState, GDH_FWD_INERT);       /* nothing keeps counting for a dead owner (T4 rule C) */
+        map_clear_locked(r);                                 /* and no mapping outlives its owner (T5 rule C) */
         if (r->padState != GDHR_PAD_NONE && r->padGen == gen) pad = take_locked(r, &spec);
     }
     UNLOCK(r);
@@ -341,6 +345,8 @@ int gdhr_register_tap(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *d
     r->tapQueue = queue;
     ATOMIC_STORE(&r->tapOpened, 0);
     ATOMIC_STORE(&r->tapApplied, GDH_FWD_INERT);
+    ATOMIC_STORE(&r->tapTranslating, 0);
+    ATOMIC_STORE(&r->tapAppliedRevision, 0);
     ATOMIC_STORE(&r->tapPowered, 1);
     ATOMIC_STORE(&r->tapPid, pid);
     ATOMIC_STORE(&r->tapPresent, 1);
@@ -364,6 +370,8 @@ void gdhr_unregister_tap(gdhr *r, void *tap)
         ATOMIC_STORE(&r->tapPresent, 0);
         ATOMIC_STORE(&r->tapOpened, 0);
         ATOMIC_STORE(&r->tapApplied, GDH_FWD_INERT);
+        ATOMIC_STORE(&r->tapTranslating, 0);
+        ATOMIC_STORE(&r->tapAppliedRevision, 0);
     }
     UNLOCK(r);
     rel(r, oldTap);
@@ -420,6 +428,133 @@ void gdhr_set_desired(gdhr *r, uint32_t state)
     if (r) ATOMIC_STORE(&r->desiredState, state);
 }
 
+/* ------------------------------------------------------------------------------------------------------------- */
+/* T5: the mapping handoff. Writers hold the registry lock; the tap reads lock-free (seqlock). */
+
+static void map_store_locked(gdhr *r, const void *bytes, uint32_t len, uint32_t revision, uint32_t crc)
+{
+    uint32_t seq = __atomic_load_n(&r->mapSeq, __ATOMIC_RELAXED);        /* even: only writers change it, and they hold the lock */
+    uint32_t i;
+    const unsigned char *src = (const unsigned char *)bytes;
+    __atomic_store_n(&r->mapSeq, seq + 1, __ATOMIC_RELAXED);             /* odd: a write is in progress */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    for (i = 0; i < GDH_MAP_WORDS; i++) {
+        uint64_t w = 0;
+        uint32_t k;
+        for (k = 0; k < 8; k++) {
+            uint32_t at = i * 8 + k;
+            if (src && at < len) w |= (uint64_t)src[at] << (8 * k);
+        }
+        __atomic_store_n(&r->mapWords[i], w, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&r->mapLen, len, __ATOMIC_RELAXED);
+    __atomic_store_n(&r->mapRevision, revision, __ATOMIC_RELAXED);
+    __atomic_store_n(&r->mapSpecCrc, crc, __ATOMIC_RELAXED);
+    __atomic_store_n(&r->mapSeq, seq + 2, __ATOMIC_RELEASE);             /* even again: the new content is complete */
+}
+
+static void map_clear_locked(gdhr *r)
+{
+    if (__atomic_load_n(&r->mapLen, __ATOMIC_RELAXED) == 0) return;      /* nothing to drop: no needless change of mapSeq */
+    map_store_locked(r, 0, 0, 0, 0);
+}
+
+int gdhr_map_publish(gdhr *r, void *uc, const void *bytes, uint32_t len, uint32_t revision, uint32_t specCrc)
+{
+    if (!ready(r) || !uc || !bytes) return GDHR_E_STATE;
+    if (len == 0 || len > GDH_MAP_MAX) return GDHR_E_SIZE;
+    int rc;
+    LOCK(r);
+    if (!r->owner || r->owner != uc) rc = GDHR_E_NOT_OWNER;
+    else if (r->padState != GDHR_PAD_LIVE) rc = GDHR_E_NO_PAD;
+    else if (r->padSpecCrc != specCrc) rc = GDHR_E_SPEC;
+    else { map_store_locked(r, bytes, len, revision, specCrc); rc = GDHR_OK; }
+    UNLOCK(r);
+    return rc;
+}
+
+void gdhr_map_clear(gdhr *r)
+{
+    if (!ready(r)) return;
+    LOCK(r);
+    map_clear_locked(r);
+    UNLOCK(r);
+}
+
+uint32_t gdhr_map_seq(const gdhr *r)
+{
+    return r ? __atomic_load_n(&r->mapSeq, __ATOMIC_ACQUIRE) : 0;
+}
+
+int gdhr_map_read(const gdhr *r, void *out, uint32_t cap, uint32_t *len, uint32_t *seq, uint32_t *revision, uint32_t *specCrc)
+{
+    int tries;
+    if (!r || !out) return 0;
+    for (tries = 0; tries < 4; tries++) {
+        uint32_t s1 = __atomic_load_n(&r->mapSeq, __ATOMIC_ACQUIRE);
+        if (s1 & 1u) continue;
+        uint32_t n = __atomic_load_n(&r->mapLen, __ATOMIC_RELAXED);
+        uint32_t rev = __atomic_load_n(&r->mapRevision, __ATOMIC_RELAXED);
+        uint32_t crc = __atomic_load_n(&r->mapSpecCrc, __ATOMIC_RELAXED);
+        uint32_t i;
+        unsigned char *dst = (unsigned char *)out;
+        uint32_t take = n <= cap ? n : cap;
+        for (i = 0; i * 8 < take; i++) {
+            uint64_t w = __atomic_load_n(&r->mapWords[i], __ATOMIC_RELAXED);
+            uint32_t k;
+            for (k = 0; k < 8 && i * 8 + k < take; k++) dst[i * 8 + k] = (unsigned char)(w >> (8 * k));
+        }
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&r->mapSeq, __ATOMIC_RELAXED) == s1) {
+            if (n > cap) return 0;                                       /* cannot happen for a mapping we published; never trust it */
+            if (len) *len = n;
+            if (seq) *seq = s1;
+            if (revision) *revision = rev;
+            if (specCrc) *specCrc = crc;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int gdhr_selftest_begin(gdhr *r)
+{
+    uint32_t expected = GDHR_SELFTEST_NOT_RUN;
+    if (!r) return 0;
+    return __atomic_compare_exchange_n(&r->selfTest, &expected, GDHR_SELFTEST_RUNNING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+void gdhr_selftest_finish(gdhr *r, int pass)
+{
+    if (r) __atomic_store_n(&r->selfTest, pass ? GDHR_SELFTEST_PASS : GDHR_SELFTEST_FAIL, __ATOMIC_RELEASE);
+}
+
+uint32_t gdhr_selftest_get(const gdhr *r)
+{
+    return r ? __atomic_load_n(&r->selfTest, __ATOMIC_ACQUIRE) : GDHR_SELFTEST_NOT_RUN;
+}
+
+int gdhr_is_owner(gdhr *r, void *uc)
+{
+    int is;
+    if (!ready(r) || !uc) return 0;
+    LOCK(r);
+    is = (r->owner && r->owner == uc) ? 1 : 0;
+    UNLOCK(r);
+    return is;
+}
+
+void gdhr_tap_publish_xlate(gdhr *r, void *tap, uint32_t appliedRevision, uint32_t translating)
+{
+    if (!ready(r)) return;
+    LOCK(r);
+    if (r->tap && r->tap == tap) {
+        ATOMIC_STORE(&r->tapAppliedRevision, appliedRevision);
+        ATOMIC_STORE(&r->tapTranslating, translating);
+    }
+    UNLOCK(r);
+}
+
 int gdhr_set_desired_if_owner(gdhr *r, void *uc, uint32_t state)
 {
     if (!ready(r) || !uc) return GDHR_E_STATE;
@@ -454,14 +589,15 @@ uint32_t gdhr_terminating(const gdhr *r)
 int gdh_fwd_validate(uint64_t state, uint64_t flags)
 {
     if (flags != 0) return 1;
-    return (state == GDH_FWD_INERT || state == GDH_FWD_COUNT) ? 0 : 1;
+    return (state == GDH_FWD_INERT || state == GDH_FWD_COUNT || state == GDH_FWD_SHADOW) ? 0 : 1;
 }
 
 int gdh_tap_decide(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t stopping, uint32_t retryDue)
 {
+    int armed = (desired == GDH_FWD_COUNT || desired == GDH_FWD_SHADOW);     /* the interface is open in COUNT and in SHADOW */
     if (stopping) return opened ? GDH_TAP_CLOSE : GDH_TAP_NONE;
-    if (opened) return desired == GDH_FWD_COUNT ? GDH_TAP_NONE : GDH_TAP_CLOSE;
-    if (desired == GDH_FWD_COUNT && powered && retryDue) return GDH_TAP_OPEN;
+    if (opened) return armed ? GDH_TAP_NONE : GDH_TAP_CLOSE;
+    if (armed && powered && retryDue) return GDH_TAP_OPEN;
     return GDH_TAP_NONE;
 }
 
@@ -565,6 +701,12 @@ void gdhr_snapshot(gdhr *r, gdhr_snap *out)
     out->tapPid = ATOMIC_LOAD(&r->tapPid);
     out->tapLastPowerFlags = ATOMIC_LOAD(&r->tapLastPowerFlags);
     out->lastError = __atomic_load_n(&r->lastError, __ATOMIC_RELAXED);
+    out->selfTest = gdhr_selftest_get(r);
+    out->tapTranslating = ATOMIC_LOAD(&r->tapTranslating);
+    out->appliedRevision = ATOMIC_LOAD(&r->tapAppliedRevision);
+    out->hasMap = __atomic_load_n(&r->mapLen, __ATOMIC_RELAXED) != 0;
+    out->acceptedRevision = out->hasMap ? __atomic_load_n(&r->mapRevision, __ATOMIC_RELAXED) : 0;
+    out->acceptedSpecCrc = out->hasMap ? __atomic_load_n(&r->mapSpecCrc, __ATOMIC_RELAXED) : 0;
     out->probeExt = gdhr_probe_get(r, GDHR_PROBE_EXT);
     out->probePad = gdhr_probe_get(r, GDHR_PROBE_SUBMIT);
     out->padSource = gdhr_pad_source(r);

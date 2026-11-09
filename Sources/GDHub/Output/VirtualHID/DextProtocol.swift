@@ -23,6 +23,8 @@ enum DextProtocol {
         /// T3, behind `Capability.rootPad`. Scalars in: state, flags, argMs. Scalars out: appliedState, tapPresent, padSource, lastError.
         static let setForwarding: UInt32 = 9
         /// 10 is reserved (set mapping, T5) and 12 too (create device 2, T7).
+        /// T5, behind `Capability.xlate`: struct in = a GDHM blob (<= 1024 bytes); scalars out = [acceptedRevision, reason].
+        static let setMapping: UInt32 = 10
         static let getStatus2: UInt32 = 11
         static let count: UInt32 = 12
     }
@@ -43,6 +45,9 @@ enum DextProtocol {
         /// T4: the receiver tap exists in this dext; `setForwarding` also accepts COUNT. A dext built with GDHUB_TAP_DECLINE
         /// does not set it.
         static let tap: UInt64 = 1 << 9
+        /// T5: selector 10 (`setMapping`) and the SHADOW state exist (the in-driver translator passed no self-test yet; that is
+        /// reported separately in status2).
+        static let xlate: UInt64 = 1 << 10
     }
 
     /// Forwarding state of `setForwarding`. INERT: the tap is attached but the interface is not opened. COUNT (T4): opened,
@@ -50,11 +55,36 @@ enum DextProtocol {
     enum Forwarding {
         static let inert: UInt64 = 0
         static let count: UInt64 = 1
-        /// Argument check of selector 9 in this protocol version: INERT or COUNT, no flags.
-        static func isAccepted(state: UInt64, flags: UInt64) -> Bool { flags == 0 && (state == inert || state == count) }
+        /// T5: COUNT, plus the in-driver translator runs on every report with the accepted mapping and records a parity sample.
+        /// Nothing is posted. Without a mapping it is COUNT.
+        static let shadow: UInt64 = 2
+        /// Argument check of selector 9 in this protocol version: INERT, COUNT or SHADOW, no flags.
+        static func isAccepted(state: UInt64, flags: UInt64) -> Bool { flags == 0 && (state == inert || state == count || state == shadow) }
     }
 
     /// Who may post to the pad (`padSource` in status2 and in `setForwarding`'s output).
+    /// `setMapping` reasons (scalar output 1): 0 accepted, 1...21 `GDX_E_*` of Shared/GDHubXlate.h, then these.
+    enum MapReason {
+        static let ok: UInt32 = 0
+        static let noPad: UInt32 = 100
+        static let tooBig: UInt32 = 101
+        static let noRegistry: UInt32 = 102
+        /// Text for a reason, for logs. `gdxText` supplies the `GDX_E_*` descriptions.
+        static func text(_ code: UInt32, gdxText: (Int32) -> String) -> String {
+            switch code {
+            case 0: return "accepted"
+            case noPad: return "no pad has been created yet"
+            case tooBig: return "does not fit the driver's handoff buffer"
+            case noRegistry: return "driver registry unavailable"
+            default: return gdxText(Int32(truncatingIfNeeded: code))
+            }
+        }
+    }
+
+    enum SelfTest {
+        static let notRun: UInt8 = 0, pass: UInt8 = 1, fail: UInt8 = 2
+    }
+
     enum PadSource: UInt8 {
         case none = 0, userClient = 1, tap = 2
     }
@@ -154,10 +184,17 @@ struct DextStatus2: Equatable {
         static let poolMiss = 232, readdFail = 240, openFailures = 248
         static let k2dCount = 256, k2dP50 = 260, k2dP99 = 264, k2dMax = 268, k2dMean = 272
         static let pokesRun = 276, tickApplies = 284, closeFailures = 292, reopens = 300, tapFrees = 308
+        static let selfTest = 316, translating = 317, hasMap = 318
+        static let acceptedRevision = 320, appliedRevision = 324, acceptedSpecCRC = 328
+        static let framesTranslated = 336, framesSkipped = 344, framesNoMap = 352, framesUnmapped = 360
+        static let statesChanged = 368, reportsWouldPost = 376, mapAccepted = 384, mapRefused = 392, mapSwaps = 400
+        static let xlateCount = 408, xlateP50 = 412, xlateP99 = 416, xlateMax = 420, xlateMean = 424
+        static let parityCount = 428, parityRevision = 432, parityTimestamp = 436
+        static let parityFrame = 444, parityOut01 = 460, parityOut02 = 476
     }
     static let version = 1
-    static let size = 316
-    static let maxSize = 512
+    static let size = 480
+    static let maxSize = 1024
     /// version, size and build: the least a reader needs.
     static let minimumBytes = 8
 
@@ -185,6 +222,14 @@ struct DextStatus2: Equatable {
     var poolMiss: UInt64 = 0, readdFail: UInt64 = 0, openFailures: UInt64 = 0
     var k2d = DextMeterSummary()
     var pokesRun: UInt64 = 0, tickApplies: UInt64 = 0, closeFailures: UInt64 = 0, reopens: UInt64 = 0, tapFrees: UInt64 = 0
+    // T5 SHADOW
+    var selfTest: UInt8 = 0
+    var translating = false, hasMap = false
+    var acceptedRevision: UInt32 = 0, appliedRevision: UInt32 = 0, acceptedSpecCRC: UInt32 = 0
+    var framesTranslated: UInt64 = 0, framesSkipped: UInt64 = 0, framesNoMap: UInt64 = 0, framesUnmapped: UInt64 = 0
+    var statesChanged: UInt64 = 0, reportsWouldPost: UInt64 = 0, mapAccepted: UInt64 = 0, mapRefused: UInt64 = 0, mapSwaps: UInt64 = 0
+    var xlate = DextMeterSummary()
+    var parity: DextParityRecord?
     var hop = DextMeterSummary()
     var hr = DextMeterSummary()
 
@@ -232,6 +277,23 @@ struct DextStatus2: Equatable {
                                  meanNs: UInt32(u(Offset.k2dMean, 4)))
         s.pokesRun = u(Offset.pokesRun, 8); s.tickApplies = u(Offset.tickApplies, 8); s.closeFailures = u(Offset.closeFailures, 8)
         s.reopens = u(Offset.reopens, 8); s.tapFrees = u(Offset.tapFrees, 8)
+        s.selfTest = UInt8(u(Offset.selfTest, 1)); s.translating = u(Offset.translating, 1) != 0; s.hasMap = u(Offset.hasMap, 1) != 0
+        s.acceptedRevision = UInt32(u(Offset.acceptedRevision, 4)); s.appliedRevision = UInt32(u(Offset.appliedRevision, 4))
+        s.acceptedSpecCRC = UInt32(u(Offset.acceptedSpecCRC, 4))
+        s.framesTranslated = u(Offset.framesTranslated, 8); s.framesSkipped = u(Offset.framesSkipped, 8)
+        s.framesNoMap = u(Offset.framesNoMap, 8); s.framesUnmapped = u(Offset.framesUnmapped, 8)
+        s.statesChanged = u(Offset.statesChanged, 8); s.reportsWouldPost = u(Offset.reportsWouldPost, 8)
+        s.mapAccepted = u(Offset.mapAccepted, 8); s.mapRefused = u(Offset.mapRefused, 8); s.mapSwaps = u(Offset.mapSwaps, 8)
+        s.xlate = DextMeterSummary(count: UInt32(u(Offset.xlateCount, 4)), p50Ns: UInt32(u(Offset.xlateP50, 4)),
+                                   p99Ns: UInt32(u(Offset.xlateP99, 4)), maxNs: UInt32(u(Offset.xlateMax, 4)),
+                                   meanNs: UInt32(u(Offset.xlateMean, 4)))
+        // the parity record exists only if the dext wrote that far and recorded a frame
+        if Offset.parityOut02 + 2 <= valid, u(Offset.parityTimestamp, 8) != 0 {
+            func bytes(_ off: Int, _ n: Int) -> [UInt8] { (0..<n).map { UInt8(u(off + $0, 1)) } }
+            s.parity = DextParityRecord(count: UInt32(u(Offset.parityCount, 4)), revision: UInt32(u(Offset.parityRevision, 4)),
+                                        timestamp: u(Offset.parityTimestamp, 8), frame: bytes(Offset.parityFrame, 16),
+                                        out01: bytes(Offset.parityOut01, 16), out02: bytes(Offset.parityOut02, 2))
+        }
         return s
     }
 
@@ -247,6 +309,14 @@ struct DextStatus2: Equatable {
         if reopens > 0 { t += " reopens=\(reopens)" }
         if tapStarts > 0 { t += " starts=\(tapStarts) frees=\(tapFrees)" }   // starts == frees + live instances when nothing leaks
         if k2d.count > 0 { t += " k2d p50/p99/max/mean \(k2d.microsecondsText) us" }
+        if framesTranslated > 0 || translating || appliedState == 2 {
+            t += " shadow: xlate=\(framesTranslated) chg=\(statesChanged) rev=\(acceptedRevision)/\(appliedRevision)"
+            if framesNoMap > 0 { t += " noMap=\(framesNoMap)" }
+            if framesSkipped > 0 { t += " skipped=\(framesSkipped)" }
+            if framesUnmapped > 0 { t += " unmapped=\(framesUnmapped)" }
+            if xlate.count > 0 { t += " xl p50/p99/max \(xlate.p50Ns)/\(xlate.p99Ns)/\(xlate.maxNs) ns" }
+        }
+        if selfTest == DextProtocol.SelfTest.fail { t += " selftest=FAIL" }
         if tapPid != 0 && tapPid != rootPid { t += " tapPid=\(tapPid)!=rootPid" }
         return t
     }
@@ -279,6 +349,28 @@ struct DextStatus2: Equatable {
         if syncViolations > 0 { parts.append("syncViolations=\(syncViolations)") }
         if syncInline > 0 { parts.append("syncInline=\(syncInline)") }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+}
+
+/// The last frame the dext's tap translated in SHADOW: the raw report, and the stateless `gdx_eval` + `gdx_build` result for it
+/// (report 0 and report 1 of the mapping: xbox-bt16's 0x01 of 16 bytes and 0x02 of 2 bytes), with the frame's kernel timestamp.
+struct DextParityRecord: Equatable {
+    var count: UInt32
+    var revision: UInt32
+    var timestamp: UInt64
+    var frame: [UInt8]
+    var out01: [UInt8]
+    var out02: [UInt8]
+}
+
+/// Outputs of `setMapping`.
+struct DextMappingResult: Equatable {
+    var acceptedRevision: UInt32
+    var reason: UInt32
+    var accepted: Bool { reason == DextProtocol.MapReason.ok && acceptedRevision != 0 }
+    init(words: [UInt64]) {
+        let w = words + [UInt64](repeating: 0, count: 2)
+        acceptedRevision = UInt32(truncatingIfNeeded: w[0]); reason = UInt32(truncatingIfNeeded: w[1])
     }
 }
 

@@ -166,7 +166,7 @@ final class DextTapSourceTests: XCTestCase {
     func testSelectorNineIsPokedNotCalled() throws {
         let uc = try text("Dext/GDHubVirtualHID/GDHubVirtualHIDUserClient.cpp")
         let s = try XCTUnwrap(uc.range(of: "static kern_return_t sSetForwarding"))
-        let body = String(uc[s.lowerBound...].prefix(1400))
+        let body = String(uc[s.lowerBound...].prefix(2600))
         XCTAssertTrue(body.contains("gdh_fwd_validate("))
         XCTAssertTrue(body.contains("gdhr_set_desired_if_owner("), "tied to ownership under the registry lock")
         XCTAssertFalse(body.contains("gdhr_set_desired("), "no bare store")

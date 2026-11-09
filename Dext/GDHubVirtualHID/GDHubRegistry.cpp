@@ -188,13 +188,15 @@ size_t GDHubBuildStatus2(uint8_t * buf, size_t cap)
         pad->release();
     }
     gdh_summary k2d = {};
+    gdh_status2_extra extra = {};
     uint32_t tapWindows = 0;
     void * q = nullptr;
     GDHubReceiverTap * tap = static_cast<GDHubReceiverTap *>(static_cast<OSObject *>(gdhr_copy_tap(r, &q)));
     if (q) static_cast<OSObject *>(q)->release();
     if (tap) {
-        GDHubTapReadMeter(tap, &k2d, &tapWindows);
+        GDHubTapReadMeter(tap, &extra.xlate, &k2d, &tapWindows);
+        extra.haveParity = GDHubTapReadParity(tap, &extra.parity) ? 1 : 0;
         tap->release();
     }
-    return gdh_status2_pack(buf, cap, &snap, &hop, &hr, windows, &k2d);
+    return gdh_status2_pack(buf, cap, &snap, &hop, &hr, windows, &k2d, &extra);
 }

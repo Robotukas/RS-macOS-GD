@@ -31,7 +31,14 @@ targets:
   GDHubVirtualHID:
     type: driver-extension
     platform: macOS                                      # xcodegen has no DriverKit platform; SDKROOT does it
-    sources: [Dext/GDHubVirtualHID]       # no Shared/ here until T5 (it would add `Shared/GDHubXlate.c` and -ffp-contract=off)
+    sources:
+      - Dext/GDHubVirtualHID
+      # T5: the one C translator, compiled into the dext. Its multiplies and adds must not be fused (Swift's are not), so the
+      # file gets -ffp-contract=off by name, and the whole target gets it too (OTHER_CFLAGS below). build-xcode.sh fails if the
+      # compile commands of this file for the dext lack the flag.
+      - path: Shared
+        includes: [GDHubXlate.c]
+        compilerFlags: ["-ffp-contract=off"]
     dependencies: [{sdk: DriverKit.framework}, {sdk: HIDDriverKit.framework}]
     info:
       path: Dext/GDHubVirtualHID/Info.plist
@@ -85,5 +92,7 @@ targets:
       base: {PRODUCT_BUNDLE_IDENTIFIER: com.interlinked.gdhub.VirtualHID, PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER),
              SDKROOT: driverkit, SUPPORTED_PLATFORMS: driverkit, DRIVERKIT_DEPLOYMENT_TARGET: "23.0",
              CLANG_CXX_LANGUAGE_STANDARD: gnu++20,
+             HEADER_SEARCH_PATHS: ["$(inherited)", "$(SRCROOT)/Shared"],
+             OTHER_CFLAGS: ["$(inherited)", "-ffp-contract=off"],
              GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GDHUB_DEXT_BUILD=$(CURRENT_PROJECT_VERSION)", "GDHUB_TAP_DECLINE=0"],   # =1: the tap declines Start (rollback lever)
              ENABLE_HARDENED_RUNTIME: YES, CODE_SIGN_IDENTITY: "Apple Development"}

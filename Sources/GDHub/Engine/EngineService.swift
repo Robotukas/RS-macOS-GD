@@ -35,7 +35,9 @@ final class EngineService: @unchecked Sendable {
         logEverySeconds = options.latencyLog ? 2 : 10
         let client = DextClient(queue: vhidQueue, supervised: true)      // the TapSupervisor below owns the forwarding state
         dext = client
-        tapSupervisor = TapSupervisor(queue: vhidQueue, dext: client)
+        let ring = FrameRing()
+        tapSupervisor = TapSupervisor(queue: vhidQueue, dext: client,
+                                      parity: ParitySampler(ring: ring, log: { EngineService.log.error("\($0, privacy: .public)") }))
         var config = VirtualPadSink.Config()
         config.maxRateHz = VirtualPadSink.runtimeMaxRateHz()
         config.xlateCore = VirtualPadSink.runtimeXlateCore()
@@ -46,6 +48,7 @@ final class EngineService: @unchecked Sendable {
                           mapping: mapping, options: options)
         presence = ControllerPresence(queue: vhidQueue)
         reader = GamepadHIDReader(queue: vhidQueue, presence: presence, core: core, stat: stat)
+        reader.ring = ring
         poller = DextStatusPoller(queue: vhidQueue, dext: client, sink: padSink, latencyLogEvery: logEverySeconds)
         throttle = ThrottleCheck(queue: vhidQueue)
         Self.log.notice("virtual pad rate cap \(Int(config.maxRateHz)) Hz")
@@ -61,6 +64,18 @@ final class EngineService: @unchecked Sendable {
             if case .connected = state { self.tapSupervisor.connection(up: true) } else { self.tapSupervisor.connection(up: false) }
         }
         presence.onInterface = { [weak self] up in self?.tapSupervisor.controllerInterface(up: up) }
+        // T5: what the engine can offer the driver as a mapping (encoded for the pad that exists now), and when it changed.
+        tapSupervisor.mappingOffer = { [weak self] revision in
+            guard let self, let pad = self.sink.createdPad else { return .none }
+            switch MapBlobEncoder.encode(self.core.mapping, identity: pad.identity, spec: pad.spec, revision: revision,
+                                         axisDeadband: self.sink.axisDeadband, triggerDeadband: self.sink.triggerDeadband) {
+            case .blob(let b): return .blob(b, spec: pad.spec)
+            case .unsupported(let why): return .unsupported(why)
+            }
+        }
+        core.onPadState = { [weak self] state in
+            if case .published = state { self?.tapSupervisor.invalidateMapping() }       // a new pad: the driver has no mapping for it
+        }
         presence.onChange = { [weak self] status in
             Self.log.notice("controller: \(status.rawValue, privacy: .public)")
             self?.core.controllerStatus(status)
@@ -83,7 +98,7 @@ final class EngineService: @unchecked Sendable {
 
         let w = MappingWatcher(store: store, initial: core.mapping, queue: controlQueue) { [weak self] m in
             guard let self else { return }
-            self.vhidQueue.async { self.core.setMapping(m) }
+            self.vhidQueue.async { self.core.setMapping(m); self.tapSupervisor.invalidateMapping() }
         }
         w.start()
         watcher = w
@@ -108,7 +123,8 @@ final class EngineService: @unchecked Sendable {
             let napped = (prio ?? 31) <= 4
             // T3: the dext's own `hop` (user client stamp to pad entry) and `hr` (handleReport) of its last 10 s window.
             // status2 is a call on the dext connection, so it is made here on vhidQueue; nil on a dext without it.
-            let dextText = self.dext.status2()?.meterLogText.map { " | " + $0 } ?? ""
+            let shadowText = self.tapSupervisor.shadowText.map { " | " + $0 } ?? ""
+            let dextText = (self.dext.status2()?.meterLogText.map { " | " + $0 } ?? "") + shadowText
             self.meterQueue.async {
                 let s = CallbackStat.summary(of: window)
                 let l = self.lastSnapshot

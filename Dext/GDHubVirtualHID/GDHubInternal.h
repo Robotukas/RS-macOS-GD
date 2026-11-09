@@ -68,7 +68,12 @@ IODispatchQueue * GDHubUCQueue(GDHubVirtualHIDUserClient * uc);                 
 void     GDHubPokeTap(void);                                          // any queue; +1 copies from the registry, released in the block
 void     GDHubTerminateTap(void);                                     // devTerminate: Terminate(0) on the registered tap (its Stop closes the interface)
 void     GDHubTapApply(GDHubReceiverTap * tap);                       // tap queue only: Open or Close as GDH_TAP decides
-bool     GDHubTapReadMeter(GDHubReceiverTap * tap, gdh_summary * k2d, uint32_t * windows);
+bool     GDHubTapReadMeter(GDHubReceiverTap * tap, gdh_summary * xlate, gdh_summary * k2d, uint32_t * windows);
+bool     GDHubTapReadParity(GDHubReceiverTap * tap, gdh_parity_rec * rec);
+
+// T5 (GDHubXlateGlue.cpp)
+uint32_t GDHubSelfTestEnsure(void);                                   // runs the golden vectors once per process; returns GDHR_SELFTEST_*
+kern_return_t GDHubMapAccept(GDHubVirtualHIDUserClient * uc, const uint8_t * bytes, size_t len, uint32_t * acceptedRevision, uint32_t * reason);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Process-global registry (GDHubRegistry.cpp over Core/GDHubRegistryCore.c). Whichever object runs first creates it.

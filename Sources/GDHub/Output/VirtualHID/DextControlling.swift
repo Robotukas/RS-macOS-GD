@@ -26,6 +26,9 @@ protocol DextStatus2Source: AnyObject {
 protocol TapControlling: AnyObject {
     /// The connected dext has a receiver tap (`Capability.tap`).
     var hasTap: Bool { get }
+    /// T5: the dext has SHADOW and `setMapping`.
+    var hasXlate: Bool { get }
+    func setMapping(_ blob: [UInt8]) -> (kr: kern_return_t, result: DextMappingResult?)
     func setForwarding(_ state: UInt64) -> (kr: kern_return_t, result: DextForwardingResult?)
     func status2() -> DextStatus2?
 }

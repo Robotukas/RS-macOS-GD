@@ -9,7 +9,7 @@ struct DextRawResult {
     var scalars: [UInt64] = []
     var bytes: [UInt8] = []
 }
-typealias DextRawCall = (_ selector: UInt32, _ scalarsIn: [UInt64], _ scalarOutCount: Int, _ structOutCapacity: Int) -> DextRawResult
+typealias DextRawCall = (_ selector: UInt32, _ scalarsIn: [UInt64], _ scalarOutCount: Int, _ structOutCapacity: Int, _ structIn: [UInt8]?) -> DextRawResult
 
 /// Talks to the GDHub DriverKit extension through its user client (design §5.2).
 /// Every method and every callback runs on `queue` (the app's `vhidQueue`).
@@ -47,6 +47,8 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     var hasRootPad: Bool { capabilities & DextProtocol.Capability.rootPad != 0 }
     /// T4: the dext has the receiver tap (a GDHUB_TAP_DECLINE build and build 19 and earlier do not).
     var hasTap: Bool { capabilities & DextProtocol.Capability.tap != 0 }
+    /// T5: the dext has `setMapping` and the SHADOW state.
+    var hasXlate: Bool { capabilities & DextProtocol.Capability.xlate != 0 }
     /// A supervised client belongs to the engine's `TapSupervisor`, which decides the forwarding state. Every other client
     /// (the GUI in in-app mode) sends INERT after hello when the dext has a tap, so a tap can never keep counting for it.
     let supervised: Bool
@@ -352,10 +354,27 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         dispatchPrecondition(condition: .onQueue(queue))
         guard isLinked else { return (DextProtocol.krNotReady, nil) }
         guard DextProtocol.Forwarding.isAccepted(state: state, flags: 0) else { return (DextProtocol.krUnsupported, nil) }
-        guard hasRootPad, state == DextProtocol.Forwarding.inert || hasTap else { return (DextProtocol.krUnsupported, nil) }
+        guard hasRootPad else { return (DextProtocol.krUnsupported, nil) }
+        switch state {                                 // each state needs the capability that introduced it
+        case DextProtocol.Forwarding.inert: break
+        case DextProtocol.Forwarding.count: guard hasTap else { return (DextProtocol.krUnsupported, nil) }
+        default: guard hasXlate else { return (DextProtocol.krUnsupported, nil) }
+        }
         let r = callRaw(DextProtocol.Selector.setForwarding, scalarsIn: [state, 0, 0],
                         scalarOutCount: DextForwardingResult.scalarCount, structOutCapacity: 0)
         return (r.kr, r.kr == KERN_SUCCESS ? DextForwardingResult(words: r.scalars) : nil)
+    }
+
+    /// Selector 10 (T5): push a GDHM blob. Not sent without `Capability.xlate` (`krUnsupported`) or with a size the dext would
+    /// refuse as a bad argument (`krBadArgument`, a local answer). The dext answers `kIOReturnSuccess` with `reason != 0` for a
+    /// refused mapping (the kernel does not return scalar outputs of a failed call), `krNotPermitted` to a non-owner.
+    func setMapping(_ blob: [UInt8]) -> (kr: kern_return_t, result: DextMappingResult?) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard isLinked else { return (DextProtocol.krNotReady, nil) }
+        guard hasXlate else { return (DextProtocol.krUnsupported, nil) }
+        guard blob.count >= 64, blob.count <= 1024 else { return (DextProtocol.krBadArgument, nil) }
+        let r = callRaw(DextProtocol.Selector.setMapping, scalarsIn: [], scalarOutCount: 2, structOutCapacity: 0, structIn: blob)
+        return (r.kr, r.kr == KERN_SUCCESS ? DextMappingResult(words: r.scalars) : nil)
     }
 
     /// After hello: an unsupervised client (the GUI in in-app mode) tells a dext that has a tap to stay INERT. A supervised
@@ -372,8 +391,9 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
 
     private var isLinked: Bool { connect != 0 || testCall != nil }
 
-    private func callRaw(_ selector: UInt32, scalarsIn: [UInt64], scalarOutCount: Int, structOutCapacity: Int) -> DextRawResult {
-        if let testCall { return testCall(selector, scalarsIn, scalarOutCount, structOutCapacity) }
+    private func callRaw(_ selector: UInt32, scalarsIn: [UInt64], scalarOutCount: Int, structOutCapacity: Int,
+                         structIn: [UInt8]? = nil) -> DextRawResult {
+        if let testCall { return testCall(selector, scalarsIn, scalarOutCount, structOutCapacity, structIn) }
         var sIn = scalarsIn
         // Output pointers are passed only when the call has that kind of output; the kernel compares the counts.
         let sOut = UnsafeMutablePointer<UInt64>.allocate(capacity: max(scalarOutCount, 1))
@@ -385,9 +405,12 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         buf.initialize(repeating: 0, count: max(structOutCapacity, 1))
         nOut.pointee = UInt32(scalarOutCount)
         bufLen.pointee = structOutCapacity
-        let kr = IOConnectCallMethod(connect, selector, &sIn, UInt32(sIn.count), nil, 0,
-                                     scalarOutCount > 0 ? sOut : nil, scalarOutCount > 0 ? nOut : nil,
-                                     structOutCapacity > 0 ? buf : nil, structOutCapacity > 0 ? bufLen : nil)
+        let inBytes = structIn ?? []
+        let kr = inBytes.withUnsafeBytes { raw in
+            IOConnectCallMethod(connect, selector, &sIn, UInt32(sIn.count), structIn == nil ? nil : raw.baseAddress, inBytes.count,
+                                scalarOutCount > 0 ? sOut : nil, scalarOutCount > 0 ? nOut : nil,
+                                structOutCapacity > 0 ? buf : nil, structOutCapacity > 0 ? bufLen : nil)
+        }
         guard kr == KERN_SUCCESS else { return DextRawResult(kr: kr) }
         return DextRawResult(kr: kr,
                              scalars: scalarOutCount > 0 ? Array(UnsafeBufferPointer(start: sOut, count: min(Int(nOut.pointee), scalarOutCount))) : [],

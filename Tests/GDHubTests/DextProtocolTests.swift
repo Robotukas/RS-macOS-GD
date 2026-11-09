@@ -115,6 +115,26 @@ final class DextProtocolTests: XCTestCase {
             "GDHUB_ST2_OFF_SYNC_INLINE": UInt64(S2.syncInline), "GDHUB_ST2_OFF_TOPOLOGY": UInt64(S2.topology),
             "GDHUB_ST2_OFF_PROBE_EXT": UInt64(S2.probeExt),
             "GDHUB_CAP_TAP": P.Capability.tap, "GDHUB_FWD_COUNT": P.Forwarding.count,
+            "GDHUB_CAP_XLATE": P.Capability.xlate, "GDHUB_FWD_SHADOW": P.Forwarding.shadow,
+            "GDHUB_SEL_SET_MAPPING": UInt64(P.Selector.setMapping),
+            "GDHUB_MAP_OK": UInt64(P.MapReason.ok), "GDHUB_MAP_NO_PAD": UInt64(P.MapReason.noPad),
+            "GDHUB_MAP_TOO_BIG": UInt64(P.MapReason.tooBig), "GDHUB_MAP_NO_REGISTRY": UInt64(P.MapReason.noRegistry),
+            "GDHUB_SELFTEST_NOT_RUN": UInt64(P.SelfTest.notRun), "GDHUB_SELFTEST_PASS": UInt64(P.SelfTest.pass),
+            "GDHUB_SELFTEST_FAIL": UInt64(P.SelfTest.fail),
+            "GDHUB_ST2_OFF_SELF_TEST": UInt64(S2.selfTest), "GDHUB_ST2_OFF_TRANSLATING": UInt64(S2.translating),
+            "GDHUB_ST2_OFF_HAS_MAP": UInt64(S2.hasMap), "GDHUB_ST2_OFF_ACCEPTED_REVISION": UInt64(S2.acceptedRevision),
+            "GDHUB_ST2_OFF_APPLIED_REVISION": UInt64(S2.appliedRevision), "GDHUB_ST2_OFF_ACCEPTED_SPEC_CRC": UInt64(S2.acceptedSpecCRC),
+            "GDHUB_ST2_OFF_FRAMES_TRANSLATED": UInt64(S2.framesTranslated), "GDHUB_ST2_OFF_FRAMES_SKIPPED": UInt64(S2.framesSkipped),
+            "GDHUB_ST2_OFF_FRAMES_NOMAP": UInt64(S2.framesNoMap), "GDHUB_ST2_OFF_FRAMES_UNMAPPED": UInt64(S2.framesUnmapped),
+            "GDHUB_ST2_OFF_STATES_CHANGED": UInt64(S2.statesChanged), "GDHUB_ST2_OFF_REPORTS_WOULD_POST": UInt64(S2.reportsWouldPost),
+            "GDHUB_ST2_OFF_MAP_ACCEPTED": UInt64(S2.mapAccepted), "GDHUB_ST2_OFF_MAP_REFUSED": UInt64(S2.mapRefused),
+            "GDHUB_ST2_OFF_MAP_SWAPS": UInt64(S2.mapSwaps),
+            "GDHUB_ST2_OFF_XLATE_COUNT": UInt64(S2.xlateCount), "GDHUB_ST2_OFF_XLATE_P50_NS": UInt64(S2.xlateP50),
+            "GDHUB_ST2_OFF_XLATE_P99_NS": UInt64(S2.xlateP99), "GDHUB_ST2_OFF_XLATE_MAX_NS": UInt64(S2.xlateMax),
+            "GDHUB_ST2_OFF_XLATE_MEAN_NS": UInt64(S2.xlateMean),
+            "GDHUB_ST2_OFF_PARITY_COUNT": UInt64(S2.parityCount), "GDHUB_ST2_OFF_PARITY_REVISION": UInt64(S2.parityRevision),
+            "GDHUB_ST2_OFF_PARITY_TIMESTAMP": UInt64(S2.parityTimestamp), "GDHUB_ST2_OFF_PARITY_FRAME": UInt64(S2.parityFrame),
+            "GDHUB_ST2_OFF_PARITY_OUT01": UInt64(S2.parityOut01), "GDHUB_ST2_OFF_PARITY_OUT02": UInt64(S2.parityOut02),
             "GDHUB_ST2_OFF_TAP_PRESENT": UInt64(S2.tapPresent), "GDHUB_ST2_OFF_TAP_OPENED": UInt64(S2.tapOpened),
             "GDHUB_ST2_OFF_APPLIED_STATE": UInt64(S2.appliedState), "GDHUB_ST2_OFF_POWERED": UInt64(S2.powered),
             "GDHUB_ST2_OFF_TAP_PID": UInt64(S2.tapPid), "GDHUB_ST2_OFF_TAP_STARTS": UInt64(S2.tapStarts),
@@ -193,7 +213,8 @@ final class DextProtocolTests: XCTestCase {
         XCTAssertEqual([S.hello, S.createDevice, S.destroyDevice, S.postReport, S.postNeutral, S.heartbeat, S.registerOutput,
                         S.getStatus, S.devTerminate], Array(0...8), "the original nine, exactly as build 17 numbers them")
         XCTAssertEqual(S.setForwarding, 9)
-        XCTAssertEqual(S.getStatus2, 11, "10 is reserved for the mapping blob (T5)")
+        XCTAssertEqual(S.setMapping, 10, "T5: the mapping blob")
+        XCTAssertEqual(S.getStatus2, 11)
         XCTAssertEqual(S.count, S.getStatus2 + 1)
         XCTAssertEqual(DextProtocol.version, 1, "the protocol version stays 1: hello is an exact match")
         XCTAssertEqual(DextProtocol.specVersion, 1)

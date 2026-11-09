@@ -238,6 +238,15 @@ final class VirtualPadSink: @unchecked Sendable {
         Self.log.notice("xlate core: \(self.xlateNote, privacy: .public)")
     }
 
+    /// The identity and encoded spec of the device that exists now: what a GDHM mapping pushed to the driver must target.
+    /// nil without a device. Queue-confined.
+    var axisDeadband: Double { config.axisDeadband }
+    var triggerDeadband: Double { config.triggerDeadband }
+    var createdPad: (identity: PadIdentity, spec: [UInt8])? {
+        guard created, let id = createdIdentity, let spec = createdSpecBytes else { return nil }
+        return (id, spec)
+    }
+
     /// Which translator is running, as logged: "c", "swift (xlateCore=swift)" or "swift (fallback, <reason>)". Queue-confined.
     var xlateStatus: String { xlateNote }
 

@@ -163,6 +163,61 @@ int gdh_meter_read(const gdh_meter *m, gdh_summary *hop, gdh_summary *hr, uint32
 }
 
 /* ------------------------------------------------------------------------------------------------------------- */
+/* Parity record (single writer, seqlock over relaxed 64-bit words) */
+
+static uint64_t pack_bytes(const uint8_t *b, size_t n)
+{
+    uint64_t w = 0;
+    size_t i;
+    for (i = 0; i < n && i < 8; i++) w |= (uint64_t)b[i] << (8 * i);
+    return w;
+}
+
+static void unpack_bytes(uint8_t *b, size_t n, uint64_t w)
+{
+    size_t i;
+    for (i = 0; i < n && i < 8; i++) b[i] = (uint8_t)(w >> (8 * i));
+}
+
+void gdh_parity_write(gdh_parity *p, const gdh_parity_rec *rec)
+{
+    uint32_t s = __atomic_load_n(&p->seq, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->seq, s + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    __atomic_store_n(&p->w[0], pack_bytes(rec->frame, 8), __ATOMIC_RELAXED);
+    __atomic_store_n(&p->w[1], pack_bytes(rec->frame + 8, 8), __ATOMIC_RELAXED);
+    __atomic_store_n(&p->w[2], pack_bytes(rec->out01, 8), __ATOMIC_RELAXED);
+    __atomic_store_n(&p->w[3], pack_bytes(rec->out01 + 8, 8), __ATOMIC_RELAXED);
+    __atomic_store_n(&p->w[4], pack_bytes(rec->out02, 2) | ((uint64_t)rec->revision << 16), __ATOMIC_RELAXED);
+    __atomic_store_n(&p->w[5], rec->timestamp, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->w[6], rec->count, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->seq, s + 2, __ATOMIC_RELEASE);
+}
+
+int gdh_parity_read(const gdh_parity *p, gdh_parity_rec *out)
+{
+    int tries;
+    for (tries = 0; tries < 8; tries++) {
+        uint32_t s1 = __atomic_load_n(&p->seq, __ATOMIC_ACQUIRE);
+        uint64_t w[7];
+        int i;
+        if (s1 & 1u) continue;
+        for (i = 0; i < 7; i++) w[i] = __atomic_load_n(&p->w[i], __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&p->seq, __ATOMIC_RELAXED) != s1) continue;
+        for (i = 0; i < (int)sizeof(*out); i++) ((unsigned char *)out)[i] = 0;
+        unpack_bytes(out->frame, 8, w[0]); unpack_bytes(out->frame + 8, 8, w[1]);
+        unpack_bytes(out->out01, 8, w[2]); unpack_bytes(out->out01 + 8, 8, w[3]);
+        unpack_bytes(out->out02, 2, w[4]);
+        out->revision = (uint32_t)(w[4] >> 16);
+        out->timestamp = w[5];
+        out->count = (uint32_t)w[6];
+        return 1;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------------------------------------------------- */
 /* GDHubStatus2 */
 
 static void put16(uint8_t *b, size_t off, uint16_t v)
@@ -183,7 +238,8 @@ static void put64(uint8_t *b, size_t off, uint64_t v)
 }
 
 size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
-                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows, const gdh_summary *k2d)
+                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows, const gdh_summary *k2d,
+                        const gdh_status2_extra *extra)
 {
     uint8_t full[GDHUB_ST2_SIZE];
     size_t i;
@@ -238,6 +294,36 @@ size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
     put64(full, GDHUB_ST2_OFF_CLOSE_FAILURES, s->counters[GDHR_CTR_CLOSE_FAILURES]);
     put64(full, GDHUB_ST2_OFF_REOPENS, s->counters[GDHR_CTR_REOPENS]);
     put64(full, GDHUB_ST2_OFF_TAP_FREES, s->counters[GDHR_CTR_TAP_FREES]);
+    full[GDHUB_ST2_OFF_SELF_TEST] = (uint8_t)s->selfTest;
+    full[GDHUB_ST2_OFF_TRANSLATING] = (uint8_t)(s->tapTranslating != 0);
+    full[GDHUB_ST2_OFF_HAS_MAP] = (uint8_t)(s->hasMap != 0);
+    put32(full, GDHUB_ST2_OFF_ACCEPTED_REVISION, s->acceptedRevision);
+    put32(full, GDHUB_ST2_OFF_APPLIED_REVISION, s->appliedRevision);
+    put32(full, GDHUB_ST2_OFF_ACCEPTED_SPEC_CRC, s->acceptedSpecCrc);
+    put64(full, GDHUB_ST2_OFF_FRAMES_TRANSLATED, s->counters[GDHR_CTR_FRAMES_TRANSLATED]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_SKIPPED, s->counters[GDHR_CTR_FRAMES_SKIPPED]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_NOMAP, s->counters[GDHR_CTR_FRAMES_NOMAP]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_UNMAPPED, s->counters[GDHR_CTR_FRAMES_UNMAPPED]);
+    put64(full, GDHUB_ST2_OFF_STATES_CHANGED, s->counters[GDHR_CTR_STATES_CHANGED]);
+    put64(full, GDHUB_ST2_OFF_REPORTS_WOULD_POST, s->counters[GDHR_CTR_REPORTS_WOULD_POST]);
+    put64(full, GDHUB_ST2_OFF_MAP_ACCEPTED, s->counters[GDHR_CTR_MAP_ACCEPTED]);
+    put64(full, GDHUB_ST2_OFF_MAP_REFUSED, s->counters[GDHR_CTR_MAP_REFUSED]);
+    put64(full, GDHUB_ST2_OFF_MAP_SWAPS, s->counters[GDHR_CTR_MAP_SWAPS]);
+    if (extra) {
+        put32(full, GDHUB_ST2_OFF_XLATE_COUNT, extra->xlate.count);
+        put32(full, GDHUB_ST2_OFF_XLATE_P50_NS, extra->xlate.p50Ns);
+        put32(full, GDHUB_ST2_OFF_XLATE_P99_NS, extra->xlate.p99Ns);
+        put32(full, GDHUB_ST2_OFF_XLATE_MAX_NS, extra->xlate.maxNs);
+        put32(full, GDHUB_ST2_OFF_XLATE_MEAN_NS, extra->xlate.meanNs);
+        if (extra->haveParity) {
+            put32(full, GDHUB_ST2_OFF_PARITY_COUNT, extra->parity.count);
+            put32(full, GDHUB_ST2_OFF_PARITY_REVISION, extra->parity.revision);
+            put64(full, GDHUB_ST2_OFF_PARITY_TIMESTAMP, extra->parity.timestamp);
+            for (i = 0; i < 16; i++) full[GDHUB_ST2_OFF_PARITY_FRAME + i] = extra->parity.frame[i];
+            for (i = 0; i < 16; i++) full[GDHUB_ST2_OFF_PARITY_OUT01 + i] = extra->parity.out01[i];
+            for (i = 0; i < 2; i++) full[GDHUB_ST2_OFF_PARITY_OUT02 + i] = extra->parity.out02[i];
+        }
+    }
     full[GDHUB_ST2_OFF_TOPOLOGY] = (uint8_t)s->topology;
     full[GDHUB_ST2_OFF_PROBE_EXT] = (uint8_t)s->probeExt;
     full[GDHUB_ST2_OFF_PROBE_SUBMIT] = (uint8_t)s->probePad;

@@ -44,6 +44,9 @@ extern "C" {
 #define GDHR_E_NOT_OWNER 2   /* stale or missing owner generation */
 #define GDHR_E_STATE     3   /* wrong state for this transition (or the registry is not ready) */
 #define GDHR_E_ARG       4
+#define GDHR_E_NO_PAD    5   /* T5: a mapping needs a pad (a LIVE slot) to target */
+#define GDHR_E_SPEC      6   /* T5: the mapping targets another spec CRC than the live pad's */
+#define GDHR_E_SIZE      7   /* T5: the mapping bytes do not fit the handoff buffer */
 
 enum gdhr_counter {
     GDHR_CTR_UC_POSTS = 0,       /* input reports handed to the HID stack for source UC */
@@ -73,10 +76,23 @@ enum gdhr_counter {
     GDHR_CTR_CLOSE_FAILURES,     /* Close returned an error */
     GDHR_CTR_REOPENS,            /* Opens after an earlier Close in the same tap instance (each builds a fresh pool) */
     GDHR_CTR_TAP_FREES,          /* tap objects freed: starts == frees + live instances */
+    /* T5 (SHADOW): written on the tap's queue, except the two map counters (root queue) */
+    GDHR_CTR_FRAMES_TRANSLATED,  /* frames run through the shared translator */
+    GDHR_CTR_FRAMES_SKIPPED,     /* SHADOW frames that are not report 6 of 16 bytes (never translated) */
+    GDHR_CTR_FRAMES_NOMAP,       /* SHADOW frames seen while no mapping is accepted (counted, not translated) */
+    GDHR_CTR_FRAMES_UNMAPPED,    /* SHADOW frames whose bytes could not be read without allocating (never expected) */
+    GDHR_CTR_STATES_CHANGED,     /* translated frames after which gdx_step would post (a LIVE tap would have posted) */
+    GDHR_CTR_REPORTS_WOULD_POST, /* reports in those posts */
+    GDHR_CTR_MAP_ACCEPTED,       /* selector 10 blobs accepted */
+    GDHR_CTR_MAP_REFUSED,        /* selector 10 blobs refused (any reason) */
+    GDHR_CTR_MAP_SWAPS,          /* times the tap switched to a new mapping */
     GDHR_CTR_COUNT
 };
 
 /* Everything the registry needs from its environment. In the dext: IOLock and OSObject::retain/release. */
+#define GDH_MAP_MAX    1024                  /* bytes of one validated mapping (sizeof(gdx_map) is about 650) */
+#define GDH_MAP_WORDS  (GDH_MAP_MAX / 8)
+
 typedef struct gdhr_ops {
     void *(*lock_new)(void);              /* NULL on failure */
     void  (*lock_free)(void *lock);
@@ -115,6 +131,14 @@ typedef struct gdhr {
     /* T4 tap words (atomic). opened/applied/powered belong to the registered tap and are written only through
        gdhr_tap_publish / gdhr_tap_set_power, which ignore a stale tap. */
     uint32_t        tapPresent, tapOpened, tapApplied, tapPowered, tapPid, tapLastPowerFlags, lastError, terminating;
+    /* T5. selfTest: 0 not run, 3 running, 1 pass, 2 fail (once per process; a failed self-test keeps SHADOW out). */
+    uint32_t        selfTest;
+    uint32_t        tapAppliedRevision, tapTranslating;      /* written for the registered tap only (gdhr_tap_publish_xlate) */
+    /* The accepted mapping, a seqlock-protected byte buffer: the writer (root queue, serialised by the registry lock) makes
+       mapSeq odd, stores the words, makes it even; the tap reads without any lock and retries a torn read. It lives only in
+       this process's memory and is dropped with the owner or the pad. mapSeq changes on every publish and every clear. */
+    uint32_t        mapSeq, mapLen, mapRevision, mapSpecCrc;
+    uint64_t        mapWords[GDH_MAP_WORDS];
 } gdhr;
 
 typedef struct gdhr_snap {
@@ -124,6 +148,7 @@ typedef struct gdhr_snap {
     uint32_t ownerPresent, rootPresent;
     uint32_t topology, probeExt, probePad;
     uint32_t tapPresent, tapOpened, tapApplied, tapPowered, tapPid, tapLastPowerFlags, lastError;
+    uint32_t selfTest, tapTranslating, hasMap, acceptedRevision, acceptedSpecCrc, appliedRevision;
     uint64_t counters[GDHR_CTR_COUNT];
 } gdhr_snap;
 
@@ -203,6 +228,8 @@ void     gdhr_snapshot(gdhr *r, gdhr_snap *out);
  */
 #define GDH_FWD_INERT  0      /* attached, interface NOT opened: no per-frame code */
 #define GDH_FWD_COUNT  1      /* opened; counts frames and the kernel-to-driver delay; no translation, nothing posted */
+#define GDH_FWD_SHADOW 2      /* T5: opened; translates with the accepted mapping, records a parity sample, posts NOTHING.
+                                 Without an accepted mapping (or after a failed self-test) it behaves exactly like COUNT. */
 
 /* Registers the tap and reads the desired state in the same critical section, so no state change can be lost between the
  * two. Returns 1 if it replaced a stale tap (two instances during a re-enumeration). Retains `tap` and `queue`. */
@@ -222,7 +249,7 @@ void  gdhr_set_terminating(gdhr *r);
 void  gdhr_clear_terminating(gdhr *r);                       /* devTerminate failed: the process is not ending, taps may attach again */
 uint32_t gdhr_terminating(const gdhr *r);
 
-/* Selector 9 argument check: 0 = accepted (INERT or COUNT, no flags), 1 = Unsupported. */
+/* Selector 9 argument check: 0 = accepted (INERT, COUNT or SHADOW, no flags), 1 = Unsupported. */
 int   gdh_fwd_validate(uint64_t state, uint64_t flags);
 
 /* What the tap's queue does next. The only place that decides when Open is called (rule A): the owner asked for COUNT in
@@ -251,6 +278,52 @@ void  gdh_pool_delivered(gdh_pool *p, int slot);                      /* the ker
 void  gdh_pool_added(gdh_pool *p, int slot);                          /* AddReportToPool succeeded */
 int   gdh_pool_next_missing(const gdh_pool *p, int from);            /* next slot >= from that holds a buffer not in the pool, or -1 */
 int   gdh_pool_reset(gdh_pool *p, void *old[GDH_POOL_SLOTS]);         /* clears every slot, hands back the buffers to release; returns how many */
+
+/* ---------------------------------------------------------------------------------------------------------------
+ * T5: the mapping handoff (plan 5.6) and the self-test word.
+ */
+/* Publishes a validated mapping (opaque bytes: the dext stores a gdx_map) for the tap. Under the registry lock, owner only:
+ *   GDHR_E_NOT_OWNER  `uc` is not the current owner        GDHR_E_NO_PAD  no LIVE pad
+ *   GDHR_E_SPEC       `specCrc` differs from the live pad's  GDHR_E_SIZE   len is 0 or above GDH_MAP_MAX
+ * On success mapSeq moves by 2 and the previous mapping is gone. */
+int  gdhr_map_publish(gdhr *r, void *uc, const void *bytes, uint32_t len, uint32_t revision, uint32_t specCrc);
+void gdhr_map_clear(gdhr *r);                                 /* drops the mapping (mapSeq moves) */
+uint32_t gdhr_map_seq(const gdhr *r);                         /* one acquire load: the per-frame "did the mapping change" test */
+/* Lock-free consistent read (tap queue). 1 = *out holds the mapping (or len == 0: none), *seq is its sequence; 0 = the
+ * writer was busy for 4 tries, keep what you have and try again next frame. Never blocks, never spins unbounded. */
+int  gdhr_map_read(const gdhr *r, void *out, uint32_t cap, uint32_t *len, uint32_t *seq, uint32_t *revision, uint32_t *specCrc);
+
+#define GDHR_SELFTEST_NOT_RUN 0
+#define GDHR_SELFTEST_PASS    1
+#define GDHR_SELFTEST_FAIL    2
+#define GDHR_SELFTEST_RUNNING 3
+int      gdhr_selftest_begin(gdhr *r);                        /* 1 = the caller runs it (state NOT_RUN -> RUNNING) */
+void     gdhr_selftest_finish(gdhr *r, int pass);
+uint32_t gdhr_selftest_get(const gdhr *r);
+/* There is no wait: the self-test runs on the root's queue only (selector 9 is the sole caller, and ExternalMethod is serial there),
+ * so RUNNING is never seen by a second caller; if it ever were, the caller answers NotReady, never "failed". */
+int      gdhr_is_owner(gdhr *r, void *uc);                    /* 1 if `uc` is the current owner (the check that precedes the self-test) */
+void     gdhr_tap_publish_xlate(gdhr *r, void *tap, uint32_t appliedRevision, uint32_t translating);  /* ignored for a stale tap */
+
+/* The parity record: the last frame the tap translated, as the stateless gdx_eval + gdx_build output, seqlock-published by
+ * its single writer (the tap's queue) for any reader. */
+typedef struct gdh_parity_rec {
+    uint8_t  frame[16];       /* the raw report 0x06 */
+    uint8_t  out01[16];       /* report 0 of the mapping (xbox-bt16: 0x01, 16 bytes) */
+    uint8_t  out02[2];        /* report 1 of the mapping (xbox-bt16: 0x02, 2 bytes) */
+    uint8_t  pad[6];
+    uint64_t timestamp;       /* the kernel timestamp of that frame, ReportAvailable's argument (mach ticks) */
+    uint32_t revision;        /* revision of the mapping it was translated with */
+    uint32_t count;           /* frames recorded since the tap started: moves with every frame */
+} gdh_parity_rec;
+
+typedef struct gdh_parity {
+    uint32_t seq;
+    uint64_t w[7];            /* the record as words (relaxed atomic stores/loads under the seqlock) */
+} gdh_parity;
+
+void gdh_parity_write(gdh_parity *p, const gdh_parity_rec *rec);   /* single writer */
+int  gdh_parity_read(const gdh_parity *p, gdh_parity_rec *out);    /* 1 = consistent copy; 0 = writer busy for 8 tries */
 
 /* ---------------------------------------------------------------------------------------------------------------
  * Meter (plan §9.1). 61 bounded buckets: edges at 1, 2, 3, 5, 8, 12, 18 and 25 us (so a p50 of a few microseconds
@@ -294,8 +367,16 @@ uint32_t gdh_crc32(const uint8_t *p, size_t len);
 /* GDHubStatus2 v1, T3 subset (layout and offsets: GDHubProtocol.h). Writes the whole structure when `cap` allows and
  * returns its size, or 0 when `cap` is smaller than 8 (version, size and build always fit). With a smaller `cap`
  * the first `cap` bytes are written and `cap` is returned. */
+/* T5 extras of status2 (all optional; zero when absent). */
+typedef struct gdh_status2_extra {
+    gdh_summary xlate;                /* translate time of the SHADOW core, last 10 s window */
+    gdh_parity_rec parity;            /* the last parity record, valid when haveParity */
+    uint32_t haveParity;
+} gdh_status2_extra;
+
 size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
-                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows, const gdh_summary *k2d);
+                        const gdh_summary *hop, const gdh_summary *hr, uint32_t meterWindows, const gdh_summary *k2d,
+                        const gdh_status2_extra *extra);
 
 #ifdef __cplusplus
 }

@@ -43,8 +43,26 @@ final class GDHubXlateGoldenTests: XCTestCase {
         return out
     }
 
-    static func goldenVectors() -> [[UInt8]] {
-        let oracle = SwiftOracle(mapping: .default, identity: .xboxBT16_02E0)
+    /// Learned-range mappings for the second and third golden sets: the factory layout has no learned ranges, so the ranged
+    /// division of the axis normalisation is never exercised by the first set. A: the symmetric full int16 range the owner's
+    /// live file carries on all four axes. B: one asymmetric range per axis (generic values).
+    static var learnedA: ControlMapping { F.liveShaped }
+    static var learnedB: ControlMapping {
+        var m = ControlMapping.default
+        m.sticks["left_stick"]?.ranges = ["x": AxisRange(min: -30000, max: 32000), "y": AxisRange(min: -32768, max: 21000)]
+        m.sticks["right_stick"]?.ranges = ["z": AxisRange(min: -25000, max: 32767), "rz": AxisRange(min: -31000, max: 28000)]
+        return m
+    }
+
+    static func blob(_ m: ControlMapping) -> [UInt8] {
+        guard case .blob(let b) = MapBlobEncoder.encode(m, identity: .xboxBT16_02E0, spec: F.spec, revision: revision) else { fatalError("learned mapping must encode") }
+        return b
+    }
+
+    static func goldenVectors() -> [[UInt8]] { goldenVectors(.default) }
+
+    static func goldenVectors(_ mapping: ControlMapping) -> [[UInt8]] {
+        let oracle = SwiftOracle(mapping: mapping, identity: .xboxBT16_02E0)
         return goldenFrames.map { raw in
             let r = oracle.reports(oracle.state(raw)!)
             return raw + r[0].bytes + r[1].bytes
@@ -61,6 +79,8 @@ final class GDHubXlateGoldenTests: XCTestCase {
         }
         let blob = factoryBlob
         let vectors = goldenVectors()
+        let blobA = Self.blob(Self.learnedA), blobB = Self.blob(Self.learnedB)
+        let vectorsA = goldenVectors(Self.learnedA), vectorsB = goldenVectors(Self.learnedB)
         var s = """
         #ifndef GDHubDefaults_h
         #define GDHubDefaults_h
@@ -72,6 +92,8 @@ final class GDHubXlateGoldenTests: XCTestCase {
          * What both sides (app and driver) must agree on: the constants, the factory GDHM v1 blob (ControlMapping.default on
          * the pad identity "xbox-bt16-02e0"), the pad spec it targets, and golden vectors whose expected bytes come from the
          * Swift pipeline (GamepadFrame.parse -> PassthroughPadMapper -> snapped -> PadReportBuilders.xboxBT16).
+         * T5 adds two learned-range sets (same frames, same spec): A = symmetric full int16 range on all four axes, B = one
+         * asymmetric range per axis. The driver's self-test runs all three sets through gdx_eval, gdx_build and gdx_step.
          */
         #include <stdint.h>
 
@@ -87,12 +109,19 @@ final class GDHubXlateGoldenTests: XCTestCase {
         #define GDX_DEFAULT_SPEC_LEN            \(F.spec.count)
         #define GDX_GOLDEN_COUNT                \(vectors.count)
         #define GDX_GOLDEN_STRIDE               34      /* frame[16], report 0x01 [16], report 0x02 [2] */
+        #define GDX_LEARNED_A_BLOB_LEN          \(blobA.count)
+        #define GDX_LEARNED_B_BLOB_LEN          \(blobB.count)
+        #define GDX_LEARNED_GOLDEN_COUNT        \(vectorsA.count)
 
 
         """
         s += block("GDX_DEFAULT_BLOB", blob) + "\n"
         s += block("GDX_DEFAULT_SPEC", F.spec) + "\n"
-        s += block("GDX_GOLDEN", vectors.flatMap { $0 })
+        s += block("GDX_GOLDEN", vectors.flatMap { $0 }) + "\n"
+        s += block("GDX_LEARNED_A_BLOB", blobA) + "\n"
+        s += block("GDX_LEARNED_A_GOLDEN", vectorsA.flatMap { $0 }) + "\n"
+        s += block("GDX_LEARNED_B_BLOB", blobB) + "\n"
+        s += block("GDX_LEARNED_B_GOLDEN", vectorsB.flatMap { $0 })
         s += "\n#endif\n"
         return s
     }
@@ -149,7 +178,36 @@ final class GDHubXlateGoldenTests: XCTestCase {
             // and through gdx_step on a fresh state, which posts both reports for the first frame
             var m = core.map; var st = gdx_state(); var out = gdx_out()
             let mask = frame.withUnsafeBufferPointer { gdx_step(&st, &m, $0.baseAddress, 16, &out) }
-            if mask != 0 { XCTAssertEqual(mask, 3, "vector \(v)"); XCTAssertEqual(XlateCore.reports(out).map(\.bytes), [r1, r2]) }
+            XCTAssertEqual(mask, 3, "vector \(v): a fresh state posts both reports"); XCTAssertEqual(XlateCore.reports(out).map(\.bytes), [r1, r2])
+        }
+    }
+
+    /// The learned-range sets: blobs and vectors come out of the header intact, the C core reproduces the Swift oracle on
+    /// them, and the ranges are really in the blobs (so the ranged division runs).
+    func testLearnedRangeSetsThroughTheCCore() throws {
+        let spec = withUnsafeBytes(of: GDX_DEFAULT_SPEC) { Array($0) }
+        let sets: [(String, [UInt8], [UInt8], ControlMapping)] = [
+            ("A", withUnsafeBytes(of: GDX_LEARNED_A_BLOB) { Array($0) }, withUnsafeBytes(of: GDX_LEARNED_A_GOLDEN) { Array($0) }, Self.learnedA),
+            ("B", withUnsafeBytes(of: GDX_LEARNED_B_BLOB) { Array($0) }, withUnsafeBytes(of: GDX_LEARNED_B_GOLDEN) { Array($0) }, Self.learnedB)]
+        let factory = try XlateCore(blob: Self.factoryBlob, spec: spec)
+        for (name, blob, golden, mapping) in sets {
+            XCTAssertEqual(blob, Self.blob(mapping), name)
+            XCTAssertEqual(blob.count, name == "A" ? Int(GDX_LEARNED_A_BLOB_LEN) : Int(GDX_LEARNED_B_BLOB_LEN))
+            XCTAssertEqual(golden.count, Int(GDX_LEARNED_GOLDEN_COUNT) * Int(GDX_GOLDEN_STRIDE))
+            let core = try XlateCore(blob: blob, spec: spec)
+            XCTAssertNotEqual(blob, Self.factoryBlob)
+            var differs = 0
+            for v in 0..<Int(GDX_LEARNED_GOLDEN_COUNT) {
+                let at = v * Int(GDX_GOLDEN_STRIDE)
+                let frame = Array(golden[at..<at + 16]), r1 = Array(golden[at + 16..<at + 32]), r2 = Array(golden[at + 32..<at + 34])
+                XCTAssertEqual(core.reports(try XCTUnwrap(core.eval(raw: frame))).map(\.bytes), [r1, r2], "set \(name) vector \(v): \(hex(frame))")
+                if factory.reports(try XCTUnwrap(factory.eval(raw: frame))).map(\.bytes) != [r1, r2] { differs += 1 }
+                var m = core.map; var st = gdx_state(); var out = gdx_out()
+                XCTAssertEqual(frame.withUnsafeBufferPointer { gdx_step(&st, &m, $0.baseAddress, 16, &out) }, 3)
+                XCTAssertEqual(XlateCore.reports(out).map(\.bytes), [r1, r2])
+                XCTAssertEqual(frame.withUnsafeBufferPointer { gdx_step(&st, &m, $0.baseAddress, 16, &out) }, 0, "the same frame again posts nothing")
+            }
+            XCTAssertGreaterThan(differs, 4, "set \(name) differs from the factory mapping on enough vectors that it exercises the ranges")
         }
     }
 

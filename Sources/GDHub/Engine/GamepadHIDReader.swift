@@ -18,6 +18,9 @@ final class GamepadHIDReader: @unchecked Sendable {
     private var manager: IOHIDManager?
     private var cancelled = false
 
+    /// T5: the parity sampler's ring of recent frames. Recording happens only while `ring.enabled` (SHADOW armed).
+    var ring: FrameRing?
+
     init(queue: DispatchQueue, presence: ControllerPresence, core: EngineCore, stat: CallbackStat) {
         self.queue = queue
         self.presence = presence
@@ -85,6 +88,7 @@ final class GamepadHIDReader: @unchecked Sendable {
     private func handle(reportID: UInt32, report: UnsafeMutablePointer<UInt8>, length: CFIndex, timeStamp: UInt64, tC: UInt64) {
         guard reportID == 6,
               let frame = GamepadFrame.parse(UnsafeBufferPointer(start: report, count: length)) else { return }
+        if let ring, ring.enabled { ring.record(timestamp: timeStamp, report: report, length: length) }
         let tK = LatencyMeter.nanos(fromMach: timeStamp)
         stat.record(tK: tK, tC: tC)
         presence.report(atNs: tC)

@@ -119,7 +119,7 @@ static kern_return_t sHello(OSObject * target, void * reference, IOUserClientMet
 #if GDHUB_TAP_DECLINE
     a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD;                       // a decline build has no tap: no CAP_TAP
 #else
-    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD | GDHUB_CAP_TAP;       // capabilities: keyboard and pointer arrive in D8
+    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD | GDHUB_CAP_TAP | GDHUB_CAP_XLATE;       // capabilities: keyboard and pointer arrive in D8
 #endif
     a->scalarOutputCount = 3;
     GDLog("hello: app protocol %llu build %llu, dext protocol %u build %u, protocolOK=%d",
@@ -437,6 +437,16 @@ static kern_return_t sSetForwarding(OSObject * target, void * reference, IOUserC
 #if GDHUB_TAP_DECLINE
     if (a->scalarInput[0] != GDHUB_FWD_INERT) return kIOReturnUnsupported;      // no tap in this build: only INERT exists
 #endif
+    // SHADOW needs a passed self-test (the golden vectors through this build of the core, run once per process). A failed one
+    // keeps the tap out of SHADOW for the life of the process.
+    // It runs here and nowhere else, for the owner only, on the root's queue; a process that is never asked for SHADOW never
+    // executes translator code. A pass or a failure is final for the process; RUNNING (not expected) is "ask again".
+    if (a->scalarInput[0] == GDHUB_FWD_SHADOW) {
+        if (!gdhr_is_owner(reg, static_cast<OSObject *>(uc))) return kIOReturnNotPermitted;
+        uint32_t st = GDHubSelfTestEnsure();
+        if (st == GDHR_SELFTEST_RUNNING) return kIOReturnNotReady;
+        if (st != GDHR_SELFTEST_PASS) return kIOReturnNotPermitted;
+    }
     // Only the CURRENT owner may set the state, decided under the registry lock: a late request from a client that is going
     // away must not land after release_owner reset the state to INERT (the tap would count for nobody).
     if (gdhr_set_desired_if_owner(reg, static_cast<OSObject *>(uc), (uint32_t)a->scalarInput[0]) != GDHR_OK) return kIOReturnNotPermitted;
@@ -451,11 +461,23 @@ static kern_return_t sSetForwarding(OSObject * target, void * reference, IOUserC
     return kIOReturnSuccess;
 }
 
-// Selector 10 is reserved for the mapping blob (T5).
-static kern_return_t sReserved(OSObject * target, void * reference, IOUserClientMethodArguments * a)
+// Selector 10 (T5, CAP_XLATE): push the mapping blob. Runs on the root's queue. Validation, the refusals and the handoff are
+// in GDHubMapAccept (GDHubXlateGlue.cpp); there is no synchronous call to the tap (it picks the mapping up at its next frame
+// through the registry's seqlock). Outputs: acceptedRevision (0 if refused) and a reason (0 = accepted).
+static kern_return_t sSetMapping(OSObject * target, void * reference, IOUserClientMethodArguments * a)
 {
-    (void)target; (void)reference; (void)a;
-    return kIOReturnUnsupported;
+    (void)reference;
+    auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
+    const uint8_t * bytes = nullptr; size_t len = 0; IOMemoryMap * map = nullptr;
+    if (structureBytes(a, &bytes, &len, &map) != kIOReturnSuccess) return kIOReturnBadArgument;
+    uint32_t rev = 0, reason = 0;
+    kern_return_t kr = GDHubMapAccept(uc, bytes, len, &rev, &reason);
+    if (map) map->release();
+    if (kr != kIOReturnSuccess) return kr;
+    a->scalarOutput[0] = rev;
+    a->scalarOutput[1] = reason;
+    a->scalarOutputCount = 2;
+    return kIOReturnSuccess;
 }
 
 // T3, selector 11: GDHubStatus2 as a structure output. The caller's maximum may be smaller than the structure (an older
@@ -497,9 +519,7 @@ static const IOUserClientMethodDispatch sMethods[GDHUB_SEL_COUNT] = {
     /* 7 getStatus      */ { sGetStatus,      0, 0, 0,                                 5, 0 },
     /* 8 devTerminate   */ { sDevTerminate,   0, 0, 0,                                 0, 0 },   // DEBUG-only
     /* 9 setForwarding  */ { sSetForwarding,  0, 3, 0,                                 4, 0 },   // T3, CAP_ROOT_PAD
-    /* 10 (reserved)   */ { sReserved,       kIOUserClientVariableStructureSize, kIOUserClientVariableStructureSize,
-                             kIOUserClientVariableStructureSize, kIOUserClientVariableStructureSize,
-                             kIOUserClientVariableStructureSize },                                        // T5: set mapping
+    /* 10 setMapping   */ { sSetMapping,     0, 0, kIOUserClientVariableStructureSize,                 2, 0 },   // T5, CAP_XLATE
     /* 11 getStatus2    */ { sGetStatus2,     0, 0, 0,                                 0, kIOUserClientVariableStructureSize },  // T3, CAP_ROOT_PAD
 };
 

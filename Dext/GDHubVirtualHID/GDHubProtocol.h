@@ -17,7 +17,9 @@
 #define GDHUB_SEL_GET_STATUS            7
 #define GDHUB_SEL_DEV_TERMINATE         8      /* DEBUG-ONLY dev experiment (not in the design): Terminate(0) on the root so the dext process can exit */
 #define GDHUB_SEL_SET_FORWARDING        9      /* T3. scalars in: state, flags, argMs. out: appliedState, tapPresent, padSource, lastError. CAP_ROOT_PAD */
-/* 10 is reserved (set mapping, T5) and answers kIOReturnUnsupported until then */
+#define GDHUB_SEL_SET_MAPPING           10     /* T5. struct in: GDHM blob (<= 1024 B). scalars out: acceptedRevision (0 if refused), reason. CAP_XLATE.
+                                                  kIOReturnBadArgument only for a size outside 64...1024; every other refusal is kIOReturnSuccess with reason != 0
+                                                  (kernel does not copy scalar outputs of a failed call), kIOReturnNotPermitted for a non-owner */
 #define GDHUB_SEL_GET_STATUS2           11     /* T3. struct out: GDHubStatus2 (<= 512 bytes, layout below). CAP_ROOT_PAD */
 /* 12 is reserved (create device 2, T7). Selectors 9-11 are owner-only, behind hello, the team check and the claim. */
 #define GDHUB_SEL_COUNT                 12
@@ -28,11 +30,19 @@
 #define GDHUB_CAP_PAD                   1      // hello out[2] bits: 1 << slot
 #define GDHUB_CAP_KEYBOARD              2
 #define GDHUB_CAP_POINTER               4
+#define GDHUB_CAP_XLATE                 (1u << 10)  /* T5: selector 10 (setMapping) and the SHADOW state exist. Absent in a GDHUB_TAP_DECLINE build */
 #define GDHUB_CAP_TAP                   (1u << 9)   /* T4: the receiver tap exists in this dext; selector 9 also accepts COUNT. Absent in a GDHUB_TAP_DECLINE build */
 #define GDHUB_CAP_ROOT_PAD              (1u << 8)   /* T3: the root service owns the pad; selectors 9 and 11 exist. Bits 0-2 stay the slot bits */
-/* Forwarding state (selector 9). T4 accepts INERT and COUNT; every other state, and any flag, answers kIOReturnUnsupported. */
+/* Forwarding state (selector 9). T5 accepts INERT, COUNT and SHADOW (SHADOW needs a passed self-test: kIOReturnNotPermitted otherwise);
+   LIVE and any flag answer kIOReturnUnsupported. */
 #define GDHUB_FWD_INERT                 0      /* tap attached, interface NOT opened: no per-frame code. Every dext launch starts here */
+#define GDHUB_FWD_SHADOW                2      /* T5: opened; translates with the accepted mapping and records a parity sample; posts nothing. Without a mapping it is COUNT */
 #define GDHUB_FWD_COUNT                 1      /* T4: opened; counts frames and the kernel-to-driver delay; translates and posts nothing */
+/* setMapping reasons (scalar output 1): 0 accepted; 1...21 are GDX_E_* of Shared/GDHubXlate.h (gdx_validate); then: */
+#define GDHUB_MAP_OK                    0
+#define GDHUB_MAP_NO_PAD                100    /* no pad has been created: there is no spec to validate against */
+#define GDHUB_MAP_TOO_BIG               101    /* does not fit the handoff buffer after validation (never expected) */
+#define GDHUB_MAP_NO_REGISTRY           102
 /* Pad source (GDHubStatus2 padSource, selector 9 output): who may post to the pad. */
 #define GDHUB_PADSRC_NONE               0      /* no pad */
 #define GDHUB_PADSRC_UC                 1      /* user client posts (the engine or the app) */
@@ -81,8 +91,8 @@
    window of `hop` and `hr` is summarised here in nanoseconds (p50 and p99 are bucket upper edges clamped to the window
    maximum, the smallest bucket edge is 1 us; the mean is exact). */
 #define GDHUB_ST2_VERSION               1
-#define GDHUB_ST2_MAX_SIZE              512
-#define GDHUB_ST2_SIZE                  316
+#define GDHUB_ST2_MAX_SIZE              1024   /* was 512 until T5: the parity record needed room. A caller that offers less gets the first bytes */
+#define GDHUB_ST2_SIZE                  480
 #define GDHUB_ST2_OFF_VERSION           0      /* u16 */
 #define GDHUB_ST2_OFF_SIZE              2      /* u16 */
 #define GDHUB_ST2_OFF_BUILD             4      /* u32 */
@@ -147,6 +157,39 @@
 #define GDHUB_ST2_OFF_CLOSE_FAILURES    292    /* u64, Close returned an error */
 #define GDHUB_ST2_OFF_REOPENS           300    /* u64, Opens after an earlier Close in one tap instance (each with a fresh pool) */
 #define GDHUB_ST2_OFF_TAP_FREES         308    /* u64, tap objects freed: tapStarts == tapFrees + live instances */
+/* T5: SHADOW (in-driver translation, nothing posted), appended after the T4 review counters. */
+#define GDHUB_ST2_OFF_SELF_TEST         316    /* u8, GDHUB_SELFTEST_*: the golden vectors through the dext's build of the core */
+#define GDHUB_ST2_OFF_TRANSLATING       317    /* u8, 1 while the tap is applying SHADOW with an accepted mapping */
+#define GDHUB_ST2_OFF_HAS_MAP           318    /* u8, 1 while a mapping is accepted (registry) */
+/* 319 reserved */
+#define GDHUB_ST2_OFF_ACCEPTED_REVISION 320    /* u32, revision of the accepted mapping, 0 if none */
+#define GDHUB_ST2_OFF_APPLIED_REVISION  324    /* u32, revision the tap translated its last frame with (changes at the first frame after a swap) */
+#define GDHUB_ST2_OFF_ACCEPTED_SPEC_CRC 328    /* u32, spec CRC the accepted mapping targets */
+/* 332 reserved */
+#define GDHUB_ST2_OFF_FRAMES_TRANSLATED 336    /* u64 counters from here */
+#define GDHUB_ST2_OFF_FRAMES_SKIPPED    344    /* not report 6 of 16 bytes */
+#define GDHUB_ST2_OFF_FRAMES_NOMAP      352    /* SHADOW frame, no accepted mapping */
+#define GDHUB_ST2_OFF_FRAMES_UNMAPPED   360    /* bytes unreadable without allocating (never expected) */
+#define GDHUB_ST2_OFF_STATES_CHANGED    368    /* translated frames after which gdx_step would post */
+#define GDHUB_ST2_OFF_REPORTS_WOULD_POST 376   /* reports in those posts */
+#define GDHUB_ST2_OFF_MAP_ACCEPTED      384    /* selector 10 blobs accepted */
+#define GDHUB_ST2_OFF_MAP_REFUSED       392    /* selector 10 blobs refused */
+#define GDHUB_ST2_OFF_MAP_SWAPS         400    /* tap switched to a new mapping */
+#define GDHUB_ST2_OFF_XLATE_COUNT       408    /* u32 each: count, p50, p99, max, mean (ns) of one gdx_step + parity build, last 10 s window */
+#define GDHUB_ST2_OFF_XLATE_P50_NS      412
+#define GDHUB_ST2_OFF_XLATE_P99_NS      416
+#define GDHUB_ST2_OFF_XLATE_MAX_NS      420
+#define GDHUB_ST2_OFF_XLATE_MEAN_NS     424
+#define GDHUB_ST2_OFF_PARITY_COUNT      428    /* u32, frames recorded by this tap instance; moves with every translated frame */
+#define GDHUB_ST2_OFF_PARITY_REVISION   432    /* u32, mapping revision of the recorded frame */
+#define GDHUB_ST2_OFF_PARITY_TIMESTAMP  436    /* u64, kernel timestamp (mach ticks) of the recorded frame */
+#define GDHUB_ST2_OFF_PARITY_FRAME      444    /* u8[16], the raw report 0x06 */
+#define GDHUB_ST2_OFF_PARITY_OUT01      460    /* u8[16], report 0 of the mapping as gdx_eval + gdx_build give it (xbox-bt16: 0x01) */
+#define GDHUB_ST2_OFF_PARITY_OUT02      476    /* u8[2], report 1 of the mapping (xbox-bt16: 0x02) */
+/* 478-479 reserved. */
+#define GDHUB_SELFTEST_NOT_RUN          0
+#define GDHUB_SELFTEST_PASS             1
+#define GDHUB_SELFTEST_FAIL             2
 /* 171 reserved. Topology: low nibble = the two queues are the same object, high nibble = both were known (set at Start). */
 #define GDHUB_TOPO_UC_EQ_ROOT           0x01
 #define GDHUB_TOPO_PAD_EQ_ROOT          0x02

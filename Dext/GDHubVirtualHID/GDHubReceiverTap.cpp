@@ -1,7 +1,10 @@
-// The receiver tap, T4 (docs/plans/receiver-takeover-plan.md 3.2, 4.1, 4.5, 6.1, 6.4, 6.5).
+// The receiver tap, T4 and T5 (docs/plans/receiver-takeover-plan.md 3.2, 4.1, 4.5, 5.6, 6.1, 6.4, 6.5).
 //
-// States: INERT (attached, interface NOT opened, no per-frame code) and COUNT (opened; counts reports and the kernel-to-driver
-// delay; translates nothing, posts nothing). The state asked for lives in the registry (`desiredState`), starts INERT in
+// States: INERT (attached, interface NOT opened, no per-frame code), COUNT (opened; counts reports and the kernel-to-driver
+// delay; translates nothing, posts nothing) and, from T5, SHADOW (COUNT plus: the shared translator runs on every report 0x06
+// with the accepted mapping, the result is recorded as a parity sample and counted as "would post"; nothing is ever posted).
+// SHADOW without an accepted mapping, or after a failed self-test, is exactly COUNT: frames are counted, `framesNoMap`
+// rises, nothing is translated. The state asked for lives in the registry (`desiredState`), starts INERT in
 // every process and is set only by an owner's selector 9, so a relaunched dext never opens the interface by itself (rule A).
 //
 // Queue: Start, Stop, SetPowerState, the timer, ReportAvailable and the DispatchAsync pokes all run on this service's default
@@ -12,6 +15,9 @@
 // one meter line per 10 s window.
 #include "GDHubInternal.h"
 #include "GDHubReceiverTap.h"
+#include "GDHubXlate.h"          // Shared/GDHubXlate.h: the one C translator, compiled into this dext with -ffp-contract=off
+
+static_assert(sizeof(gdx_map) <= GDH_MAP_MAX, "a validated mapping must fit the registry's handoff buffer");
 
 struct GDHubReceiverTap_IVars {
     IOHIDInterface * hid;                                   // +1 on the provider; released after the super Stop
@@ -28,7 +34,18 @@ struct GDHubReceiverTap_IVars {
     bool superStopped, everClosed, selfTerminated;
     uint32_t startNo, openTries, openFailLogged;
     uint64_t nextOpenTicks, fastTicks, slowTicks, retryTicks;
-    gdh_meter meter;                                        // k2d in the `hr` slot; written on this queue, read lock-free
+    gdh_meter meter;                                        // k2d in the `hr` slot, translate time in the `hop` slot; one writer
+    // T5 (tap queue only, except `parity`, a seqlock read by status2)
+    uint32_t mode;                                          // applied while open: GDH_FWD_COUNT or GDH_FWD_SHADOW
+    bool shadowActive;                                      // mode == SHADOW and the self-test passed
+    bool haveMap;
+    uint32_t haveSeq;                                       // registry mapSeq the private copy below was taken at
+    uint32_t mapRevision;
+    gdx_map map;                                            // private copy of the accepted mapping (never the registry's memory)
+    gdx_state xstate;                                       // hysteresis anchor and byte dedupe: reset on every map change
+    alignas(8) uint8_t mapRaw[GDH_MAP_MAX];                 // staging for the seqlock read
+    gdh_parity parity;
+    uint32_t parityCount;
 };
 
 bool GDHubReceiverTap::init()
@@ -66,11 +83,16 @@ void GDHubReceiverTap::free()
     super::free();
 }
 
-bool GDHubTapReadMeter(GDHubReceiverTap * tap, gdh_summary * k2d, uint32_t * windows)
+bool GDHubTapReadMeter(GDHubReceiverTap * tap, gdh_summary * xlate, gdh_summary * k2d, uint32_t * windows)
 {
     if (!tap || !tap->ivars) return false;
-    gdh_summary unusedHop = {};
-    return gdh_meter_read(&tap->ivars->meter, &unusedHop, k2d, windows) != 0;
+    return gdh_meter_read(&tap->ivars->meter, xlate, k2d, windows) != 0;
+}
+
+bool GDHubTapReadParity(GDHubReceiverTap * tap, gdh_parity_rec * rec)
+{
+    if (!tap || !tap->ivars) return false;
+    return gdh_parity_read(&tap->ivars->parity, rec) != 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -145,6 +167,13 @@ static void closeInterface(GDHubReceiverTap * self, GDHubReceiverTap_IVars * iv,
     iv->everClosed = true;
     if (kr != kIOReturnSuccess) { gdhr_ctr_add(reg, GDHR_CTR_CLOSE_FAILURES, 1); gdhr_set_last_error(reg, (uint32_t)kr); }
     gdhr_tap_publish(reg, static_cast<OSObject *>(self), 0, GDH_FWD_INERT);
+    iv->mode = 0;
+    if (iv->shadowActive) {
+        iv->shadowActive = false;
+        gdhr_tap_publish_xlate(reg, static_cast<OSObject *>(self), 0, 0);
+    }
+    iv->haveMap = false;                                               // a map is never kept across an Open: the next Open reloads it
+    iv->haveSeq = ~gdhr_map_seq(reg);
     poolRelease(iv);
     GDLog("tap close (%{public}s) rc=0x%x", why, (unsigned)kr);
 }
@@ -216,6 +245,27 @@ static void poolFill(GDHubReceiverTap_IVars * iv)
     }
 }
 
+// Keeps the applied mode (COUNT or SHADOW) and the "translating" flag in step with the desired state while the interface is
+// open. SHADOW is only active after a passed self-test; otherwise the tap simply keeps counting. Tap queue only.
+static void syncMode(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdhr * reg)
+{
+    if (!iv->opened) return;
+    uint32_t want = (gdhr_desired_state(reg) == GDH_FWD_SHADOW) ? GDH_FWD_SHADOW : GDH_FWD_COUNT;
+    bool shadow = (want == GDH_FWD_SHADOW) && gdhr_selftest_get(reg) == GDHR_SELFTEST_PASS;
+    if (want != iv->mode) {
+        iv->mode = want;
+        gdhr_tap_publish(reg, static_cast<OSObject *>(tap), 1, want);
+        GDLog("tap mode %u", (unsigned)want);
+    }
+    if (shadow != iv->shadowActive) {
+        iv->shadowActive = shadow;
+        iv->haveMap = false;
+        iv->haveSeq = ~gdhr_map_seq(reg);
+        gdx_reset(&iv->xstate);
+        gdhr_tap_publish_xlate(reg, static_cast<OSObject *>(tap), 0, 0);
+    }
+}
+
 // Tap queue only. The one place Open and Close are called; gdh_tap_decide says which, and when. `fromTick` is 1 when the timer
 // (not a poke) got here, for the tickApplies counter. Returns the action taken.
 static int tapApply(GDHubReceiverTap * tap, int fromTick)
@@ -248,9 +298,13 @@ static int tapApply(GDHubReceiverTap * tap, int fromTick)
         iv->openFailLogged = 0;
         if (iv->everClosed) gdhr_ctr_add(reg, GDHR_CTR_REOPENS, 1);
         gdhr_set_last_error(reg, 0);
-        gdhr_tap_publish(reg, static_cast<OSObject *>(tap), 1, GDH_FWD_COUNT);
+        iv->mode = 0;                                                  // syncMode below publishes the applied state
+        iv->haveMap = false;
+        iv->haveSeq = ~gdhr_map_seq(reg);                              // force a load of the accepted mapping at the first frame
+        gdx_reset(&iv->xstate);
         GDLog("tap open rc=0x0 try %u (success is judged by frames arriving)", iv->openTries);
     }
+    syncMode(tap, iv, reg);
     return act;
 }
 
@@ -284,8 +338,62 @@ void IMPL(GDHubReceiverTap, TapTick)
     ivars->timer->WakeAtTime(kIOTimerClockMachAbsoluteTime, mach_absolute_time() + next, next / 10);
 }
 
+// SHADOW, one frame (tap queue, per report). Takes no lock and allocates nothing: the only shared reads are one acquire load of
+// the registry's mapSeq and, when it moved, a lock-free seqlock read of the mapping into this tap's private copy. Everything
+// the translator touches is in `iv` (map, state) or on the stack (gdx_out twice, gdx_pad: about 600 bytes).
+static void shadowFrame(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdhr * reg, const uint8_t * bytes, uint32_t len,
+                        uint64_t timestamp, uint64_t * xlateTicks)
+{
+    uint32_t seq = gdhr_map_seq(reg);
+    if (seq != iv->haveSeq) {
+        uint32_t n = 0, rev = 0, crc = 0, got = 0;
+        if (gdhr_map_read(reg, iv->mapRaw, sizeof(iv->mapRaw), &n, &got, &rev, &crc)) {         // never blocks; a torn read keeps the old map
+            iv->haveSeq = got;
+            iv->haveMap = false;
+            gdx_reset(&iv->xstate);                                    // hysteresis and dedupe restart with every mapping
+            if (n == sizeof(gdx_map)) {
+                memcpy(&iv->map, iv->mapRaw, sizeof(gdx_map));         // the bytes were written from a validated gdx_map by this same build
+                iv->haveMap = (iv->map.nReports <= GDX_MAX_REPORTS && iv->map.nButtons <= GDX_MAX_BUTTONS &&
+                               iv->map.nAxes <= GDX_MAX_AXES && iv->map.nTriggers <= GDX_MAX_TRIGGERS &&
+                               iv->map.nPlacements <= GDX_MAX_PLACEMENTS && iv->map.nReports >= 1);
+            }
+            iv->mapRevision = iv->haveMap ? iv->map.revision : 0;
+            gdhr_ctr_add(reg, GDHR_CTR_MAP_SWAPS, 1);
+            gdhr_tap_publish_xlate(reg, static_cast<OSObject *>(tap), iv->mapRevision, iv->haveMap ? 1 : 0);
+        }
+    }
+    if (!iv->haveMap) { gdhr_ctr_add(reg, GDHR_CTR_FRAMES_NOMAP, 1); return; }
+    if (len != GDX_SOURCE_REPORT_LEN || bytes[0] != GDX_SOURCE_REPORT_ID) { gdhr_ctr_add(reg, GDHR_CTR_FRAMES_SKIPPED, 1); return; }
+
+    uint64_t t0 = mach_absolute_time();
+    gdx_out out;
+    uint32_t mask = gdx_step(&iv->xstate, &iv->map, bytes, len, &out);       // what a LIVE tap would post
+    gdx_pad pad;
+    gdx_out stateless;
+    gdh_parity_rec rec;
+    if (gdx_eval(&iv->map, bytes, len, &pad) == 0) {
+        gdx_build(&iv->map, &pad, &stateless);                           // the stateless result: what the engine's own core must also produce
+        memcpy(rec.frame, bytes, 16);
+        memset(rec.out01, 0, sizeof(rec.out01));
+        memset(rec.out02, 0, sizeof(rec.out02));
+        memset(rec.pad, 0, sizeof(rec.pad));
+        if (stateless.count >= 1) memcpy(rec.out01, stateless.r[0].bytes, stateless.r[0].len < 16 ? stateless.r[0].len : 16);
+        if (stateless.count >= 2) memcpy(rec.out02, stateless.r[1].bytes, stateless.r[1].len < 2 ? stateless.r[1].len : 2);
+        rec.timestamp = timestamp;
+        rec.revision = iv->mapRevision;
+        rec.count = ++iv->parityCount;
+        gdh_parity_write(&iv->parity, &rec);
+    }
+    *xlateTicks = mach_absolute_time() - t0;
+    gdhr_ctr_add(reg, GDHR_CTR_FRAMES_TRANSLATED, 1);
+    if (mask != 0) {
+        gdhr_ctr_add(reg, GDHR_CTR_STATES_CHANGED, 1);
+        gdhr_ctr_add(reg, GDHR_CTR_REPORTS_WOULD_POST, (uint64_t)__builtin_popcount(mask));
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
-// The report path. Runs only while the interface is open, which only an owner's COUNT request causes.
+// The report path. Runs only while the interface is open, which only an owner's COUNT or SHADOW request causes.
 
 void IMPL(GDHubReceiverTap, ReportAvailable)
 {
@@ -308,16 +416,26 @@ void IMPL(GDHubReceiverTap, ReportAvailable)
     } else {
         gdhr_ctr_add(reg, GDHR_CTR_FRAMES_IN, 1);
         gdhr_ctr_add(reg, reportID == 6 ? GDHR_CTR_FRAMES_R06 : GDHR_CTR_FRAMES_OTHER, 1);
+        uint64_t xlateTicks = 0;
+        if (iv->shadowActive) {
+            // The bytes: our own pool buffer (mapped once at pool setup) and nothing else. A report that arrived in a buffer we do
+            // not own (a pool miss) is never read in T5: it counts framesUnmapped and is not translated. The next frame
+            // translates normally; gdx_state only compares each frame with the last translated one, so a skipped frame costs
+            // nothing but that frame.
+            const uint8_t * bytes = (slot >= 0 && iv->poolAddr[slot]) ? iv->poolAddr[slot] : nullptr;
+            if (bytes) shadowFrame(this, iv, reg, bytes, reportLength, timestamp, &xlateTicks);
+            else gdhr_ctr_add(reg, GDHR_CTR_FRAMES_UNMAPPED, 1);
+        }
         if (timestamp <= now &&
-            gdh_meter_sample(&iv->meter, now, 0, 0, now - timestamp)) {      // k2d goes in the meter's second histogram
-            gdh_summary unusedHop, k2d;
+            gdh_meter_sample(&iv->meter, now, xlateTicks != 0, xlateTicks, now - timestamp)) {   // hop slot = translate time, hr slot = k2d
+            gdh_summary xl, k2d;
             uint32_t windows = 0;
-            if (gdh_meter_read(&iv->meter, &unusedHop, &k2d, &windows)) {
-                // Once per 10 s window. Worst case 175 characters by the generic estimator (u32 = 10 digits, u64 = 20).
-                GDLog("tap meter b=%u w=%u n=%u k2d p50/p99/max/mean %u/%u/%u/%u.%u us frames=%llu miss=%llu",
+            if (gdh_meter_read(&iv->meter, &xl, &k2d, &windows)) {
+                // Once per 10 s window. Worst case 237 characters by the generic estimator (u32 = 10 digits, u64 = 20); about 150 in practice.
+                GDLog("tap meter b=%u w=%u n=%u k2d p50/p99/max/mean %u/%u/%u/%u.%u us xl p50/p99/max %u/%u/%u ns chg=%llu",
                       (unsigned)GDHUB_DEXT_BUILD, windows, k2d.count, k2d.p50Ns / 1000, k2d.p99Ns / 1000, k2d.maxNs / 1000,
-                      k2d.meanNs / 1000, (k2d.meanNs % 1000) / 100, gdhr_ctr_get(reg, GDHR_CTR_FRAMES_IN),
-                      gdhr_ctr_get(reg, GDHR_CTR_POOL_MISS));
+                      k2d.meanNs / 1000, (k2d.meanNs % 1000) / 100, xl.p50Ns, xl.p99Ns, xl.maxNs,
+                      gdhr_ctr_get(reg, GDHR_CTR_STATES_CHANGED));
             }
         }
     }

@@ -21,10 +21,12 @@ final class DextCoreTapTests: XCTestCase {
     func testForwardingArgumentCheck() {
         XCTAssertEqual(gdh_fwd_validate(0, 0), 0, "INERT")
         XCTAssertEqual(gdh_fwd_validate(1, 0), 0, "COUNT")
-        for state: UInt64 in [2, 3, 4, 255, UInt64.max] { XCTAssertEqual(gdh_fwd_validate(state, 0), 1, "state \(state) is Unsupported in T4") }
+        XCTAssertEqual(gdh_fwd_validate(2, 0), 0, "SHADOW (T5)")
+        for state: UInt64 in [3, 4, 255, UInt64.max] { XCTAssertEqual(gdh_fwd_validate(state, 0), 1, "state \(state) is Unsupported: LIVE arrives in T7") }
         for flags: UInt64 in [1, 0x100, 0x200, UInt64.max] {
             XCTAssertEqual(gdh_fwd_validate(0, flags), 1, "flags \(flags): none exist in T4")
             XCTAssertEqual(gdh_fwd_validate(1, flags), 1)
+            XCTAssertEqual(gdh_fwd_validate(2, flags), 1)
         }
         // the Swift mirror agrees
         for state: UInt64 in 0...5 { for flags: UInt64 in [0, 1, 0x100] {
@@ -40,12 +42,12 @@ final class DextCoreTapTests: XCTestCase {
                 let a = gdh_tap_decide(desired, opened, powered, stopping, retry)
                 if a == Int32(GDH_TAP_OPEN) {
                     opens += 1
-                    XCTAssertEqual(desired, UInt32(GDH_FWD_COUNT)); XCTAssertEqual(opened, 0); XCTAssertEqual(powered, 1)
+                    XCTAssertTrue(desired == UInt32(GDH_FWD_COUNT) || desired == UInt32(GDH_FWD_SHADOW)); XCTAssertEqual(opened, 0); XCTAssertEqual(powered, 1)
                     XCTAssertEqual(stopping, 0); XCTAssertEqual(retry, 1)
                 }
             } }
         } } }
-        XCTAssertEqual(opens, 1, "of 64 input combinations exactly one opens the interface")
+        XCTAssertEqual(opens, 2, "of 64 input combinations exactly two open the interface: COUNT and SHADOW, both powered, not open, not stopping, retry due")
     }
 
     func testCloseWhenNoLongerAskedForOrStopping() {
@@ -214,7 +216,7 @@ final class DextCoreTapTests: XCTestCase {
         }
         var k2d = gdh_summary(count: 9000, p50Ns: 60_000, p99Ns: 110_000, maxNs: 400_000, meanNs: 65_400)
         var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, &k2d)
+        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, &k2d, nil)
         XCTAssertEqual(n, DextStatus2.size)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertTrue(d.tapPresent); XCTAssertTrue(d.tapOpened); XCTAssertEqual(d.appliedState, 1); XCTAssertEqual(d.desiredState, 1)
@@ -230,7 +232,7 @@ final class DextCoreTapTests: XCTestCase {
     func testNoTapMeansNoTapText() throws {
         var s = gdhr_snap(); s.tapPresent = 0
         var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil)
+        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil, nil)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertFalse(d.tapPresent); XCTAssertNil(d.tapLogText); XCTAssertFalse(d.tapOpened)
     }
@@ -364,8 +366,8 @@ final class DextCoreTapTests: XCTestCase {
             c[Int(GDHR_CTR_TAP_FREES.rawValue)] = 15; c[Int(GDHR_CTR_TAP_STARTS.rawValue)] = 16
         }
         var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil)
-        XCTAssertEqual(n, DextStatus2.size); XCTAssertEqual(DextStatus2.size, 316)
+        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil, nil)
+        XCTAssertEqual(n, DextStatus2.size); XCTAssertEqual(DextStatus2.size, 480)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertEqual(d.pokesRun, 11); XCTAssertEqual(d.tickApplies, 12); XCTAssertEqual(d.closeFailures, 13)
         XCTAssertEqual(d.reopens, 14); XCTAssertEqual(d.tapFrees, 15); XCTAssertEqual(d.tapStarts, 16)
@@ -383,7 +385,7 @@ final class DextCoreTapTests: XCTestCase {
         // A build-19 dext sends 172 bytes: the T4 fields read as zero.
         var s = gdhr_snap(); s.tapPresent = 1
         var buf = [UInt8](repeating: 0, count: 512)
-        _ = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil)
+        _ = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil, nil)
         var old = Array(buf.prefix(172))
         old[DextStatus2.Offset.size] = 172; old[DextStatus2.Offset.size + 1] = 0
         let d = try XCTUnwrap(DextStatus2.decode(old))
@@ -419,8 +421,10 @@ final class InputPathTests: XCTestCase {
 
     func testOnlyCountArmsTheTap() {
         XCTAssertEqual(InputPath.count.forwardingState, DextProtocol.Forwarding.count)
-        for p in InputPath.allCases where p != .count { XCTAssertEqual(p.forwardingState, DextProtocol.Forwarding.inert, "\(p)") }
-        XCTAssertTrue(InputPath.shadow.isRecognisedButNotYetSupported); XCTAssertTrue(InputPath.driver.isRecognisedButNotYetSupported)
+        XCTAssertEqual(InputPath.shadow.forwardingState, DextProtocol.Forwarding.shadow, "T5: shadow arms SHADOW")
+        for p in InputPath.allCases where p != .count && p != .shadow { XCTAssertEqual(p.forwardingState, DextProtocol.Forwarding.inert, "\(p)") }
+        XCTAssertFalse(InputPath.shadow.isRecognisedButNotYetSupported); XCTAssertTrue(InputPath.driver.isRecognisedButNotYetSupported)
+        XCTAssertEqual(InputPath.allCases.filter(\.arms), [.count, .shadow])
         XCTAssertFalse(InputPath.count.isRecognisedButNotYetSupported)
         XCTAssertEqual(InputPath.defaultsKey, "inputPath")
     }
@@ -433,11 +437,26 @@ final class TapSupervisorTests: XCTestCase {
         var calls: [UInt64] = []
         var status = DextStatus2()
         var hasTap = true
+        var hasXlate = true
+        var mapCalls: [[UInt8]] = []
+        var mapKr: kern_return_t = KERN_SUCCESS
+        var mapReason: UInt32 = 0
+        func setMapping(_ blob: [UInt8]) -> (kr: kern_return_t, result: DextMappingResult?) {
+            mapCalls.append(blob)
+            if dieOnMapping { relaunch(nonce: status.instanceNonce + 1000); return (Self.transportError, nil) }
+            guard mapKr == KERN_SUCCESS else { return (mapKr, nil) }
+            if mapReason == 0 { status.hasMap = true; status.acceptedRevision = (try? XlateCore(blob: blob, spec: XlateFixtures.spec))?.revision ?? 0 }   // the blob's own revision, as the dext reports it
+            return (KERN_SUCCESS, DextMappingResult(words: [mapReason == 0 ? UInt64(status.acceptedRevision) : 0, UInt64(mapReason)]))
+        }
         var setResult: kern_return_t = KERN_SUCCESS
         var status2Calls = 0
         init(nonce: UInt64 = 1000) { status.instanceNonce = nonce; status.version = 1 }
+        /// The driver process dies INSIDE the call: a new instance, nothing armed, and the caller gets a transport error.
+        var dieOnForwarding = false, dieOnMapping = false
+        static let transportError: kern_return_t = 0x10000003          // MACH_SEND_INVALID_DEST
         func setForwarding(_ state: UInt64) -> (kr: kern_return_t, result: DextForwardingResult?) {
             calls.append(state)
+            if dieOnForwarding && state != 0 { relaunch(nonce: status.instanceNonce + 1000); return (Self.transportError, nil) }
             if setResult == KERN_SUCCESS { status.desiredState = UInt8(state) }          // a real dext remembers what it was told
             return (setResult, setResult == KERN_SUCCESS ? DextForwardingResult(words: [0, status.tapPresent ? 1 : 0, 1, 0]) : nil)
         }
@@ -465,7 +484,7 @@ final class TapSupervisorTests: XCTestCase {
     }
 
     func testEveryOtherValueSendsInert() {
-        for v: Any? in [nil, "engine", "shadow", "driver", "bogus", 7] {
+        for v: Any? in [nil, "engine", "driver", "bogus", 7] {
             let tap = FakeTap()
             let s = make(path: v, tap: tap)
             queue.sync { s.connection(up: true) }
@@ -520,6 +539,314 @@ final class TapSupervisorTests: XCTestCase {
         let s2 = make(path: "engine", tap: tap2)
         queue.sync { s2.connection(up: true); s2.shutdown() }
         XCTAssertEqual(tap2.calls, [0], "already INERT: not sent twice")
+    }
+
+    // MARK: T5 SHADOW
+
+    private func offer(_ rev: UInt32) -> MappingOffer {
+        switch MapBlobEncoder.encode(XlateFixtures.liveShaped, identity: XlateFixtures.identity, spec: XlateFixtures.spec, revision: rev) {
+        case .blob(let b): return .blob(b, spec: XlateFixtures.spec)
+        case .unsupported(let why): return .unsupported(why)
+        }
+    }
+
+    private func shadowSupervisor(_ tap: FakeTap, path: Any? = "shadow", clock: Clock = Clock()) -> TapSupervisor {
+        let s = make(path: path, tap: tap, clock: clock)
+        s.mappingOffer = { [unowned self] rev in self.offer(rev) }
+        return s
+    }
+
+    func testShadowPathSendsShadowThenTheMappingRightAfterHello() {
+        let tap = FakeTap()
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.calls, [DextProtocol.Forwarding.shadow])
+        XCTAssertEqual(tap.mapCalls.count, 1, "pushed after hello, not at a later tick")
+        XCTAssertEqual(XlateFixtures.validate(tap.mapCalls[0]), 0, "a blob the translator accepts against the pad's spec")
+        XCTAssertTrue(s.parity.ring.enabled, "the engine records frames only while SHADOW is armed")
+        ticks(s, 30)
+        XCTAssertEqual(tap.mapCalls.count, 1, "not pushed again while the dext holds it")
+    }
+
+    func testCountPathNeverPushesAMapping() {
+        let tap = FakeTap()
+        let s = shadowSupervisor(tap, path: "count")
+        queue.sync { s.connection(up: true); s.invalidateMapping() }
+        ticks(s, 30)
+        XCTAssertTrue(tap.mapCalls.isEmpty); XCTAssertFalse(s.parity.ring.enabled)
+    }
+
+    func testMappingChangeIsPushedAtOnceWithTheNextRevision() {
+        let tap = FakeTap()
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(tap.mapCalls.count, 2, "a learn edit: pushed immediately")
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(tap.mapCalls.count, 3, "and again for the next edit, no throttle after a success")
+        XCTAssertNotEqual(tap.mapCalls[0], tap.mapCalls[1], "each push carries the next revision")
+    }
+
+    func testNoPadYetMeansNoPushUntilThereIsOne() {
+        let tap = FakeTap()
+        let s = make(path: "shadow", tap: tap)
+        var have = false
+        s.mappingOffer = { [unowned self] rev in have ? self.offer(rev) : .none }
+        queue.sync { s.connection(up: true) }
+        ticks(s, 10)
+        XCTAssertTrue(tap.mapCalls.isEmpty)
+        have = true
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(tap.mapCalls.count, 1, "pushed once the pad exists (the engine calls invalidateMapping on .published)")
+    }
+
+    func testUnsupportedMappingPushesNothingAndTheTapJustCounts() {
+        let tap = FakeTap()
+        let s = make(path: "shadow", tap: tap)
+        s.mappingOffer = { _ in .unsupported("test") }
+        queue.sync { s.connection(up: true) }
+        ticks(s, 20)
+        XCTAssertTrue(tap.mapCalls.isEmpty); XCTAssertEqual(tap.calls, [2])
+        XCTAssertFalse(s.parity.ring.enabled)
+    }
+
+    func testDriverRefusalIsNotRetriedInALoop() {
+        let tap = FakeTap(); tap.mapReason = 20
+        let clock = Clock()
+        let s = shadowSupervisor(tap, clock: clock)
+        queue.sync { s.connection(up: true) }
+        ticks(s, 50)
+        XCTAssertEqual(tap.mapCalls.count, 1, "a refused mapping waits for the next change")
+        XCTAssertFalse(s.parity.ring.enabled)
+    }
+
+    func testNoPadReasonIsRetriedAtMostTwiceASecond() {
+        let tap = FakeTap(); tap.mapReason = DextProtocol.MapReason.noPad
+        let clock = Clock()
+        let s = shadowSupervisor(tap, clock: clock)
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.mapCalls.count, 1)
+        ticks(s, 3); XCTAssertEqual(tap.mapCalls.count, 1, "within 500 ms: no retry")
+        clock.ns += 600_000_000
+        ticks(s, 5); XCTAssertEqual(tap.mapCalls.count, 2)
+        tap.mapReason = 0
+        clock.ns += 600_000_000
+        ticks(s, 5); XCTAssertEqual(tap.mapCalls.count, 2, "the second failure doubled the wait to 1 s")
+        clock.ns += 600_000_000
+        ticks(s, 5); XCTAssertEqual(tap.mapCalls.count, 3, "accepted at last")
+        clock.ns += 600_000_000
+        ticks(s, 20); XCTAssertEqual(tap.mapCalls.count, 3)
+    }
+
+    func testDextThatLostTheMapGetsItAgain() {
+        let tap = FakeTap()
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.mapCalls.count, 1)
+        tap.status.hasMap = false; tap.status.acceptedRevision = 0       // the pad was recreated, the owner changed
+        ticks(s, 5)
+        XCTAssertEqual(tap.mapCalls.count, 2)
+    }
+
+    func testStatusIsReadAt4HzInShadowAndAt1HzInCount() {
+        let shadow = FakeTap(); let s = shadowSupervisor(shadow)
+        queue.sync { s.connection(up: true) }
+        let before = shadow.status2Calls
+        ticks(s, 50)
+        XCTAssertEqual(shadow.status2Calls - before, 10, "every 5th tick: 2 Hz over 5 s")
+        let count = FakeTap(); let c = shadowSupervisor(count, path: "count")
+        queue.sync { c.connection(up: true) }
+        let b2 = count.status2Calls
+        ticks(c, 50)
+        XCTAssertEqual(count.status2Calls - b2, 5, "1 Hz")
+    }
+
+    func testRelaunchedDextIsNotRearmedForShadowEither() {
+        let tap = FakeTap(nonce: 1000)
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.calls, [2])
+        queue.sync { s.connection(up: false) }
+        tap.relaunch(nonce: 2000)
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.calls, [2], "no SHADOW request on the new instance")
+        XCTAssertTrue(s.tripped)
+        ticks(s, 100)
+        XCTAssertEqual(tap.calls, [2]); XCTAssertEqual(tap.mapCalls.count, 1, "no mapping pushed to the relaunched instance")
+        XCTAssertFalse(s.parity.ring.enabled)
+    }
+
+    func testRefusedShadowIsLoggedOnceAndNotAskedAgain() {
+        let tap = FakeTap(); tap.setResult = DextProtocol.krNotPermitted
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        ticks(s, 50)
+        XCTAssertEqual(tap.calls, [2], "one request on this connection; a failed self-test does not clear itself")
+        XCTAssertTrue(tap.mapCalls.isEmpty, "no mapping for a driver that is not in SHADOW")
+    }
+
+    func testShadowToEngineSendsInertAndStopsRecording() {
+        let tap = FakeTap(); let box = ValueBox("shadow")
+        let s = make(box, tap: tap); s.mappingOffer = { [unowned self] rev in self.offer(rev) }
+        queue.sync { s.connection(up: true) }
+        XCTAssertTrue(s.parity.ring.enabled)
+        box.value = "engine"
+        ticks(s, TapSupervisor.defaultsEveryTicks)
+        XCTAssertEqual(tap.calls, [2, 0])
+        XCTAssertFalse(s.parity.ring.enabled)
+    }
+
+    func testParityRecordFromStatusIsSampledAgainstTheEnginesCore() throws {
+        let tap = FakeTap()
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        let rev = tap.status.acceptedRevision
+        let core = try XlateFixtures.core(XlateFixtures.liveShaped, revision: rev)
+        var raw = [UInt8](repeating: 0, count: 16); raw[0] = 0x06; raw[3] = 0x40; raw[9] = 0x22
+        raw.withUnsafeBufferPointer { s.parity.ring.record(timestamp: 4242, report: $0.baseAddress!, length: 16) }
+        let pad = try XCTUnwrap(core.eval(raw: raw)); let rp = core.reports(pad)
+        let out = rp[0].bytes + rp[1].bytes
+        tap.status.parity = DextParityRecord(count: 1, revision: rev, timestamp: 4242, frame: raw, out01: Array(out.prefix(16)), out02: Array(out.suffix(2)))
+        ticks(s, 5)
+        XCTAssertEqual(s.parity.stats.matched, 1)
+        XCTAssertEqual(s.parity.stats.mismatched, 0)
+        XCTAssertTrue(s.shadowText?.contains("ok=1") ?? false)
+    }
+
+    // MARK: Review: the arming call is inside the fuse
+
+    /// The driver dies INSIDE selector 9 (for SHADOW it is where the self-test runs). The supervisor never saw an answer, but it
+    /// marked the instance as armed before sending, so the next hello (a new nonce) trips it and nothing is sent again.
+    func testDeathDuringTheArmingCallTripsAfterTheReconnect() {
+        for path in ["count", "shadow"] {
+            let tap = FakeTap(nonce: 1000); tap.dieOnForwarding = true
+            let s = shadowSupervisor(tap, path: path)
+            queue.sync { s.connection(up: true) }
+            let first = path == "count" ? DextProtocol.Forwarding.count : DextProtocol.Forwarding.shadow
+            XCTAssertEqual(tap.calls, [first], path)
+            queue.sync { s.connection(up: false) }
+            queue.sync { s.connection(up: true) }                      // the new instance (nonce 2000)
+            XCTAssertTrue(s.tripped, "\(path): tripped on the reconnect")
+            ticks(s, 100)
+            XCTAssertEqual(tap.calls, [first], "\(path): the request is not sent to the new instance, however often it reconnects")
+            XCTAssertTrue(tap.mapCalls.isEmpty)
+            for _ in 0..<3 { queue.sync { s.connection(up: false); s.connection(up: true) } }
+            XCTAssertEqual(tap.calls.filter { $0 != 0 }, [first], "\(path): still the one arming call (INERT, which is harmless, is re-sent on each connection)")
+        }
+    }
+
+    func testDefiniteRefusalDoesNotTrip() {
+        for kr in [DextProtocol.krNotPermitted, DextProtocol.krUnsupported] {
+            let tap = FakeTap(nonce: 1000); tap.setResult = kr
+            let s = shadowSupervisor(tap)
+            queue.sync { s.connection(up: true) }
+            XCTAssertEqual(tap.calls, [2])
+            tap.relaunch(nonce: 2000)                                   // a later restart of the driver
+            queue.sync { s.connection(up: false); s.connection(up: true) }
+            XCTAssertFalse(s.tripped, "a refusal armed nothing, so a new instance is not 'a relaunch while armed' (kr \(kr))")
+            XCTAssertEqual(tap.calls, [2, 2], "and the request is asked again on the new connection")
+        }
+    }
+
+    func testRefusalAfterAnEarlierCountKeepsTheCountMark() {
+        let box = ValueBox("count")
+        let tap = FakeTap(nonce: 1000)
+        let s = make(box, tap: tap); s.mappingOffer = { [unowned self] rev in self.offer(rev) }
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.calls, [1])
+        tap.setResult = DextProtocol.krNotPermitted
+        box.value = "shadow"
+        ticks(s, TapSupervisor.defaultsEveryTicks)
+        XCTAssertEqual(tap.calls, [1, 2])
+        tap.relaunch(nonce: 2000)
+        queue.sync { s.connection(up: false); s.connection(up: true) }
+        XCTAssertTrue(s.tripped, "COUNT was accepted on the old instance: the refusal of SHADOW does not clear that")
+    }
+
+    func testNonDefiniteFailureKeepsTheMark() {
+        let tap = FakeTap(nonce: 1000); tap.setResult = DextProtocol.krNotReady
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        tap.relaunch(nonce: 2000)
+        queue.sync { s.connection(up: false); s.connection(up: true) }
+        XCTAssertTrue(s.tripped, "NotReady is not a refusal: the driver may have started to arm")
+    }
+
+    /// A crash inside selector 10 (the push): SHADOW was accepted earlier, so the instance is armed and the reconnect trips.
+    func testDeathDuringThePushTripsAfterTheReconnect() {
+        let tap = FakeTap(nonce: 1000); tap.dieOnMapping = true
+        let s = shadowSupervisor(tap)
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.calls, [2]); XCTAssertEqual(tap.mapCalls.count, 1)
+        queue.sync { s.connection(up: false); s.connection(up: true) }
+        XCTAssertTrue(s.tripped)
+        ticks(s, 100)
+        XCTAssertEqual(tap.calls, [2]); XCTAssertEqual(tap.mapCalls.count, 1, "nothing is sent to the new instance")
+    }
+
+    // MARK: Review: refusals are final for their generation
+
+    private func runSeconds(_ s: TapSupervisor, _ clock: Clock, _ seconds: Int) {
+        for _ in 0..<(seconds * 10) { clock.ns += 100_000_000; ticks(s, 1) }
+    }
+
+    func testPersistentRefusalIsNotPushedAgainUntilSomethingChanges() {
+        let tap = FakeTap(); tap.mapReason = 20
+        let clock = Clock()
+        let s = shadowSupervisor(tap, clock: clock)
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.mapCalls.count, 1)
+        runSeconds(s, clock, 60)
+        XCTAssertEqual(tap.mapCalls.count, 1, "one push, one refusal, nothing for a minute")
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(tap.mapCalls.count, 2, "a mapping change or a new pad offers it again")
+        runSeconds(s, clock, 30)
+        XCTAssertEqual(tap.mapCalls.count, 2)
+        queue.sync { s.connection(up: false); s.connection(up: true) }
+        XCTAssertEqual(tap.mapCalls.count, 3, "and so does a new connection")
+        runSeconds(s, clock, 30)
+        XCTAssertEqual(tap.mapCalls.count, 3)
+    }
+
+    func testUnsupportedMappingIsNotEncodedAgainUntilItChanges() {
+        let tap = FakeTap(); let clock = Clock()
+        let s = make(path: "shadow", tap: tap, clock: clock)
+        var offers = 0
+        s.mappingOffer = { _ in offers += 1; return .unsupported("test") }
+        queue.sync { s.connection(up: true) }
+        runSeconds(s, clock, 60)
+        XCTAssertEqual(offers, 1, "asked once for 60 s")
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(offers, 2)
+        runSeconds(s, clock, 30)
+        XCTAssertEqual(offers, 2)
+    }
+
+    func testTransientFailuresBackOffAndStopAtFiveSeconds() {
+        let tap = FakeTap(); tap.mapReason = DextProtocol.MapReason.noPad
+        let clock = Clock()
+        let s = shadowSupervisor(tap, clock: clock)
+        queue.sync { s.connection(up: true) }
+        runSeconds(s, clock, 60)
+        // pushes at about 0, 0.5, 1.5, 3.5, 7.5 s, then every 5 s: far below the 2 Hz of the status reads
+        XCTAssertLessThan(tap.mapCalls.count, 20); XCTAssertGreaterThan(tap.mapCalls.count, 8)
+    }
+
+    // MARK: Review: selector 11 per second in each state
+
+    func testStatusReadsPerSecondInEachState() {
+        func reads(path: Any?, seconds: Int, interfaceUp: Bool = false) -> Int {
+            let tap = FakeTap(); let clock = Clock()
+            let s = shadowSupervisor(tap, path: path, clock: clock)
+            queue.sync { s.connection(up: true); if interfaceUp { s.controllerInterface(up: true) } }
+            let before = tap.status2Calls
+            runSeconds(s, clock, seconds)
+            return tap.status2Calls - before
+        }
+        XCTAssertEqual(reads(path: "engine", seconds: 10), 0, "INERT settled: none")
+        XCTAssertEqual(reads(path: "count", seconds: 10), 10, "COUNT: 1 Hz")
+        XCTAssertEqual(reads(path: "shadow", seconds: 10), 20, "SHADOW: 2 Hz")
+        XCTAssertEqual(reads(path: "engine", seconds: 1, interfaceUp: true), 10, "attach timing window (tap not present yet): 10 Hz, for at most 5 s")
     }
 
     // MARK: M1: no re-arm after a relaunch

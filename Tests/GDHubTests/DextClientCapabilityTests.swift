@@ -9,21 +9,25 @@ final class DextClientCapabilityTests: XCTestCase {
 
     /// Records every call. Behaves like the dext named by `capabilities`.
     private final class FakeDext: @unchecked Sendable {
-        var calls: [(selector: UInt32, scalarsIn: [UInt64], outCount: Int, structCap: Int)] = []
+        var calls: [(selector: UInt32, scalarsIn: [UInt64], outCount: Int, structCap: Int, structIn: [UInt8]?)] = []
+        var mapReason: UInt32 = 0
         let capabilities: UInt64
         var status2Bytes: [UInt8] = []
         init(capabilities: UInt64) { self.capabilities = capabilities }
 
-        func call(_ selector: UInt32, _ scalarsIn: [UInt64], _ outCount: Int, _ structCap: Int) -> DextRawResult {
-            calls.append((selector, scalarsIn, outCount, structCap))
+        func call(_ selector: UInt32, _ scalarsIn: [UInt64], _ outCount: Int, _ structCap: Int, _ structIn: [UInt8]?) -> DextRawResult {
+            calls.append((selector, scalarsIn, outCount, structCap, structIn))
             let hasRootPad = capabilities & DextProtocol.Capability.rootPad != 0
             switch selector {
             case DextProtocol.Selector.getStatus:
                 return DextRawResult(kr: KERN_SUCCESS, scalars: [1, 100, 0, 0, 0])
             case DextProtocol.Selector.setForwarding where hasRootPad:
                 let hasTap = capabilities & DextProtocol.Capability.tap != 0
-                let ok = scalarsIn[1] == 0 && (scalarsIn[0] == 0 || (scalarsIn[0] == 1 && hasTap))     // build 19: INERT only
+                let hasXlate = capabilities & DextProtocol.Capability.xlate != 0
+                let ok = scalarsIn[1] == 0 && (scalarsIn[0] == 0 || (scalarsIn[0] == 1 && hasTap) || (scalarsIn[0] == 2 && hasXlate))
                 return ok ? DextRawResult(kr: KERN_SUCCESS, scalars: [0, hasTap ? 1 : 0, 1, 0]) : DextRawResult(kr: DextProtocol.krUnsupported)
+            case DextProtocol.Selector.setMapping where capabilities & DextProtocol.Capability.xlate != 0:
+                return DextRawResult(kr: KERN_SUCCESS, scalars: [mapReason == 0 ? 7 : 0, UInt64(mapReason)])
             case DextProtocol.Selector.getStatus2 where hasRootPad:
                 return DextRawResult(kr: KERN_SUCCESS, bytes: Array(status2Bytes.prefix(structCap)))
             default:
@@ -44,7 +48,7 @@ final class DextClientCapabilityTests: XCTestCase {
         var hop = gdh_summary(count: 5, p50Ns: 25_000, p99Ns: 50_000, maxNs: 60_000, meanNs: 30_000)
         var hr = gdh_summary(count: 5, p50Ns: 50_000, p99Ns: 75_000, maxNs: 80_000, meanNs: 55_000)
         var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, &hop, &hr, 2, nil)
+        let n = gdh_status2_pack(&buf, 512, &s, &hop, &hr, 2, nil, nil)
         return Array(buf.prefix(n))
     }
 
@@ -89,7 +93,7 @@ final class DextClientCapabilityTests: XCTestCase {
             XCTAssertEqual(s?.meterLogText, "dext: hop p50/p99/max/mean 25/50/60/30.0 us hr 50/75/80/55.0 us n=5 win=2")
             XCTAssertEqual(fake.calls.count, 1)
             XCTAssertEqual(fake.calls[0].selector, 11)
-            XCTAssertEqual(fake.calls[0].structCap, 512, "the app offers the maximum; the dext returns what it has")
+            XCTAssertEqual(fake.calls[0].structCap, 1024, "the app offers the maximum; the dext returns what it has")
             XCTAssertEqual(fake.calls[0].outCount, 0)
         }
     }
@@ -122,7 +126,7 @@ final class DextClientCapabilityTests: XCTestCase {
         let fake = FakeDext(capabilities: DextProtocol.Capability.pad | DextProtocol.Capability.rootPad)
         let c = DextClient(queue: queue)
         queue.sync {
-            c.attachFakeDext(capabilities: fake.capabilities) { _, _, _, _ in DextRawResult(kr: DextProtocol.krNotReady) }
+            c.attachFakeDext(capabilities: fake.capabilities) { _, _, _, _, _ in DextRawResult(kr: DextProtocol.krNotReady) }
             XCTAssertNil(c.status2())
         }
     }

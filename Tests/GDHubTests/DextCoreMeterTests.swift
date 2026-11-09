@@ -208,7 +208,7 @@ final class DextCoreMeterTests: XCTestCase {
         var hr = gdh_summary(count: 220, p50Ns: 50_000, p99Ns: 100_000, maxNs: 140_000, meanNs: 42_000)
         var k2d = gdh_summary(count: 9000, p50Ns: 60_000, p99Ns: 110_000, maxNs: 400_000, meanNs: 65_000)
         var buf = [UInt8](repeating: 0xEE, count: cap)
-        let n = gdh_status2_pack(&buf, cap, &s, &hop, &hr, 9, &k2d)
+        let n = gdh_status2_pack(&buf, cap, &s, &hop, &hr, 9, &k2d, nil)
         return Array(buf.prefix(n))
     }
 
@@ -216,7 +216,7 @@ final class DextCoreMeterTests: XCTestCase {
         let bytes = packed()
         XCTAssertEqual(bytes.count, DextStatus2.size)
         let s = try XCTUnwrap(DextStatus2.decode(bytes))
-        XCTAssertEqual(s.version, 1); XCTAssertEqual(s.declaredSize, 316)
+        XCTAssertEqual(s.version, 1); XCTAssertEqual(s.declaredSize, 480)
         XCTAssertEqual(s.build, 18); XCTAssertEqual(s.instanceNonce, 0x0102030405060708); XCTAssertEqual(s.rootPid, 777)
         XCTAssertEqual(s.desiredState, 0); XCTAssertEqual(s.source, .userClient)
         XCTAssertTrue(s.padLive); XCTAssertTrue(s.ownerPresent)
@@ -245,7 +245,7 @@ final class DextCoreMeterTests: XCTestCase {
     func testStatus2WithoutPadOrWindowHasNoMeterText() throws {
         var s = snapshot(); s.padState = UInt32(GDHR_PAD_NONE); s.padSource = UInt32(GDHR_SRC_NONE); s.ownerPresent = 0
         var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil)
+        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil, nil)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertFalse(d.padLive); XCTAssertEqual(d.source, DextProtocol.PadSource.none); XCTAssertFalse(d.ownerPresent)
         XCTAssertEqual(d.hop, DextMeterSummary())
@@ -255,7 +255,7 @@ final class DextCoreMeterTests: XCTestCase {
         // The dext writes min(size, caller maximum) bytes.
         let full = packed()
         let short = try XCTUnwrap(DextStatus2.decode(Array(full.prefix(28))))
-        XCTAssertEqual(short.declaredSize, 316, "size says what the dext has; the buffer is what arrived")
+        XCTAssertEqual(short.declaredSize, 480, "size says what the dext has; the buffer is what arrived")
         XCTAssertEqual(short.build, 18); XCTAssertEqual(short.rootPid, 777); XCTAssertEqual(short.source, .userClient)
         XCTAssertEqual(short.ucPosts, 0, "beyond the buffer reads as zero"); XCTAssertEqual(short.hop, DextMeterSummary())
         let tight = try XCTUnwrap(DextStatus2.decode(Array(full.prefix(8))))
@@ -267,17 +267,17 @@ final class DextCoreMeterTests: XCTestCase {
         XCTAssertNil(DextStatus2.decode([]))
         // the packer itself, with a small capacity
         var s = snapshot(); var buf = [UInt8](repeating: 0xEE, count: 40)
-        XCTAssertEqual(gdh_status2_pack(&buf, 12, &s, nil, nil, 0, nil), 12)
+        XCTAssertEqual(gdh_status2_pack(&buf, 12, &s, nil, nil, 0, nil, nil), 12)
         XCTAssertEqual(buf[12], 0xEE, "nothing is written past the capacity")
-        XCTAssertEqual(gdh_status2_pack(&buf, 7, &s, nil, nil, 0, nil), 0)
+        XCTAssertEqual(gdh_status2_pack(&buf, 7, &s, nil, nil, 0, nil, nil), 0)
     }
 
     func testLongBuffersAndNewerVersionsDecodeTheKnownPrefix() throws {
         var longer = packed() + [UInt8](repeating: 0x5A, count: 64)      // a newer dext appended fields
-        longer[DextStatus2.Offset.size] = UInt8((316 + 64) & 0xFF); longer[DextStatus2.Offset.size + 1] = UInt8((316 + 64) >> 8)
+        longer[DextStatus2.Offset.size] = UInt8((480 + 64) & 0xFF); longer[DextStatus2.Offset.size + 1] = UInt8((480 + 64) >> 8)
         longer[DextStatus2.Offset.version] = 3                           // and bumped the version
         let s = try XCTUnwrap(DextStatus2.decode(longer))
-        XCTAssertEqual(s.version, 3); XCTAssertEqual(s.declaredSize, 380)
+        XCTAssertEqual(s.version, 3); XCTAssertEqual(s.declaredSize, 544)
         XCTAssertEqual(s.ucPosts, 1_000_000_000_001); XCTAssertEqual(s.hr.p99Ns, 100_000)
         // garbage that claims a tiny size, or version 0, is refused
         var bad = packed(); bad[DextStatus2.Offset.size] = 4; bad[DextStatus2.Offset.size + 1] = 0
@@ -288,7 +288,7 @@ final class DextCoreMeterTests: XCTestCase {
 
     func testStatus2StaysInsideItsMaximum() {
         XCTAssertLessThanOrEqual(DextStatus2.size, DextStatus2.maxSize)
-        XCTAssertEqual(DextStatus2.Offset.tapFrees + 8, DextStatus2.size, "the layout ends exactly at the declared size")
+        XCTAssertEqual(DextStatus2.Offset.parityOut02 + 4, DextStatus2.size, "the layout ends exactly at the declared size")
         XCTAssertEqual(DextStatus2.Offset.probeSubmit + 2, DextStatus2.Offset.tapPresent, "one reserved byte (171) between the T3 and T4 parts")
     }
 }
