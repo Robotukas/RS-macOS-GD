@@ -46,7 +46,7 @@ extension DevTarget {
     var shortName: String {
         switch self {
         case .engine: return "App"
-        case .shadow: return "Driver (shadow)"
+        case .shadow: return "App + driver check"
         case .driver: return "Driver"
         case .inApp: return "In-app"
         }
@@ -81,7 +81,7 @@ struct DeveloperBar: View {
     // MARK: Record on
 
     @ViewBuilder private var targetControl: some View {
-        Text("Record on").foregroundStyle(.secondary)
+        Text("Driven by").foregroundStyle(.secondary)
         if let note = session.pathsNote {
             // A `paths` template switches paths itself, so the choice is not the user's.
             Text(note).foregroundStyle(DevPalette.purple)

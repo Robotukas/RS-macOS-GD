@@ -14,10 +14,10 @@ enum DevTarget: String, CaseIterable, Identifiable, Codable {
 
     var displayName: String {
         switch self {
-        case .engine: return "Engine (App path)"
-        case .shadow: return "Driver (shadow: engine posts, parity checked)"
-        case .driver: return "Driver LIVE"
-        case .inApp: return "In-app"
+        case .engine: return "App drives the controller (the background engine)"
+        case .shadow: return "App drives; the driver translates alongside and the app compares (diagnostic)"
+        case .driver: return "Driver drives the controller"
+        case .inApp: return "This app drives the controller (no background engine)"
         }
     }
 

@@ -24,7 +24,7 @@ final class InputPathMenuTests: XCTestCase {
         XCTAssertEqual(InputPathMenu.status(mode: .engine, engineRunningPid: 777, report: r), InputPathMenu.status(mode: .engine, engineRunningPid: 777, report: {
             var x = TapStatusReport(); x.pid = 777; x.path = "shadow"; x.connected = true; x.capTap = true; x.capXlate = true; x.armed = "shadow"
             x.liveUnavailable = true; x.parityChecked = true; x.parityOkBucket = 300; return x }()))
-        XCTAssertNotEqual(text(r), "Input path: unknown (waiting for the engine)", "build 23's file is understood, not 'waiting'")
+        XCTAssertNotEqual(text(r), "Driven by: unknown (waiting for the engine)", "build 23's file is understood, not 'waiting'")
         let newer = #"{"schema":1,"pid":5,"path":"driver","connected":true,"capTap":true,"capXlate":true,"capLive":true,"armed":"live","somethingNew":{"a":[1,2]},"futureFlag":true}"#
         let n = try XCTUnwrap(TapStatusReport.decode(Data(newer.utf8)))
         XCTAssertEqual(n.armed, "live"); XCTAssertTrue(n.capLive)
@@ -41,65 +41,65 @@ final class InputPathMenuTests: XCTestCase {
     // MARK: every state of the menu
 
     func testGuiModesWithoutAnEngineToAsk() {
-        XCTAssertEqual(text(nil, mode: .inApp, pid: nil), "Input path: App (in-app mode: no background engine)")
-        XCTAssertEqual(text(report(), mode: .displayOnly), "Input path: unknown (display-only copy)")
+        XCTAssertEqual(text(nil, mode: .inApp, pid: nil), "Driven by: App (in-app mode: no background engine)")
+        XCTAssertEqual(text(report(), mode: .displayOnly), "Driven by: unknown (display-only copy)")
     }
 
     func testEngineNotRunningOrNotYetReporting() {
-        XCTAssertEqual(text(report(), pid: nil), "Input path: unknown (engine not running)")
-        XCTAssertEqual(text(nil), "Input path: unknown (waiting for the engine)")
-        XCTAssertEqual(text(report { $0.pid = 111 }), "Input path: unknown (waiting for the engine)", "a file left by another (dead) engine is not shown")
+        XCTAssertEqual(text(report(), pid: nil), "Driven by: unknown (engine not running)")
+        XCTAssertEqual(text(nil), "Driven by: unknown (waiting for the engine)")
+        XCTAssertEqual(text(report { $0.pid = 111 }), "Driven by: unknown (waiting for the engine)", "a file left by another (dead) engine is not shown")
     }
 
     func testNotConnectedAndOldDextWithoutTheTap() {
-        XCTAssertEqual(text(report { $0.connected = false }), "Input path: App (waiting for the driver)")
+        XCTAssertEqual(text(report { $0.connected = false }), "Driven by: App (waiting for the driver)")
         XCTAssertEqual(text(report { $0.capTap = false; $0.capXlate = false; $0.path = "shadow" }),
-                       "Input path: App (this driver has no receiver tap; update the driver)")
+                       "Driven by: App (this driver has no receiver tap; update the driver)")
     }
 
     func testInertCountAndShadow() {
-        XCTAssertEqual(text(report()), "Input path: App")
-        XCTAssertEqual(text(report { $0.path = "count"; $0.armed = "count" }), "Input path: App (driver counting frames)")
-        XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow" }), "Input path: Driver (shadow, parity not yet checked)")
+        XCTAssertEqual(text(report()), "Driven by: App")
+        XCTAssertEqual(text(report { $0.path = "count"; $0.armed = "count" }), "Driven by: App (driver counting frames)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow" }), "Driven by: App, with driver check (parity not yet checked)")
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.parityChecked = true; $0.parityOkBucket = 1200 }),
-                       "Input path: Driver (shadow, parity checked)")
+                       "Driven by: App, with driver check (parity checked)")
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.parityMismatches = 2 }),
-                       "Input path: Driver (shadow, 2 parity mismatches)")
+                       "Driven by: App, with driver check (2 parity mismatches)")
         XCTAssertEqual(text(report { $0.path = "driver"; $0.armed = "shadow"; $0.liveUnavailable = true }),
-                       "Input path: Driver (shadow, parity not yet checked; live mode not available in this driver)")
+                       "Driven by: App, with driver check (parity not yet checked; live mode not available in this driver)")
     }
 
     func testPathAskedForButNotArmedYet() {
-        XCTAssertEqual(text(report { $0.path = "shadow" }), "Input path: App (driver not armed yet)")
+        XCTAssertEqual(text(report { $0.path = "shadow" }), "Driven by: App (driver not ready yet)")
     }
 
     func testFallbackWithAndWithoutAutomaticRetry() {
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.fallback = "tap stalled"; $0.fallbackRetrying = true }),
-                       "Input path: App (fallback: tap stalled; retrying)")
+                       "Driven by: App (fallback: tap stalled; retrying)")
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.fallback = "driver restarted (instance changed since the arming was accepted)" }),
-                       "Input path: App (fallback: driver restarted (instance changed since the arming was accepted); choose Driver to try again)")
+                       "Driven by: App (fallback: driver restarted (instance changed since the arming was accepted); choose Driver to try again)")
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.fallback = "parity mismatch" }),
-                       "Input path: App (fallback: parity mismatch; choose Driver to try again)")
+                       "Driven by: App (fallback: parity mismatch; choose Driver to try again)")
     }
 
     func testATapWithoutShadowModeSaysSo() {
-        XCTAssertEqual(text(report { $0.path = "shadow"; $0.capXlate = false }), "Input path: App (this driver cannot run shadow mode; update the driver)")
-        XCTAssertEqual(text(report { $0.path = "driver"; $0.capXlate = false }), "Input path: App (this driver cannot run shadow mode; update the driver)")
-        XCTAssertEqual(text(report { $0.path = "engine"; $0.capXlate = false }), "Input path: App", "on the app path there is nothing to explain")
-        XCTAssertEqual(text(report { $0.path = "count"; $0.armed = "count"; $0.capXlate = false }), "Input path: App (driver counting frames)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.capXlate = false }), "Driven by: App (this driver cannot run shadow mode; update the driver)")
+        XCTAssertEqual(text(report { $0.path = "driver"; $0.capXlate = false }), "Driven by: App (this driver cannot run shadow mode; update the driver)")
+        XCTAssertEqual(text(report { $0.path = "engine"; $0.capXlate = false }), "Driven by: App", "on the app path there is nothing to explain")
+        XCTAssertEqual(text(report { $0.path = "count"; $0.armed = "count"; $0.capXlate = false }), "Driven by: App (driver counting frames)")
     }
 
     func testBreakerAndLimiter() {
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.latched = "breaker" }),
-                       "Input path: App (driver path stopped after repeated driver restarts; choose Driver to try again)")
+                       "Driven by: App (driver path stopped after repeated driver restarts; choose Driver to try again)")
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.latched = "limiter"; $0.fallback = "tap absent" }),
-                       "Input path: App (driver path stopped after repeated fallbacks; choose Driver to try again)")
+                       "Driven by: App (driver path stopped after repeated fallbacks; choose Driver to try again)")
     }
 
     func testUnsupportedMappingShowsTheReason() {
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.mappingNote = "echo suppression" }),
-                       "Input path: App (mapping needs GDHM v2: echo suppression)")
-        XCTAssertEqual(text(report { $0.mappingNote = "echo suppression" }), "Input path: App",
+                       "Driven by: App (mapping needs GDHM v2: echo suppression)")
+        XCTAssertEqual(text(report { $0.mappingNote = "echo suppression" }), "Driven by: App",
                        "on the engine path nobody asked for the driver: no note")
     }
 

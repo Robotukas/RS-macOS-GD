@@ -148,8 +148,8 @@ final class TapStatusPublisher: @unchecked Sendable {
     }
 }
 
-/// The Driver menu's input-path status line as a pure function of what the GUI knows. Every state has its own wording; the
-/// plan's examples are "Input path: App", "Input path: App (mapping needs GDHM v2: <reason>)" and "Input path: Driver (shadow)".
+/// The Driver menu's "who drives the virtual controller" status line as a pure function of what the GUI knows. Every state has its own wording; the
+/// plan's examples are "Driven by: App", "Driven by: App (mapping needs GDHM v2: <reason>)" and "Driven by: Driver (shadow)".
 enum InputPathMenu {
     /// - Parameters:
     ///   - mode: how this GUI relates to the pad; only `.engine` has an engine to ask.
@@ -157,42 +157,42 @@ enum InputPathMenu {
     ///   - report: the engine's last report (nil when there is none or it could not be read).
     static func status(mode: GUIMode, engineRunningPid: Int32?, report: TapStatusReport?) -> String {
         switch mode {
-        case .inApp: return "Input path: App (in-app mode: no background engine)"
-        case .displayOnly: return "Input path: unknown (display-only copy)"
+        case .inApp: return "Driven by: App (in-app mode: no background engine)"
+        case .displayOnly: return "Driven by: unknown (display-only copy)"
         case .engine: break
         }
-        guard let pid = engineRunningPid else { return "Input path: unknown (engine not running)" }
-        guard let r = report, r.pid == pid else { return "Input path: unknown (waiting for the engine)" }
-        guard r.connected else { return "Input path: App (waiting for the driver)" }
-        guard r.capTap else { return "Input path: App (this driver has no receiver tap; update the driver)" }
+        guard let pid = engineRunningPid else { return "Driven by: unknown (engine not running)" }
+        guard let r = report, r.pid == pid else { return "Driven by: unknown (waiting for the engine)" }
+        guard r.connected else { return "Driven by: App (waiting for the driver)" }
+        guard r.capTap else { return "Driven by: App (this driver has no receiver tap; update the driver)" }
         if (r.path == "shadow" || r.path == "driver"), !r.capXlate, r.latched == nil {
-            return "Input path: App (this driver cannot run shadow mode; update the driver)"
+            return "Driven by: App (this driver cannot run shadow mode; update the driver)"
         }
         if let latched = r.latched {
             let why = latched == "limiter" ? "repeated fallbacks" : "repeated driver restarts"
-            return "Input path: App (driver path stopped after \(why); choose Driver to try again)"
+            return "Driven by: App (driver path stopped after \(why); choose Driver to try again)"
         }
         if let fb = r.fallback {
-            return "Input path: App (fallback: \(fb)\(r.fallbackRetrying ? "; retrying" : "; choose Driver to try again"))"
+            return "Driven by: App (fallback: \(fb)\(r.fallbackRetrying ? "; retrying" : "; choose Driver to try again"))"
         }
         if let note = r.mappingNote, r.armed != "inert" || r.path == "shadow" || r.path == "driver" {
-            return "Input path: App (mapping needs GDHM v2: \(note))"
+            return "Driven by: App (mapping needs GDHM v2: \(note))"
         }
         switch r.armed {
         case "live":
-            return "Input path: Driver"
+            return "Driven by: Driver"
         case "shadow":
             let live = r.liveUnavailable ? "; live mode not available in this driver" : (r.path == "driver" ? "; going live" : "")
             let parity: String
             if r.parityMismatches > 0 { parity = "\(r.parityMismatches) parity mismatches" }
             else if r.parityChecked { parity = "parity checked" }
             else { parity = "parity not yet checked" }
-            return "Input path: Driver (shadow, \(parity)\(live))"
+            return "Driven by: App, with driver check (\(parity)\(live))"
         case "count":
-            return "Input path: App (driver counting frames)"
+            return "Driven by: App (driver counting frames)"
         default:
-            if r.path == "shadow" || r.path == "driver" || r.path == "count" { return "Input path: App (driver not armed yet)" }
-            return "Input path: App"
+            if r.path == "shadow" || r.path == "driver" || r.path == "count" { return "Driven by: App (driver not ready yet)" }
+            return "Driven by: App"
         }
     }
 

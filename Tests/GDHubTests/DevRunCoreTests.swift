@@ -190,7 +190,7 @@ final class DevRunCoreTests: XCTestCase {
         r.advance(10_100)
         XCTAssertEqual(r.prompts.count, 1)
         guard case .runAnyway(let text)? = r.prompts.first else { return XCTFail("\(r.prompts)") }
-        XCTAssertTrue(text.hasPrefix("Input path:"), text)
+        XCTAssertTrue(text.hasPrefix("Driven by:"), text)
         r.advance(2000)
         XCTAssertEqual(r.prompts.count, 1, "asked once")
         r.send(.runAnyway)

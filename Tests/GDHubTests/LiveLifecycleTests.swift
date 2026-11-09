@@ -87,18 +87,18 @@ final class LiveLifecycleTests: XCTestCase {
     private func status(_ r: TapStatusReport) -> String { InputPathMenu.status(mode: .engine, engineRunningPid: 9, report: r) }
 
     func testMenuLiveStates() {
-        XCTAssertEqual(status(report { $0.path = "driver"; $0.armed = "live" }), "Input path: Driver")
-        XCTAssertEqual(status(report { $0.path = "driver"; $0.armed = "shadow" }), "Input path: Driver (shadow, parity not yet checked; going live)")
+        XCTAssertEqual(status(report { $0.path = "driver"; $0.armed = "live" }), "Driven by: Driver")
+        XCTAssertEqual(status(report { $0.path = "driver"; $0.armed = "shadow" }), "Driven by: App, with driver check (parity not yet checked; going live)")
         XCTAssertEqual(status(report { $0.path = "driver"; $0.armed = "shadow"; $0.capLive = false; $0.liveUnavailable = true }),
-                       "Input path: Driver (shadow, parity not yet checked; live mode not available in this driver)")
-        XCTAssertEqual(status(report { $0.path = "driver"; $0.fallback = "tap stalled"; $0.fallbackRetrying = true }), "Input path: App (fallback: tap stalled; retrying)")
-        XCTAssertEqual(status(report { $0.path = "driver"; $0.fallback = "output stalled"; $0.fallbackRetrying = true }), "Input path: App (fallback: output stalled; retrying)")
-        XCTAssertEqual(status(report { $0.path = "driver"; $0.mappingNote = "echo suppression" }), "Input path: App (mapping needs GDHM v2: echo suppression)")
+                       "Driven by: App, with driver check (parity not yet checked; live mode not available in this driver)")
+        XCTAssertEqual(status(report { $0.path = "driver"; $0.fallback = "tap stalled"; $0.fallbackRetrying = true }), "Driven by: App (fallback: tap stalled; retrying)")
+        XCTAssertEqual(status(report { $0.path = "driver"; $0.fallback = "output stalled"; $0.fallbackRetrying = true }), "Driven by: App (fallback: output stalled; retrying)")
+        XCTAssertEqual(status(report { $0.path = "driver"; $0.mappingNote = "echo suppression" }), "Driven by: App (mapping needs GDHM v2: echo suppression)")
     }
 
     func testMenuHasThreeChoicesAndSelectsTheDriverOne() throws {
         let t = try text("Sources/GDHub/UI/DriverCommands.swift")
-        XCTAssertTrue(t.contains(#"[("engine", "App"), ("shadow", "Driver (shadow)"), ("driver", "Driver")]"#))
+        XCTAssertTrue(t.contains(#"[("engine", "App"), ("shadow", "App, with driver check"), ("driver", "Driver")]"#))
         XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "driver" }, engineRunningPid: 9, stored: nil), "driver")
         XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: "driver"), "driver")
         XCTAssertEqual(InputPath.engine.rawValue, "engine"); XCTAssertEqual(InputPath(defaultsValue: nil), .engine, "the default stays the engine path")

@@ -117,7 +117,7 @@ struct DriverCommands: View {
     /// Explicit buttons with a hand-drawn checkmark, not a `Picker`: a click on the item that is already selected must still
     /// reach the engine ("choose Driver to try again" after a fallback), and a Picker is not known to call its setter then.
     @ViewBuilder private func inputPathMenu(devRunActive: Bool) -> some View {
-        Menu("Input path") {
+        Menu("Controller driven by") {
             ForEach(Self.inputPathItems, id: \.value) { item in
                 Button {
                     driver.chooseInputPath(item.value)
@@ -129,7 +129,7 @@ struct DriverCommands: View {
         .disabled(driver.runningEnginePid == nil || devRunActive)
     }
 
-    static let inputPathItems: [(value: String, title: String)] = [("engine", "App"), ("shadow", "Driver (shadow)"), ("driver", "Driver")]
+    static let inputPathItems: [(value: String, title: String)] = [("engine", "App"), ("shadow", "App, with driver check"), ("driver", "Driver")]
 
     @ViewBuilder private var driverButtons: some View {
         switch driver.state {
