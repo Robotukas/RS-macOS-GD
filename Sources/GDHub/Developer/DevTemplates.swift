@@ -153,7 +153,7 @@ enum DevBuiltins {
                 + "profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
             steps: echoIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
         echo.paths = ["engine", "driver"]
-        return [full, sticks, gkeys, echo, t7RTHoldToggle()]
+        return [full, sticks, gkeys, echo, t7RTHoldToggle(), t8Latency(layout: layout)]
     }
 
     /// RT held while the app hands the controller between Driver and App (the T7 driver check the stopwatch kept
@@ -183,6 +183,55 @@ enum DevBuiltins {
                 + "when the run ends. The result also says how many hand-overs the engine was seen following (armed live / inert). "
                 + "Added 2026-11-09 for the T7 driver check.",
             steps: [hold])
+    }
+
+    /// The receiver-takeover gate's latency rows (docs/plans/receiver-takeover-plan.md 9.3, G4a and G4b): presses and
+    /// stick onsets with the per-event latency from the kernel timestamps of the receiver frames and the pad reports,
+    /// App path then Driver LIVE in one session so `dev-run-compare.py` can put the two side by side.
+    static func t8Latency(layout: ControlLayout) -> DevTemplate {
+        var flick = DevStep(id: "flick-left", kind: .stick, controls: ["left_stick"],
+                            title: "Flick the LEFT stick hard and let it spring back, 10 times",
+                            detail: "Snap the left stick out to the rim and let go so it springs back to centre by itself, ten times, about one a second. Wait for it to settle between flicks. Leave the right stick alone.",
+                            seconds: 12, releaseSeconds: 0.5)
+        var flickExpect = DevExpect()
+        flickExpect.flicks = 10
+        flickExpect.requireDirections = false
+        flick.expect = flickExpect
+
+        func taps(_ id: String, _ label: String) -> DevStep {
+            var s = DevStep(id: id, kind: .digital, controls: [id.replacingOccurrences(of: "tap-", with: "")],
+                            title: "Tap \(label) 10 times",
+                            detail: "Press \(label) and let go again, ten times, at an easy pace (a few a second). Each press and each release is timed.",
+                            seconds: 10)
+            var e = DevExpect()
+            e.times = 10
+            s.expect = e
+            return s
+        }
+
+        var pull = DevStep(id: "pull-rt", kind: .trigger, controls: ["rt"],
+                           title: "Pull RT all the way and release, 5 times",
+                           detail: "Squeeze RT all the way down and let it come fully back up, five times, with a short pause between.",
+                           seconds: 10, releaseSeconds: 0.5)
+        var pullExpect = DevExpect()
+        pullExpect.times = 5
+        pull.expect = pullExpect
+
+        var circle = DevBuiltins.step(for: layout.control(id: "left_stick")!)
+        circle.id = "circle-left"
+
+        return DevTemplate(
+            id: "t8-latency", title: "Latency: controller to pad, per press (App, then Driver) — T8 gate",
+            notes: "Measures how long the virtual pad takes to show each press, release, trigger pull and stick onset after the "
+                + "receiver reports it (kernel timestamps on both sides, per event). It is the evidence for the receiver-takeover gate "
+                + "(docs/plans/receiver-takeover-plan.md 9.3): G4a, Driver digital p50 is 0.5 ms or less; G4b, Driver is at least "
+                + "0.2 ms lower than App on digital and on stick onset. Both passes run back to back in one session (App path, then "
+                + "Driver LIVE), so the two reports share the mapping and the template and can be compared with "
+                + "scripts/tools/dev-run-compare.py A.json B.json, which prints the per-step latency columns and a one-line gate summary. "
+                + "Each step also has to pass as an ordinary check (ten flicks, ten taps of A and of B, five full RT pulls). Do the "
+                + "movements the same way in both passes; the hands-still gate waits for you between steps. Added 2026-11-09 for T8.",
+            paths: ["engine", "driver"],
+            steps: [flick, taps("tap-a", "A"), taps("tap-b", "B"), pull, circle])
     }
 
     static func restStep() -> DevStep {

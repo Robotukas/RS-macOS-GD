@@ -4,6 +4,10 @@
     dev-run-compare.py A.json            one table
     dev-run-compare.py A.json B.json     both tables, then a side-by-side paired by stepId
 
+When the steps carry per-event latency (values lat.n, lat.p50Ms, lat.p99Ms, lat.unmatched) the tables get latency
+columns, a |p50 difference| above --latency-threshold (0.1 ms) is marked, and a last line summarises the T8 gate rows:
+the digital and the stick-onset p50 (the n-weighted median of the steps' p50s) of A and B and the difference B - A.
+
 Exit 0: nothing differs. 1: a paired verdict differs or a marked difference exists. 2: a file cannot be used
 (unreadable, not a report, or a schema newer than 1).
 """
@@ -54,6 +58,13 @@ def verdict_of(attempt):
     return DASH, ""
 
 
+def num(v):
+    """A JSON number, or None (booleans and strings are not numbers here)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return v
+
+
 def rows(report):
     out = []
     for i, step in enumerate(report.get("steps") or []):
@@ -62,6 +73,7 @@ def rows(report):
         a = final_attempt(step)
         m = a.get("metrics") or {}
         tag, reason = verdict_of(a)
+        vals = m.get("values") if isinstance(m.get("values"), dict) else {}
         out.append({
             "index": step.get("index", i),
             "stepId": step.get("stepId", ""),
@@ -74,6 +86,10 @@ def rows(report):
             "lossRatio": m.get("lossRatio"),
             "onsetMs": m.get("onsetMs"),
             "framesSeen": m.get("framesSeen"),
+            "latN": num(vals.get("lat.n")),
+            "latP50": num(vals.get("lat.p50Ms")),
+            "latP99": num(vals.get("lat.p99Ms")),
+            "latUnmatched": num(vals.get("lat.unmatched")),
             "effectivePath": (a.get("effectivePath") or {}).get("atEnd"),
             "attempts": len(step.get("attempts") or []),
         })
@@ -120,11 +136,24 @@ def header_block(label, report, path):
     return "\n".join(lines)
 
 
+def has_latency(rs):
+    return any(r["latN"] is not None for r in rs)
+
+
 def report_table(rs):
-    head = ["#", "stepId", "kind", "controls", "verdict", "detail", "padReports", "padChanged", "lossRatio", "onsetMs", "framesSeen", "effectivePath"]
-    body = [[r["index"], r["stepId"], r["kind"], ",".join(r["controls"]) or DASH, r["verdict"], r["detail"] or DASH,
-             fmt(r["padReports"]), fmt(r["padChanged"]), fmt(r["lossRatio"], 3), fmt(r["onsetMs"], 2),
-             fmt(r["framesSeen"]), fmt(r["effectivePath"])] for r in rs]
+    head = ["#", "stepId", "kind", "controls", "verdict", "detail", "padReports", "padChanged", "lossRatio", "onsetMs", "framesSeen"]
+    lat = has_latency(rs)
+    if lat:
+        head += ["lat.n", "lat.p50Ms", "lat.p99Ms", "lat.unmatched"]
+    head.append("effectivePath")
+    body = []
+    for r in rs:
+        row = [r["index"], r["stepId"], r["kind"], ",".join(r["controls"]) or DASH, r["verdict"], r["detail"] or DASH,
+               fmt(r["padReports"]), fmt(r["padChanged"]), fmt(r["lossRatio"], 3), fmt(r["onsetMs"], 2), fmt(r["framesSeen"])]
+        if lat:
+            row += [fmt(r["latN"]), fmt(r["latP50"], 3), fmt(r["latP99"], 3), fmt(r["latUnmatched"])]
+        row.append(fmt(r["effectivePath"]))
+        body.append(row)
     return table(head, body) if body else "(no steps)"
 
 
@@ -138,7 +167,57 @@ def signed(d, digits):
     return DASH if d is None else ("%+.*f" % (digits, d))
 
 
-def compare(a, b, loss_threshold, onset_threshold):
+def weighted_median(pairs):
+    """pairs: (value, weight > 0). The value at which half of the weight lies on each side; a tie between two values is their mean."""
+    pairs = sorted((v, w) for v, w in pairs if w > 0)
+    if not pairs:
+        return None
+    total = sum(w for _, w in pairs)
+    run = 0
+    for i, (v, w) in enumerate(pairs):
+        run += w
+        if abs(run - total / 2) < 1e-9 and i + 1 < len(pairs):
+            return (v + pairs[i + 1][0]) / 2
+        if run > total / 2:
+            return v
+    return pairs[-1][0]
+
+
+GATE_KINDS = (("digital", "digital"), ("stick", "stick onset"))
+
+
+def gate_summary(ra, rb):
+    """The T8 gate rows: per step kind, the n-weighted median of the p50s of the steps both reports have. None unless both carry latency."""
+    if not (any(r["latP50"] is not None for r in ra) and any(r["latP50"] is not None for r in rb)):
+        return None
+    ib = {r["stepId"]: r for r in rb}
+    out = {}
+    for kind, _label in GATE_KINDS:
+        pa, pb = [], []
+        for x in ra:
+            y = ib.get(x["stepId"])
+            if not y or x["kind"] != kind or x["latP50"] is None or y["latP50"] is None:
+                continue
+            pa.append((x["latP50"], x["latN"] or 1))
+            pb.append((y["latP50"], y["latN"] or 1))
+        a, b = weighted_median(pa), weighted_median(pb)
+        out[kind] = {"a": a, "b": b, "delta": (b - a) if a is not None and b is not None else None, "steps": len(pa)}
+    return out
+
+
+def ms3(v):
+    return DASH if v is None else "%.3f" % v
+
+
+def gate_line(gate):
+    parts = []
+    for kind, label in GATE_KINDS:
+        g = gate[kind]
+        parts.append("%s p50 A %s ms / B %s ms (Δ %s ms)" % (label, ms3(g["a"]), ms3(g["b"]), signed(g["delta"], 3)))
+    return "Latency gate: " + ", ".join(parts)
+
+
+def compare(a, b, loss_threshold, onset_threshold, latency_threshold=0.1):
     ra, rb = rows(a), rows(b)
     ia, ib = {r["stepId"]: r for r in ra}, {r["stepId"]: r for r in rb}
     order = [r["stepId"] for r in ra] + [r["stepId"] for r in rb if r["stepId"] not in ia]
@@ -146,7 +225,7 @@ def compare(a, b, loss_threshold, onset_threshold):
     for sid in order:
         x, y = ia.get(sid), ib.get(sid)
         marks = []
-        d_loss = d_onset = None
+        d_loss = d_onset = d_p50 = d_p99 = None
         if x and y:
             if x["verdict"] != y["verdict"]:
                 marks.append("verdict")
@@ -156,7 +235,12 @@ def compare(a, b, loss_threshold, onset_threshold):
             d_onset = delta(x["onsetMs"], y["onsetMs"])
             if d_onset is not None and abs(d_onset) > onset_threshold + 1e-12:
                 marks.append("onsetMs")
-        pairs.append({"stepId": sid, "a": x, "b": y, "lossDelta": d_loss, "onsetDelta": d_onset, "marks": marks})
+            d_p50 = delta(x["latP50"], y["latP50"])
+            d_p99 = delta(x["latP99"], y["latP99"])
+            if d_p50 is not None and abs(d_p50) > latency_threshold + 1e-12:
+                marks.append("lat.p50Ms")
+        pairs.append({"stepId": sid, "a": x, "b": y, "lossDelta": d_loss, "onsetDelta": d_onset,
+                      "latP50Delta": d_p50, "latP99Delta": d_p99, "marks": marks})
     ha, hb = a.get("header") or {}, b.get("header") or {}
     warnings = []
     for key in HEADER_WARN_KEYS:
@@ -165,23 +249,32 @@ def compare(a, b, loss_threshold, onset_threshold):
         if va != vb:
             warnings.append({"field": key, "a": va, "b": vb})
     differs = any(p["marks"] for p in pairs)
-    return {"pairs": pairs, "headerWarnings": warnings, "differs": differs,
-            "thresholds": {"lossRatio": loss_threshold, "onsetMs": onset_threshold}}
+    return {"pairs": pairs, "headerWarnings": warnings, "differs": differs, "gate": gate_summary(ra, rb),
+            "thresholds": {"lossRatio": loss_threshold, "onsetMs": onset_threshold},
+            "latencyThresholdMs": latency_threshold}
 
 
 def side_by_side(cmp):
-    head = ["stepId", "verdict A/B", "lossRatio A", "B", "Δ", "onsetMs A", "B", "Δ", "padChanged A/B", "diff"]
+    head = ["stepId", "verdict A/B", "lossRatio A", "B", "Δ", "onsetMs A", "B", "Δ", "padChanged A/B"]
+    lat = any((p["a"] and p["a"]["latP50"] is not None) or (p["b"] and p["b"]["latP50"] is not None) for p in cmp["pairs"])
+    if lat:
+        head += ["lat.p50Ms A", "B", "Δ", "lat.p99Ms A", "B", "Δ"]
+    head.append("diff")
     body = []
     for p in cmp["pairs"]:
         x, y = p["a"], p["b"]
-        body.append([
+        row = [
             p["stepId"],
             "%s / %s" % (x["verdict"] if x else DASH, y["verdict"] if y else DASH),
             fmt(x["lossRatio"], 3) if x else DASH, fmt(y["lossRatio"], 3) if y else DASH, signed(p["lossDelta"], 3),
             fmt(x["onsetMs"], 2) if x else DASH, fmt(y["onsetMs"], 2) if y else DASH, signed(p["onsetDelta"], 2),
             "%s / %s" % (fmt(x["padChanged"]) if x else DASH, fmt(y["padChanged"]) if y else DASH),
-            ("* " + ",".join(p["marks"])) if p["marks"] else "",
-        ])
+        ]
+        if lat:
+            row += [fmt(x["latP50"], 3) if x else DASH, fmt(y["latP50"], 3) if y else DASH, signed(p["latP50Delta"], 3),
+                    fmt(x["latP99"], 3) if x else DASH, fmt(y["latP99"], 3) if y else DASH, signed(p["latP99Delta"], 3)]
+        row.append(("* " + ",".join(p["marks"])) if p["marks"] else "")
+        body.append(row)
     return table(head, body) if body else "(no steps)"
 
 
@@ -191,6 +284,7 @@ def main(argv=None):
     ap.add_argument("b", metavar="B.json", nargs="?")
     ap.add_argument("--loss-threshold", type=float, default=0.10, help="mark a lossRatio change larger than this (default 0.10)")
     ap.add_argument("--onset-threshold", type=float, default=5.0, help="mark an onsetMs change larger than this many ms (default 5)")
+    ap.add_argument("--latency-threshold", type=float, default=0.10, help="mark a lat.p50Ms change larger than this many ms (default 0.1)")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
     args = ap.parse_args(argv)
     try:
@@ -209,7 +303,7 @@ def main(argv=None):
             print(report_table(rows(ra)))
         return 0
 
-    cmp = compare(ra, rb, args.loss_threshold, args.onset_threshold)
+    cmp = compare(ra, rb, args.loss_threshold, args.onset_threshold, args.latency_threshold)
     if args.json:
         out = dict(cmp)
         out["a"] = {"path": args.a, "complete": bool(ra.get("complete")), "rows": rows(ra)}
@@ -231,12 +325,15 @@ def main(argv=None):
                 print("WARNING: run %s is incomplete; steps it did not reach show %s" % (label, DASH))
         if cmp["headerWarnings"]:
             print()
-        print("Side by side (paired by stepId; * = verdict change, lossRatio Δ > %s, onsetMs Δ > %s ms)" %
-              (fmt(args.loss_threshold, 3), fmt(args.onset_threshold, 2)))
+        print("Side by side (paired by stepId; * = verdict change, lossRatio Δ > %s, onsetMs Δ > %s ms, lat.p50Ms Δ > %s ms)" %
+              (fmt(args.loss_threshold, 3), fmt(args.onset_threshold, 2), fmt(args.latency_threshold, 3)))
         print(side_by_side(cmp))
         n = sum(1 for p in cmp["pairs"] if p["marks"])
         print()
         print("%d of %d steps differ." % (n, len(cmp["pairs"])) if n else "No marked differences.")
+        if cmp["gate"]:
+            print()
+            print(gate_line(cmp["gate"]))
     return 1 if cmp["differs"] else 0
 
 

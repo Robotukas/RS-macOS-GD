@@ -52,10 +52,20 @@ compare tool (exit 2).
 | `actions` | [object]? | absent | Held steps only. The one action is `{ "toggleInputPath": { "values": ["driver","engine"], "intervalMs": 3000, "count": 12 } }`; see "held steps" below. Without the background engine (in-app mode) the step is recorded `skipped` ("needs the background engine"). |
 
 `expect` keys: stick `minReports` (100), `extent` (0.40), `deadZone` (0.12), `otherStickStill` (true),
-`requireReturn` (true); trigger `peak` (0.90), `release` (0.05); digital `items` (`{buttons:[...], hat:"N"..."NW",
-guide:bool}`, replaces the simulated expectation; empty means "nothing on the pad") and `times` (2); held `item`
-(`RT`, `LT`, a button name such as `A`, `D-pad left`, or a hat direction `N`…`NW`; absent = derived from the control)
-and `minLevel` (0.5, the trigger value that counts as held).
+`requireReturn` (true), `flicks` (absent) and `requireDirections` (true); trigger `peak` (0.90), `release` (0.05)
+and `times` (1); digital `items` (`{buttons:[...], hat:"N"..."NW", guide:bool}`, replaces the simulated expectation;
+empty means "nothing on the pad") and `times` (2); held `item` (`RT`, `LT`, a button name such as `A`, `D-pad left`,
+or a hat direction `N`…`NW`; absent = derived from the control) and `minLevel` (0.5, the trigger value that counts as
+held).
+
+- `times` (digital) is how many times every expected item must go down and up ("Tap A 10 times" = 10). On a trigger
+  step it is the number of **full pulls**: the pad's value reaches `peak` and is then released to `release` or less,
+  that often (default 1). It must be 1 or more.
+- `flicks` (stick) replaces the four-direction circle: the pad's stick must leave the dead zone from rest at least that
+  many times (an *onset*: outside the `deadZone` after having been inside it for at least 60 ms, the same rule the
+  latency uses), with the usual return to centre at the end. `minReports` then applies only if the step sets it.
+  Must be 1 or more and only on a `stick` step.
+- `requireDirections: false` drops the four-direction (extent) check of the stick rule; flick steps set it.
 
 ### Held steps
 
@@ -95,6 +105,7 @@ style `<id>.json step <n>: ...`:
 - `step n: a stick step does not fit control X (a button)`
 - `step n: unknown control X in requires`
 - `step n: expect names unknown button "X"` / `unknown hat direction "X"`
+- `step n: expect times T must be 1 or more` / `expect flicks F must be 1 or more` / `expect flicks only applies to stick steps`
 - `step n: toggleInputPath value "X" is not engine, shadow or driver` / `toggleInputPath needs values, a count of 1 or more and an intervalMs of 1 or more`
 - warnings: `seconds S is outside 1...120, using U`, `readySeconds ...`, `releaseSeconds ...`
 
@@ -147,6 +158,19 @@ style `<id>.json step <n>: ...`:
 
 A complete real template is `Sources/GDHub/Resources/dev-script-full.json`.
 
+### Built-in templates
+
+`full`, `sticks`, `gkeys` (generated from the layout), `paddles-sax-echo`, `t7-rt-hold-toggle` and `t8-latency`. The
+bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
+`GDHUB_WRITE_DEV_TEMPLATES=1 swift test --filter DevTemplateTests/testWriteBundledTemplates` rewrites them.
+
+**`t8-latency`** ("Latency: controller to pad, per press (App, then Driver) — T8 gate", `paths: ["engine","driver"]`)
+is the evidence for the receiver-takeover gate rows G4a (Driver digital p50 at most 0.5 ms) and G4b (Driver at least
+0.2 ms lower than App on digital and on stick onset), `docs/plans/receiver-takeover-plan.md` 9.3. Both passes run back
+to back in one session. Steps: `flick-left` (stick, `flicks` 10, `requireDirections` false, 12 s), `tap-a` and `tap-b`
+(digital, `times` 10, 10 s), `pull-rt` (trigger, `times` 5, 10 s), `circle-left` (the standard stick circle, 5 s).
+Each step must also pass as an ordinary check. Compare the two passes' reports with `dev-run-compare.py`.
+
 ## Run report format
 
 ```
@@ -198,8 +222,33 @@ reason. A verdict word from a newer build reads as `inconclusive` with the word 
 | `expectedChanges` | Pad changes the receiver frames should have produced, when a reference was available. |
 | `lossRatio` | `padChanged / expectedChanges`, absent without a reference. 1 means everything arrived. |
 | `onsetMs` | First pad change minus first reference change, ms. |
-| `values` | Per-kind numbers (`ls.xMin`, `lt.peak`, `bit.rises`, `bit.falls`, `hat.visited`, ...). |
+| `values` | Per-kind numbers (`ls.xMin`, `ls.onsets`, `lt.peak`, `rt.pulls`, `bit.rises`, `bit.falls`, `hat.visited`, ...) and, for every step but `rest` when the receiver frames were available, the per-event latency (below). |
 | `detail` | Words from the judge. |
+
+### Per-event latency (`lat.*`)
+
+For every step except `rest`, from the receiver frames and the pad reports of the step's window and release tail (kernel
+timestamps on both sides, as in `scuf-envision/tools/latency/padlat.swift`). Milliseconds.
+
+| Value | Meaning |
+|---|---|
+| `lat.n` | Receiver edges the pad answered. |
+| `lat.unmatched` | Receiver edges the pad never answered before the next edge of the same kind: the real "lost" ones. |
+| `lat.p50Ms`, `lat.p95Ms`, `lat.p99Ms`, `lat.maxMs` | Over the answered edges; absent when `lat.n` is 0. Percentile = nearest rank on the sorted list, index `Int((n - 1) * p + 0.5)` (padlat's). |
+
+*Receiver edges* come from the receiver frames after `PassthroughPadMapper` and the sink's dead band (what the pad is
+supposed to show): **digital** each press and each release of each expected pad item (a button, a D-pad direction,
+Guide); **trigger** each pull (value rises to 0.5 or more) and the release after it (value falls to 0.05 or less), a pull
+being armed again only after a release; **stick** each *onset* (the stick leaves the 12 % dead zone after being inside
+it; it counts as back inside only after 60 ms there, so a spring-back wobble is one edge; the step's first frame counts
+as coming from rest). A held step watches its held item (trigger or buttons) the same way.
+
+*Match*: an edge is answered by the first pad report at or after its timestamp that **changed** the pad into the edge's
+state (item down / item up, trigger at or above 0.5 / at or below 0.05, stick outside the dead zone after being inside)
+and arrived before the next receiver edge of the same kind (same item and direction). Its latency is the difference of
+the two kernel timestamps. Pad reports are read past the end of the release tail for this, so an edge near the end finds
+its report. `detail` ends with `latency p50 0.12 ms (n=20, p99 0.31, max 0.40)` (`, 2 unanswered` inside the brackets
+when some were).
 
 ### Raw reports and the cap
 
@@ -263,7 +312,7 @@ by the Swift encoder are in `Tests/GDHubTests/Fixtures/dev-runs/`.)
 
 ```
 scripts/tools/dev-run-compare.py A.json [B.json]
-        [--loss-threshold 0.10] [--onset-threshold 5] [--json]
+        [--loss-threshold 0.10] [--onset-threshold 5] [--latency-threshold 0.1] [--json]
 ```
 
 Python 3, standard library only. Typical use is the same template run on two paths: the Engine report as A, the
@@ -272,7 +321,8 @@ Driver LIVE report as B.
 **One report** prints a header block (startedAt, requested/effective path, template id, version and short sha256,
 short mappingHash, complete or not, app/engine/dext builds, pad identity, notes) and a table with one line per step:
 `#`, `stepId`, `kind`, `controls`, `verdict`, `detail` (the verdict reason, else the judge's words), `padReports`,
-`padChanged`, `lossRatio`, `onsetMs`, `framesSeen`, `effectivePath`. The numbers come from the step's final attempt.
+`padChanged`, `lossRatio`, `onsetMs`, `framesSeen`, `effectivePath`, and, when any step carries latency, `lat.n`,
+`lat.p50Ms`, `lat.p99Ms`, `lat.unmatched` before `effectivePath`. The numbers come from the step's final attempt.
 `—` means "not recorded".
 
 **Two reports** print both of those, then:
@@ -281,14 +331,22 @@ short mappingHash, complete or not, app/engine/dext builds, pad identity, notes)
    `padIdentity`, `xlateCore`, `vpadMaxRateHz` differ, and when a run is incomplete. A different `effectivePath` is
    expected when comparing paths; the others mean the numbers are not directly comparable.
 2. A side-by-side table **paired by `stepId`** (not by position): `verdict A/B`, `lossRatio A | B | Δ`,
-   `onsetMs A | B | Δ`, `padChanged A/B`. A step present in only one run shows `—` on the other side and is not a
+   `onsetMs A | B | Δ`, `padChanged A/B`, and, when either run has latency, `lat.p50Ms A | B | Δ` and
+   `lat.p99Ms A | B | Δ`. A step present in only one run shows `—` on the other side and is not a
    difference by itself (it is how an incomplete or shorter run looks). The `diff` column carries `*` and the reasons:
    `verdict` (the verdict word changed), `lossRatio` (|Δ| above `--loss-threshold`, default 0.10), `onsetMs` (|Δ| above
-   `--onset-threshold`, default 5 ms). Δ is B minus A.
+   `--onset-threshold`, default 5 ms), `lat.p50Ms` (|Δ p50| above `--latency-threshold`, default 0.1 ms; p99 is shown, not
+   marked). Δ is B minus A.
+3. When both reports carry latency, a last line, for the gate rows G4a and G4b:
+   `Latency gate: digital p50 A 0.400 ms / B 0.150 ms (Δ -0.250 ms), stick onset p50 A 0.500 ms / B 0.200 ms (Δ -0.300 ms)`.
+   Each figure is the n-weighted median (by `lat.n`; a tie between two values is their mean) of the `lat.p50Ms` of the
+   steps of that `kind` (`digital`, `stick`) present in both reports. `—` when a kind has no such step. Same line under
+   `gate` in `--json`.
 
 Exit codes: **0** nothing marked; **1** a paired verdict differs or a marked difference exists; **2** a file is
 unreadable, is not a report, or has a schema newer than 1. `--json` prints the same comparison (pairs, marks, header
-warnings, thresholds, both row sets) as JSON.
+warnings, thresholds, `latencyThresholdMs`, `gate`, both row sets) as JSON. Note that a Driver run that is faster than the
+App by more than 0.1 ms is a *marked* difference, so comparing App with Driver on `t8-latency` exits 1 by design.
 
 Tests: `python3 -m unittest discover -s scripts/tools`. The fixtures are generated by the Swift encoder
 (`GDHUB_WRITE_DEV_FIXTURES=1 swift test --filter DevRunReportFixtureTests`), so the tool and the app share one schema.

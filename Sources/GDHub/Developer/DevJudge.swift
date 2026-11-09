@@ -14,13 +14,16 @@ import Foundation
 ///
 /// Fixed keys in `DevMetrics.values`, by kind (p is `ls` or `rs`, t is `lt` or `rt`):
 /// - rest: `rest.offReports`, `rest.maxStick`, `rest.maxTrigger`
-/// - stick: `p.reportsOutside`, `p.xMin`, `p.xMax`, `p.yMin`, `p.yMax`, `p.otherOutside`, `p.settledMs`
-/// - trigger: `t.peak`, `t.settledMs`
+/// - stick: `p.reportsOutside`, `p.xMin`, `p.xMax`, `p.yMin`, `p.yMax`, `p.otherOutside`, `p.settledMs`, `p.onsets`
+///   (times the pad's stick left the dead zone from rest)
+/// - trigger: `t.peak`, `t.settledMs`, `t.pulls` (peaks followed by a release)
 /// - digital: `bit.rises`, `bit.falls` (the fewest over the expected items; the totals when nothing is expected),
 ///   `hat.visited` (bit mask of the hat values seen, bit n = value n), `neutrals`, `unexpected`, `entrySet`
 /// - held: `held.minLevel` (lowest trigger value from the moment it was held; 1 or 0 for a button), `held.drops`
 ///   (held to released transitions), `held.padReports`, `held.ms` (held until the window end). Only the window counts:
 ///   the release tail is where the owner lets go.
+/// - every kind but rest, when the receiver frames are known (`Reference.frames`): `lat.n`, `lat.unmatched`, and when
+///   n > 0 `lat.p50Ms`, `lat.p95Ms`, `lat.p99Ms`, `lat.maxMs`; see `DevLatency` for the edge and match definitions.
 enum DevJudge {
     struct Rules: Equatable {
         var deadZone = 0.12
@@ -29,9 +32,19 @@ enum DevJudge {
         var stickExtent = 0.40
         var stickMinReports = 100
         var holdMs = 300.0
+        /// Per-event latency (`DevLatency`): a trigger edge is the value crossing this, a stick onset needs this long
+        /// inside the dead zone first.
+        var latencyTriggerEdge = 0.5
+        var onsetRestMs = 60.0
         var digitalTimes = 2
         var otherStickStill = true
         var requireReturn = true
+        /// Full pulls (peak, then release) a trigger step needs.
+        var triggerTimes = 1
+        /// Flick steps: the stick must leave the dead zone from rest at least this often; nil = the circle rule.
+        var flicks: Int?
+        /// The four-direction check of the stick rule (off for flick steps).
+        var requireDirections = true
         /// A held step: the trigger value that counts as held, and how long after the window start the item may take
         /// to get there (the window opens when the control first moves, so the pull is still on its way).
         var heldMinLevel = 0.5
@@ -52,7 +65,9 @@ enum DevJudge {
             if let v = e.peak { r.triggerPeak = v }
             if let v = e.extent { r.stickExtent = v }
             if let v = e.minReports { r.stickMinReports = v }
-            if let v = e.times { r.digitalTimes = v }
+            if let v = e.times { r.digitalTimes = v; r.triggerTimes = v }
+            if let v = e.flicks { r.flicks = v }
+            if let v = e.requireDirections { r.requireDirections = v }
             if let v = e.otherStickStill { r.otherStickStill = v }
             if let v = e.requireReturn { r.requireReturn = v }
             if let v = e.minLevel { r.heldMinLevel = v }
@@ -70,11 +85,20 @@ enum DevJudge {
     /// What the GUI's own receiver frames say should have happened (frames → `PassthroughPadMapper` → the sink's
     /// `snapped` / `unchanged`), so two runs compare on what the path lost and not on how long the hands moved.
     struct Reference: Equatable {
+        /// One receiver frame as the pad should show it (mapper output, dead band applied) with its kernel timestamp.
+        struct Frame: Equatable {
+            var tNs: UInt64
+            var pad: PadState
+        }
+
         var expectedChanges: Int
         var firstFrameChangeNs: UInt64?
         var framesSeen = 0
         var framesPerSecond = 0.0
         var movingMs = 0.0
+        /// Every frame from the window start to the end of the release tail, in time order: the receiver edges of the
+        /// per-event latency (`DevLatency`) come from these. Empty = no latency is measured.
+        var frames: [Frame] = []
     }
 
     struct Input {
@@ -149,12 +173,55 @@ enum DevJudge {
         let tl = Timeline(input: timelineInput, entry: entry, decoder: decoder)
         tl.fill(&metrics, reference: input.reference)
 
+        var outcome: Outcome
         switch kind {
         case .rest: return tl.judgeRest(input, entry: entry, rules: rules, metrics: &metrics)
-        case .stick: return tl.judgeStick(input, rules: rules, metrics: &metrics)
-        case .trigger: return tl.judgeTrigger(input, rules: rules, metrics: &metrics)
-        case .digital: return tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
-        case .held: return tl.judgeHeld(input, rules: rules, metrics: &metrics)
+        case .stick: outcome = tl.judgeStick(input, rules: rules, metrics: &metrics)
+        case .trigger: outcome = tl.judgeTrigger(input, rules: rules, metrics: &metrics)
+        case .digital: outcome = tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
+        case .held: outcome = tl.judgeHeld(input, rules: rules, metrics: &metrics)
+        }
+
+        // Per-event latency: every kind but rest, when the receiver frames are known. The pad side is read from a
+        // timeline that runs past the end of the release tail, so an edge near the end still finds its report.
+        if let ref = input.reference, !ref.frames.isEmpty, let watch = latencyWatch(input, kind: kind) {
+            var wide = input
+            wide.endNs = UInt64.max
+            let wl = Timeline(input: wide, entry: entry, decoder: decoder)
+            let pad = (0..<wl.count).map { DevLatency.PadSample(tNs: wl.times[$0], state: wl.states[$0], changed: wl.changed[$0]) }
+            let config = DevLatency.Config(deadZone: rules.deadZone, triggerEdge: rules.latencyTriggerEdge,
+                                           triggerRelease: rules.triggerRelease, onsetRestMs: rules.onsetRestMs)
+            let lat = DevLatency.measure(frames: ref.frames, pad: pad, watch: watch, config: config)
+            for (k, v) in DevLatency.values(lat) { outcome.metrics.values[k] = v }
+            outcome.metrics.detail += (outcome.metrics.detail.isEmpty ? "" : " ") + DevLatency.text(lat)
+        }
+        return outcome
+    }
+
+    /// What the latency measurement watches for a step, or nil when the step names nothing it can watch.
+    private static func latencyWatch(_ input: Input, kind: DevKind) -> DevLatency.Watch? {
+        let step = input.step
+        switch kind {
+        case .rest:
+            return nil
+        case .stick:
+            switch step.controls.first {
+            case "left_stick": return DevLatency.Watch(stick: .left)
+            case "right_stick": return DevLatency.Watch(stick: .right)
+            default: return nil
+            }
+        case .trigger:
+            let triggers: [PadTrigger] = step.controls.compactMap { $0 == "lt" ? .left : ($0 == "rt" ? .right : nil) }
+            return triggers.isEmpty ? nil : DevLatency.Watch(triggers: triggers)
+        case .digital:
+            return DevLatency.Watch(items: input.expected.items)
+        case .held:
+            guard let targets = DevExpectation.heldTargets(step: step, expected: input.expected) else { return nil }
+            var w = DevLatency.Watch()
+            for t in targets {
+                if case .trigger(let tr) = t { w.triggers.append(tr) } else { w.items.formUnion(t.padItems) }
+            }
+            return w
         }
     }
 
@@ -269,20 +336,31 @@ enum DevJudge {
             }
             let inside: (PadDecodedState) -> Bool = { $0.isInside(stick, deadZone: rules.deadZone) }
             let settled = settledMs(inside)
+            // Onsets on the pad: leaving the dead zone after 60 ms inside it (the segment 0 state is the one before any move).
+            let onsets = DevLatency.onsetIndices(times: times, magnitudes: states.map { s in
+                let q = s.position(of: stick); return DevLatency.magnitude(q.x, q.y)
+            }, deadZone: rules.deadZone, restMs: rules.onsetRestMs, startArmed: inside(states[0])).filter { $0 > 0 }.count
             m.values = ["\(p).reportsOutside": Double(outside), "\(p).xMin": xMin, "\(p).xMax": xMax,
                         "\(p).yMin": yMin, "\(p).yMax": yMax, "\(p).otherOutside": Double(otherOutside),
-                        "\(p).settledMs": settled ?? 0]
+                        "\(p).settledMs": settled ?? 0, "\(p).onsets": Double(onsets)]
             var fails: [String] = []
-            if outside < rules.stickMinReports {
-                fails.append("only \(outside) reports with the \(name) stick outside the dead zone (needs \(rules.stickMinReports))")
+            // A flick step is about how often the stick left rest; its report count is only checked when the step asks.
+            let needReports = rules.flicks == nil ? rules.stickMinReports : (input.step.expect?.minReports ?? 0)
+            if outside < needReports {
+                fails.append("only \(outside) reports with the \(name) stick outside the dead zone (needs \(needReports))")
             }
-            var missing: [String] = []
-            let e = rules.stickExtent
-            if xMax < e { missing.append("x +\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(xMax)))") }
-            if xMin > -e { missing.append("x -\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(xMin)))") }
-            if yMax < e { missing.append("y +\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(yMax)))") }
-            if yMin > -e { missing.append("y -\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(yMin)))") }
-            if !missing.isEmpty { fails.append("the \(name) stick never reached " + missing.joined(separator: ", ")) }
+            if rules.requireDirections {
+                var missing: [String] = []
+                let e = rules.stickExtent
+                if xMax < e { missing.append("x +\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(xMax)))") }
+                if xMin > -e { missing.append("x -\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(xMin)))") }
+                if yMax < e { missing.append("y +\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(yMax)))") }
+                if yMin > -e { missing.append("y -\(DevJudge.fmt(e)) (reached \(DevJudge.fmt(yMin)))") }
+                if !missing.isEmpty { fails.append("the \(name) stick never reached " + missing.joined(separator: ", ")) }
+            }
+            if let want = rules.flicks, onsets < want {
+                fails.append("the \(name) stick left the dead zone from rest \(onsets) times (needs \(want) flicks)")
+            }
             if rules.otherStickStill && otherOutside > 0 {
                 fails.append("the \(other == .left ? "left" : "right") stick moved too (\(otherOutside) reports outside the dead zone)")
             }
@@ -293,7 +371,8 @@ enum DevJudge {
                     fails.append("the \(name) stick had only been at rest for \(Int(s)) ms at the end (needs \(Int(rules.holdMs)))")
                 }
             }
-            let summary = "\(name.capitalized) stick: \(outside) reports outside the dead zone, x \(DevJudge.fmt(xMin))…\(DevJudge.fmt(xMax)), y \(DevJudge.fmt(yMin))…\(DevJudge.fmt(yMax)); \(m.padReports) pad reports, \(m.padChanged) changed."
+            let flickText = rules.flicks.map { " \(onsets) flicks (needs \($0))," } ?? ""
+            let summary = "\(name.capitalized) stick:\(flickText) \(outside) reports outside the dead zone, x \(DevJudge.fmt(xMin))…\(DevJudge.fmt(xMax)), y \(DevJudge.fmt(yMin))…\(DevJudge.fmt(yMax)); \(m.padReports) pad reports, \(m.padChanged) changed."
             return finish(fails, passText: summary, summary: summary, &m)
         }
 
@@ -308,17 +387,27 @@ enum DevJudge {
             let peak = states.map { $0.value(of: trig) }.max() ?? 0
             let low: (PadDecodedState) -> Bool = { $0.value(of: trig) <= rules.triggerRelease }
             let settled = settledMs(low)
-            m.values = ["\(t).peak": peak, "\(t).settledMs": settled ?? 0]
+            // A pull counts when the value reaches the peak and a release (down to the release level) follows it.
+            var pulls = 0
+            var peaked = false
+            for s in states {
+                let v = s.value(of: trig)
+                if v >= rules.triggerPeak { peaked = true } else if v <= rules.triggerRelease && peaked { pulls += 1; peaked = false }
+            }
+            m.values = ["\(t).peak": peak, "\(t).settledMs": settled ?? 0, "\(t).pulls": Double(pulls)]
             var fails: [String] = []
             if peak < rules.triggerPeak {
                 fails.append("\(t.uppercased()) only reached \(DevJudge.fmt(peak)) (needs \(DevJudge.fmt(rules.triggerPeak)))")
+            } else if rules.triggerTimes > 1 && pulls < rules.triggerTimes {
+                fails.append("\(t.uppercased()) was pulled to \(DevJudge.fmt(rules.triggerPeak)) and released \(pulls) times (needs \(rules.triggerTimes))")
             }
             if settled == nil {
                 fails.append("\(t.uppercased()) was still above \(DevJudge.fmt(rules.triggerRelease)) at the end")
             } else if let s = settled, s < rules.holdMs {
                 fails.append("\(t.uppercased()) had only been released for \(Int(s)) ms at the end (needs \(Int(rules.holdMs)))")
             }
-            let summary = "\(t.uppercased()) peak \(DevJudge.fmt(peak)); \(m.padReports) pad reports, \(m.padChanged) changed."
+            let pullText = rules.triggerTimes > 1 ? ", \(pulls) full pulls (needs \(rules.triggerTimes))" : ""
+            let summary = "\(t.uppercased()) peak \(DevJudge.fmt(peak))\(pullText); \(m.padReports) pad reports, \(m.padChanged) changed."
             return finish(fails, passText: summary, summary: summary, &m)
         }
 

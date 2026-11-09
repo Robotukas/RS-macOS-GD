@@ -336,6 +336,8 @@ struct DevRunCore {
         var padChanged = 0
         var refChanges: [UInt64] = []
         var frameTimes: [UInt64] = []
+        /// The receiver-derived pad state of each of those frames (same order), for the per-event latency.
+        var frameStates: [PadState] = []
         var wantedActiveSeen = false
         var wantedNowActive = false
         var lastWantedActiveNs: UInt64?
@@ -708,6 +710,7 @@ struct DevRunCore {
         cur!.matchedAtStart = matched
         cur!.refChanges = []
         cur!.frameTimes = []
+        cur!.frameStates = []
         cur!.padReportsInWindow = 0
         cur!.padChanged = 0
         cur!.wantedRises = 0
@@ -830,8 +833,13 @@ struct DevRunCore {
         }
         var moving = 0.0
         if changes.count > 1, let f = changes.first, let l = changes.last { moving = Double(l - f) / 1e6 }
+        var states: [DevJudge.Reference.Frame] = []
+        states.reserveCapacity(frames.count)
+        for (i, t) in c.frameTimes.enumerated() where t >= ws && t <= end && c.frameStates.indices.contains(i) {
+            states.append(.init(tNs: t, pad: c.frameStates[i]))
+        }
         return DevJudge.Reference(expectedChanges: changes.count, firstFrameChangeNs: changes.first,
-                                  framesSeen: frames.count, framesPerSecond: fps, movingMs: moving)
+                                  framesSeen: frames.count, framesPerSecond: fps, movingMs: moving, frames: states)
     }
 
     private func judgeInput(_ c: Cur, _ r: DevResolvedStep, ws: UInt64, we: UInt64, end: UInt64) -> DevJudge.Input {
@@ -998,6 +1006,7 @@ struct DevRunCore {
         guard case .step(_, let phase2) = state, phase2 == .window || phase2 == .release,
               let ws = cur!.windowStartNs, t >= ws else { return }
         cur!.frameTimes.append(t)
+        cur!.frameStates.append(sum.snapped)
         if changed { cur!.refChanges.append(t) }
         // Tracked in the release phase too: the tail ends when the control has come back to rest.
         let act = wantedActive(r, f, sum.pad)

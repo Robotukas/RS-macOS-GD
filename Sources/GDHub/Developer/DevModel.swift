@@ -69,10 +69,16 @@ struct DevExpect: Codable, Equatable {
     var deadZone: Double?
     var otherStickStill: Bool?
     var requireReturn: Bool?
+    /// Flick steps: instead of the four-direction circle the stick has to leave the dead zone from rest this many times
+    /// (and come back). nil = the circle rule.
+    var flicks: Int?
+    /// false drops the four-direction check (flick steps); nil = true.
+    var requireDirections: Bool?
     // trigger
     var peak: Double?
     var release: Double?
-    // digital: replaces the simulated expectation
+    // digital: replaces the simulated expectation; `times` is also the number of full pulls (peak, then release) a
+    // trigger step needs (1 when nil)
     var items: DevExpectedItems?
     var times: Int?
     // held: the pad item that has to stay held ("RT", "A", a hat direction "N"…"NW"; nil = derived from the control)
@@ -90,6 +96,8 @@ struct DevExpect: Codable, Equatable {
         deadZone = try c.decodeIfPresent(Double.self, forKey: .deadZone)
         otherStickStill = try c.decodeIfPresent(Bool.self, forKey: .otherStickStill)
         requireReturn = try c.decodeIfPresent(Bool.self, forKey: .requireReturn)
+        flicks = try c.decodeIfPresent(Int.self, forKey: .flicks)
+        requireDirections = try c.decodeIfPresent(Bool.self, forKey: .requireDirections)
         peak = try c.decodeIfPresent(Double.self, forKey: .peak)
         release = try c.decodeIfPresent(Double.self, forKey: .release)
         items = try c.decodeIfPresent(DevExpectedItems.self, forKey: .items)
@@ -393,6 +401,16 @@ struct DevTemplate: Codable, Equatable {
                 }
                 if let hat = items.hat, PadHat.value(named: hat).map({ $0 == 0 }) ?? true {
                     v.errors.append("\(at): expect names unknown hat direction \"\(hat)\"")
+                }
+            }
+            if let t = step.expect?.times, t < 1 {
+                v.errors.append("\(at): expect times \(t) must be 1 or more")
+            }
+            if let f = step.expect?.flicks {
+                if kind != nil, kind != .stick {
+                    v.errors.append("\(at): expect flicks only applies to stick steps")
+                } else if f < 1 {
+                    v.errors.append("\(at): expect flicks \(f) must be 1 or more")
                 }
             }
             if kind == .held {

@@ -162,7 +162,7 @@ final class DevTemplateTests: XCTestCase {
     func testBundledFilesAreTheGeneratorsOutputAndValidate() throws {
         let entries = DevTemplates.load(folder: fresh(), layout: layout)
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, t7-rt-hold-toggle, in that order")
+        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, t7-rt-hold-toggle, t8-latency, in that order")
         for (entry, want) in zip(entries, generated) {
             XCTAssertEqual(entry.source, .builtIn)
             XCTAssertEqual(entry.url.lastPathComponent, DevBuiltins.fileName(for: want))
@@ -290,6 +290,84 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(DevPathEvent.self, from: Data(#"{"tMs":1,"armed":"live"}"#.utf8)).wrote)
     }
 
+    // MARK: latency expectations and the T8 template
+
+    func testFlicksRequireDirectionsAndTimesDecodeTolerantlyAndRoundTrip() throws {
+        let t = try DevTemplate.decode(Data(#"{"id":"f","steps":[{"id":"s","kind":"stick","controls":["left_stick"],"expect":{"flicks":10,"requireDirections":false,"times":3,"futureKey":1}}]}"#.utf8))
+        let e = try XCTUnwrap(t.steps[0].expect)
+        XCTAssertEqual(e.flicks, 10)
+        XCTAssertEqual(e.requireDirections, false)
+        XCTAssertEqual(e.times, 3)
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+        // older files: nothing set
+        let old = try DevTemplate.decode(Data(#"{"id":"o","steps":[{"id":"s","kind":"stick","controls":["left_stick"],"expect":{"extent":0.5}}]}"#.utf8))
+        XCTAssertNil(old.steps[0].expect?.flicks)
+        XCTAssertNil(old.steps[0].expect?.requireDirections)
+        // the judge's rules take them over
+        let rules = DevJudge.Rules().applying(e)
+        XCTAssertEqual(rules.flicks, 10)
+        XCTAssertFalse(rules.requireDirections)
+        XCTAssertEqual(rules.triggerTimes, 3)
+        XCTAssertEqual(rules.digitalTimes, 3)
+        let defaults = DevJudge.Rules()
+        XCTAssertNil(defaults.flicks); XCTAssertTrue(defaults.requireDirections)
+        XCTAssertEqual(defaults.triggerTimes, 1); XCTAssertEqual(defaults.digitalTimes, 2)
+        // a wrong type is a broken file, not an old one
+        XCTAssertThrowsError(try DevTemplate.decode(Data(#"{"id":"b","steps":[{"id":"s","expect":{"flicks":"ten"}}]}"#.utf8)))
+    }
+
+    func testFlicksAndTimesAreValidated() {
+        func step(_ id: String, _ kind: DevKind, _ control: String, _ edit: (inout DevExpect) -> Void) -> DevStep {
+            var s = DevStep(id: id, kind: kind, controls: [control], title: "t")
+            var e = DevExpect(); edit(&e); s.expect = e
+            return s
+        }
+        let t = template(steps: [
+            step("s1", .stick, "left_stick") { $0.flicks = 10; $0.requireDirections = false },
+            step("s2", .stick, "left_stick") { $0.flicks = 0 },
+            step("s3", .digital, "a") { $0.flicks = 3 },
+            step("s4", .digital, "a") { $0.times = 0 },
+            step("s5", .trigger, "rt") { $0.times = -2 },
+            step("s6", .trigger, "rt") { $0.times = 5 },
+        ])
+        XCTAssertEqual(t.validate(layout: layout), [
+            "full.json step 2: expect flicks 0 must be 1 or more",
+            "full.json step 3: expect flicks only applies to stick steps",
+            "full.json step 4: expect times 0 must be 1 or more",
+            "full.json step 5: expect times -2 must be 1 or more",
+        ])
+    }
+
+    func testT8LatencyTemplateIsAsSpecifiedAndValidates() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "t8-latency" })
+        XCTAssertEqual(t.title, "Latency: controller to pad, per press (App, then Driver) — T8 gate")
+        XCTAssertEqual(t.paths, ["engine", "driver"])
+        XCTAssertEqual(t.validate(layout: layout), [])
+        for word in ["G4a", "G4b", "0.5 ms", "0.2 ms", "dev-run-compare.py", "back to back"] {
+            XCTAssertTrue(t.notes.contains(word), "notes lack \(word)")
+        }
+        XCTAssertEqual(t.steps.map(\.title), [
+            "Flick the LEFT stick hard and let it spring back, 10 times",
+            "Tap A 10 times",
+            "Tap B 10 times",
+            "Pull RT all the way and release, 5 times",
+            "Roll the LEFT stick in one or two slow circles, then let go",
+        ])
+        XCTAssertEqual(t.steps.map(\.id), ["flick-left", "tap-a", "tap-b", "pull-rt", "circle-left"])
+        XCTAssertEqual(t.steps.map { $0.devKind }, [.stick, .digital, .digital, .trigger, .stick])
+        XCTAssertEqual(t.steps.map(\.controls), [["left_stick"], ["a"], ["b"], ["rt"], ["left_stick"]])
+        XCTAssertEqual(t.steps.map(\.effectiveSeconds), [12, 10, 10, 10, 5])
+        let flick = t.steps[0]
+        XCTAssertEqual(flick.expect?.flicks, 10)
+        XCTAssertEqual(flick.expect?.requireDirections, false)
+        XCTAssertEqual(t.steps[1].expect?.times, 10)
+        XCTAssertEqual(t.steps[2].expect?.times, 10)
+        XCTAssertEqual(t.steps[3].expect?.times, 5)
+        XCTAssertNil(t.steps[4].expect)
+        XCTAssertTrue(t.steps.allSatisfy { !$0.detail.isEmpty })
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+    }
+
     // MARK: loader
 
     func testLocalFilesOverrideBuiltInsAndAddNewOnes() throws {
@@ -320,13 +398,13 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(entry("wrong")?.errors, ["wrong.json step 1: unknown control g6"])
         XCTAssertEqual(entry("wrong")?.isRunnable, false, "Start stays disabled while an error stands")
         XCTAssertNil(entry("notes"))
-        XCTAssertEqual(entries.prefix(5).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "t7-rt-hold-toggle"], "built-ins and overrides first, in their order")
+        XCTAssertEqual(entries.prefix(6).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "t7-rt-hold-toggle", "t8-latency"], "built-ins and overrides first, in their order")
         XCTAssertEqual(entries.last?.source, .local)
     }
 
     func testAMissingFolderIsFine() {
         let entries = DevTemplates.load(folder: fresh().appendingPathComponent("nope"), layout: layout)
-        XCTAssertEqual(entries.count, 5)
+        XCTAssertEqual(entries.count, 6)
     }
 
     func testWarningsKeepATemplateRunnable() throws {

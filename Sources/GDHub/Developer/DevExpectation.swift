@@ -89,7 +89,7 @@ enum DevExpectation {
     }
 
     /// The items of a mapper output that a digital control can produce.
-    private static func pad(from state: PadState) -> Set<PadItem> {
+    static func pad(from state: PadState) -> Set<PadItem> {
         let b = state.buttons
         var s: Set<PadItem> = []
         let pairs: [(PadButtons, PadItem)] = [(.a, .a), (.b, .b), (.x, .x), (.y, .y), (.lb, .lb), (.rb, .rb), (.view, .view),

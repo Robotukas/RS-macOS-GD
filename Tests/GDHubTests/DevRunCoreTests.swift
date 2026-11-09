@@ -330,6 +330,11 @@ final class DevRunCoreTests: XCTestCase {
         XCTAssertEqual(att.metrics.padChanged, 4)
         XCTAssertEqual(att.metrics.lossRatio ?? 0, 1.0, accuracy: 0.001)
         XCTAssertNotNil(att.metrics.onsetMs)
+        // Per-event latency: the rig posts the pad report at the instant of the receiver frame (0 ms) for all four edges.
+        XCTAssertEqual(att.metrics.values["lat.n"], 4)
+        XCTAssertEqual(att.metrics.values["lat.unmatched"], 0)
+        XCTAssertEqual(att.metrics.values["lat.p50Ms"] ?? -1, 0, accuracy: 1e-6)
+        XCTAssertTrue(att.metrics.detail.contains("latency p50 0.00 ms (n=4"), att.metrics.detail)
     }
 
     func testOnePressIsNotEnoughToEndEarly() {

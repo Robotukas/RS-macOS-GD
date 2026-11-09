@@ -488,6 +488,191 @@ final class DevJudgeTests: XCTestCase {
         XCTAssertTrue(why4.hasPrefix("unknown item"), why4)
     }
 
+    // MARK: per-event latency
+
+    private func frame(_ ms: Double, _ make: (inout PadState) -> Void = { _ in }) -> DevJudge.Reference.Frame {
+        .init(tNs: Rig.ns(ms), pad: state(make))
+    }
+    private func referenceWith(_ frames: [DevJudge.Reference.Frame]) -> DevJudge.Reference {
+        DevJudge.Reference(expectedChanges: frames.count, firstFrameChangeNs: frames.first?.tNs, frames: frames)
+    }
+    private func tapA(times: Int, pressDelayMs: (Int) -> Double, releaseDelayMs: (Int) -> Double, dropPadFor dropped: Set<Int> = [])
+        -> (rig: Rig, frames: [DevJudge.Reference.Frame]) {
+        var rig = Rig()
+        var frames: [DevJudge.Reference.Frame] = []
+        for i in 0..<times {
+            let down = 200 + Double(i) * 400, up = down + 150
+            frames.append(frame(down) { $0.buttons = [.a] })
+            frames.append(frame(up))
+            if dropped.contains(i) { continue }
+            rig.set(state { $0.buttons = [.a] }, at: down + pressDelayMs(i))
+            rig.set(PadState(), at: up + releaseDelayMs(i))
+        }
+        return (rig, frames)
+    }
+
+    func testLatencyDigitalGivesExactPercentilesAndTheDetailLine() {
+        // 10 taps: press delays 0.10 ... 0.19 ms, release delays 0.20 ms except the last, 0.40 ms.
+        let (rig, frames) = tapA(times: 10, pressDelayMs: { 0.10 + 0.01 * Double($0) }, releaseDelayMs: { $0 == 9 ? 0.40 : 0.20 })
+        var step = aStep
+        var e = DevExpect(); e.times = 10
+        step.expect = e
+        let o = run(step, expected: aExpected, rig: rig, windowMs: 4500, releaseMs: 0, reference: referenceWith(frames))
+        assertPass(o)
+        let v = o.metrics.values
+        XCTAssertEqual(v["lat.n"], 20)
+        XCTAssertEqual(v["lat.unmatched"], 0)
+        // sorted: 0.10 ... 0.19, then 0.20 x 9, then 0.40; padlat's nearest rank: index Int((n - 1) * p + 0.5)
+        XCTAssertEqual(v["lat.p50Ms"] ?? 0, 0.20, accuracy: 1e-3)      // index 10
+        XCTAssertEqual(v["lat.p95Ms"] ?? 0, 0.20, accuracy: 1e-3)      // index 18
+        XCTAssertEqual(v["lat.p99Ms"] ?? 0, 0.40, accuracy: 1e-3)      // index 19
+        XCTAssertEqual(v["lat.maxMs"] ?? 0, 0.40, accuracy: 1e-3)
+        XCTAssertTrue(o.metrics.detail.hasSuffix("latency p50 0.20 ms (n=20, p99 0.40, max 0.40)."), o.metrics.detail)
+    }
+
+    func testLatencyAnEdgeThePadNeverAnsweredIsUnmatchedAndNotPaidByTheNextOne() {
+        // The pad drops the whole middle tap. The press of tap 3 must not answer the press of tap 2, nor the release of 3
+        // the release of 2: each edge only looks until the next edge of the same kind.
+        let (rig, frames) = tapA(times: 3, pressDelayMs: { _ in 0.1 }, releaseDelayMs: { _ in 0.1 }, dropPadFor: [1])
+        var step = aStep
+        var e = DevExpect(); e.times = 2
+        step.expect = e
+        let o = run(step, expected: aExpected, rig: rig, windowMs: 1500, releaseMs: 0, reference: referenceWith(frames))
+        XCTAssertEqual(o.metrics.values["lat.n"], 4)
+        XCTAssertEqual(o.metrics.values["lat.unmatched"], 2)
+        XCTAssertEqual(o.metrics.values["lat.p50Ms"] ?? 0, 0.1, accuracy: 1e-3)
+        XCTAssertTrue(o.metrics.detail.contains("(n=4, p99 0.10, max 0.10, 2 unanswered)"), o.metrics.detail)
+    }
+
+    func testLatencyWhenThePadNeverAnswersAtAll() {
+        let frames = [frame(200) { $0.buttons = [.a] }, frame(350)]
+        let o = run(aStep, expected: aExpected, rig: Rig(), releaseMs: 0, reference: referenceWith(frames))
+        XCTAssertEqual(o.metrics.values["lat.n"], 0)
+        XCTAssertEqual(o.metrics.values["lat.unmatched"], 2)
+        XCTAssertNil(o.metrics.values["lat.p50Ms"])
+        XCTAssertTrue(o.metrics.detail.contains("none of 2 receiver edges was answered"), o.metrics.detail)
+    }
+
+    func testLatencyOnlyCountsTheExpectedItems() {
+        // The receiver also moves B; the pad answers it; only A is watched.
+        var rig = Rig()
+        rig.set(state { $0.buttons = [.a, .b] }, at: 200.3)
+        rig.set(PadState(), at: 350.3)
+        let frames = [frame(200) { $0.buttons = [.a, .b] }, frame(350)]
+        var step = aStep
+        var e = DevExpect(); e.times = 1
+        step.expect = e
+        let o = run(step, expected: aExpected, rig: rig, releaseMs: 0, reference: referenceWith(frames))
+        XCTAssertEqual(o.metrics.values["lat.n"], 2)
+        XCTAssertEqual(o.metrics.values["lat.p50Ms"] ?? 0, 0.3, accuracy: 1e-3)
+    }
+
+    /// A flick: out to 0.9 at `t`, back inside 20 ms later, a 5 ms wobble outside again, then rest. The receiver frames
+    /// and the pad mirror each other, the pad `delay` ms late.
+    private func flick(_ rig: inout Rig, _ frames: inout [DevJudge.Reference.Frame], at t: Double, delay: Double) {
+        let seq: [(Double, Double)] = [(0, 0.9), (10, 0.9), (20, 0.0), (25, 0.25), (30, 0.0)]
+        for (dt, x) in seq {
+            frames.append(frame(t + dt) { $0.lx = x })
+            rig.set(state { $0.lx = x }, at: t + dt + delay)
+        }
+    }
+
+    func testLatencyStickOnsetsCountSpringBackWobbleOnce() {
+        var rig = Rig()
+        var frames = [frame(0) { _ in }]
+        // 3 flicks; the first frame of the window is the first onset (the window opens on the first movement).
+        for (i, d) in [0.25, 0.30, 0.35].enumerated() { flick(&rig, &frames, at: 100 + Double(i) * 300, delay: d) }
+        var step = leftStick
+        var e = DevExpect(); e.flicks = 3; e.requireDirections = false
+        step.expect = e
+        let o = run(step, rig: rig, windowMs: 1500, releaseMs: 500, reference: referenceWith(frames))
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["ls.onsets"], 3, "the wobble after the spring-back is not a new flick")
+        XCTAssertEqual(o.metrics.values["lat.n"], 3)
+        XCTAssertEqual(o.metrics.values["lat.unmatched"], 0)
+        XCTAssertEqual(o.metrics.values["lat.p50Ms"] ?? 0, 0.30, accuracy: 1e-3)     // index Int(2 * 0.5 + 0.5) = 1 of [0.25, 0.30, 0.35]
+        XCTAssertEqual(o.metrics.values["lat.maxMs"] ?? 0, 0.35, accuracy: 1e-3)
+        XCTAssertTrue(o.metrics.detail.hasSuffix("latency p50 0.30 ms (n=3, p99 0.35, max 0.35)."), o.metrics.detail)
+        XCTAssertTrue(o.metrics.detail.contains("3 flicks (needs 3)"), o.metrics.detail)
+    }
+
+    func testLatencyStickOnsetAfterAShortRestIsNotAnEdgeButAfterALongOneIs() {
+        // Back inside for 30 ms only, then out again: one onset. Back inside for 80 ms, then out: a second one.
+        let frames = [frame(0) { $0.lx = 0.9 }, frame(10), frame(40) { $0.lx = 0.9 }, frame(50), frame(130) { $0.lx = 0.9 }, frame(140)]
+        let edges = DevLatency.receiverEdges(frames: frames, watch: .init(stick: .left), config: .init())
+        XCTAssertEqual(edges.map(\.tNs), [Rig.ns(0), Rig.ns(130)])
+    }
+
+    func testStickFlickRuleNeedsEnoughFlicksAndRequireDirectionsOffDropsTheCircle() {
+        var rig = Rig()
+        var frames: [DevJudge.Reference.Frame] = []
+        for i in 0..<2 { flick(&rig, &frames, at: 100 + Double(i) * 300, delay: 0.2) }
+        var step = leftStick
+        var e = DevExpect(); e.flicks = 3; e.requireDirections = false
+        step.expect = e
+        assertFail(run(step, rig: rig, windowMs: 1500), containing: "left the dead zone from rest 2 times (needs 3 flicks)")
+        e.flicks = 2
+        step.expect = e
+        assertPass(run(step, rig: rig, windowMs: 1500))
+        // The same flicks fail the circle rule: they never went round.
+        e.flicks = nil; e.requireDirections = nil
+        step.expect = e
+        assertFail(run(step, rig: rig, windowMs: 1500), containing: "never reached")
+    }
+
+    func testLatencyTriggerPullsAndReleasesWithFiveFullPulls() {
+        var rig = Rig()
+        var frames: [DevJudge.Reference.Frame] = []
+        for i in 0..<5 {
+            let b = 100 + Double(i) * 400, d = 0.10 + 0.05 * Double(i)
+            // value / delay: the 0.6 frame is the pull edge (>= 0.5), the 0.0 frame the release edge (<= 0.05)
+            for (dt, v, delay) in [(0.0, 0.3, d), (5.0, 0.6, d), (10.0, 1.0, d), (100.0, 0.4, 0.2), (105.0, 0.0, 0.2)] {
+                frames.append(frame(b + dt) { $0.rt = v })
+                rig.set(state { $0.rt = v }, at: b + dt + delay)
+            }
+        }
+        var step = DevStep(id: "rt", kind: .trigger, controls: ["rt"], title: "t", seconds: 10, releaseSeconds: 0.5)
+        var e = DevExpect(); e.times = 5
+        step.expect = e
+        let o = run(step, rig: rig, windowMs: 2500, releaseMs: 500, reference: referenceWith(frames))
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["rt.pulls"], 5)
+        XCTAssertEqual(o.metrics.values["lat.n"], 10)
+        XCTAssertEqual(o.metrics.values["lat.unmatched"], 0)
+        // pulls 0.10 0.15 0.20 0.25 0.30, releases 0.20 x 5: sorted index 5 of 10 is 0.20
+        XCTAssertEqual(o.metrics.values["lat.p50Ms"] ?? 0, 0.20, accuracy: 1e-3)
+        XCTAssertEqual(o.metrics.values["lat.maxMs"] ?? 0, 0.30, accuracy: 1e-3)
+
+        // Only four pulls: the rule fails and says how many.
+        var four = Rig()
+        for i in 0..<4 { four.reports += rig.reports.filter { $0.tNs >= Rig.ns(100 + Double(i) * 400 - 1) && $0.tNs < Rig.ns(100 + Double(i + 1) * 400 - 1) } }
+        assertFail(run(step, rig: four, windowMs: 2500, releaseMs: 500), containing: "released 4 times (needs 5)")
+        // times 1 (the default) is unchanged: one pull is enough and the old message stays
+        step.expect = nil
+        assertPass(run(step, rig: four, windowMs: 2500, releaseMs: 500))
+    }
+
+    func testLatencyIsLeftOutForRestAndWithoutFrames() {
+        let frames = [frame(200) { $0.buttons = [.a] }, frame(350)]
+        let r = run(rest, rig: Rig(), windowMs: 3000, releaseMs: 0, reference: referenceWith(frames))
+        XCTAssertNil(r.metrics.values["lat.n"])
+        XCTAssertFalse(r.metrics.detail.contains("latency"))
+        let bare = DevJudge.Reference(expectedChanges: 4, firstFrameChangeNs: Rig.ns(300))
+        let d = run(aStep, expected: aExpected, rig: Rig(), releaseMs: 0, reference: bare)
+        XCTAssertNil(d.metrics.values["lat.n"])
+        XCTAssertFalse(d.metrics.detail.contains("latency"))
+    }
+
+    func testLatencyOfAHeldStepSeesTheLetGoInTheTail() {
+        var rig = Rig()
+        holdRT(&rig)       // ramp at 50/100/150 ms, let go at 38 200 ms (in the release tail)
+        let frames = [frame(99.9) { $0.rt = 0.8 }, frame(38_199.8)]
+        let o = run(rtHold, rig: rig, windowMs: holdMs, releaseMs: 500, reference: referenceWith(frames))
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["lat.n"], 2)
+        XCTAssertEqual(o.metrics.values["lat.p50Ms"] ?? 0, 0.2, accuracy: 1e-3)     // [0.1, 0.2], index 1
+    }
+
     func testHeldItemNames() {
         XCTAssertEqual(DevHeldItem(name: "RT"), .trigger(.right))
         XCTAssertEqual(DevHeldItem(name: "lt"), .trigger(.left))
