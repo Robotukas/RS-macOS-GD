@@ -32,8 +32,8 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | Phase | Title | Needs dext replacement? | Status |
 |---|---|---|---|
 | T0 | Probe dext: does it load, does it win the match, one process, raw reads intact, reports in-driver, crash relaunch, downgrade | Probe dext only (4 probe operations; production untouched) | done (passed 2026-11-09, see "T0 results"; probe removed) |
-| T1 | Engine limiter fix (rank 5) and the new baseline | No | ▶ current |
-| T2 | One shared C translator; the engine runs it | No | pending |
+| T1 | Engine limiter fix (rank 5) and the new baseline | No | done (passed 2026-11-09, see "T1 results"; Game Mode baseline still to take) |
+| T2 | One shared C translator; the engine runs it | No | ▶ current |
 | T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | pending |
 | T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | pending |
 | T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | pending |
@@ -1526,6 +1526,25 @@ In-driver delay over 23 strategy-B windows of build 2: rate 919–955/s, worst w
 6. **Crash behaviour:** a tap crash costs about 40 ms of tap input and nothing on the engine path. The in-dext fuse (§6.5) is what stops a crash-on-every-frame loop, since the OS does not.
 7. **T12 (AutoArm)** has no relaunch signal (A25 refuted) and is dropped unless one is found.
 8. **Sleep timer:** GDHub must re-apply the timer after each controller link (outside this plan).
+
+---
+
+## T1 results (2026-11-09): passed, with one extension
+
+All **M**, engine path, Release build 17, owner moving both sticks, Game Mode off.
+
+| Build | Cap | `cap` stage p50 / p99 | Total p50 / p99 | Coalesced | Posts |
+|---|---|---|---|---|---|
+| Before T1 (E1 gate, Game Mode on, §1) | 1000 Hz, measured from post end | 0.65 ms / — | 1.19 / 2.69 ms | 21 % | 217 Hz median |
+| `lastPostAt = tS` only | 1000 Hz | 0.33–0.41 / 0.97–0.98 ms | 0.71–0.76 / 1.78–1.84 ms | 7 % | 246–326 Hz |
+| `lastPostAt = tS` + cap 2000 Hz (shipped) | 2000 Hz | **0.00–0.01 / 0.02–0.03 ms** | **0.29–0.33 / 0.79–1.02 ms** | **0 %** | 235–894 Hz |
+
+- **Pass criteria:** `cap` p50 ≤ 0.05 ms and coalesced < 20 %: met in all six 10 s windows of the shipped build.
+- **Why the one-line fix was not enough.** The receiver delivers on a 1.000 ms grid. With a cap interval of exactly 1.000 ms, about half of consecutive changed frames reach the sink slightly less than one interval after the previous post start and are parked for the flush timer. A cap equal to the source rate can only delay. T1 therefore also raises the runtime default from 1000 to 2000 Hz and the `vpadMaxRateHz` clamp from 60…1000 to 60…4000. Bursts closer than 0.5 ms are still coalesced (unit-tested).
+- **Remaining stages on the engine path (p50):** kernel→callback 0.08, drain 0.09–0.10, cap 0.01, IOConnect 0.19–0.22 ms.
+- **What this does to the takeover's latency case.** §1 estimated the in-dext total at 0.15–0.35 ms p50 and 0.5–1.0 ms p99. The engine path now measures 0.29–0.33 ms p50 and 0.79–1.02 ms p99, inside or next to that range. The latency left for the takeover to win is about 0.1–0.2 ms at p50 (the IOConnect and drain stages) plus a tighter tail (T0: in-driver max ≤ 0.55 ms against 1.5–5.5 ms here). The non-latency gains in §1 are unchanged.
+- **Not yet verified:** the same numbers under confirmed Game Mode (L6: 3 × 10 min). To be taken at the owner's next play session; the engine's immunity to Game Mode was shown in E1.
+- Tests: 189 (8 new in `VirtualPadSinkTests`).
 
 ---
 

@@ -25,6 +25,9 @@ final class ManualScheduler: SinkScheduler {
         let t = Timer(); entries.append(Entry(timer: t, due: now + ns, interval: ns, block: block)); return t
     }
 
+    /// Time passes without any timer firing: stands in for a call that takes `ns` to return (e.g. IOConnect).
+    func elapse(_ ns: UInt64) { now += ns }
+
     var activeTimers: Int { entries.filter { !$0.timer.cancelled }.count }
 
     func advance(by ns: UInt64) { advance(to: now + ns) }
@@ -62,12 +65,15 @@ final class FakeTransport: PadTransport {
     var createResult: kern_return_t = KERN_SUCCESS
     var postResult: kern_return_t = KERN_SUCCESS
     var heartbeatResult: kern_return_t = KERN_SUCCESS
+    /// Simulated duration of one `post` call; the call is recorded at its start time.
+    var postDuration: UInt64 = 0
     init(env: ManualScheduler) { self.env = env }
 
     func createDevice(_ spec: DeviceSpec) -> kern_return_t { calls.append((env.now, .create(spec.productID))); return createResult }
     func destroyDevice(slot: UInt8) -> kern_return_t { calls.append((env.now, .destroy)); return KERN_SUCCESS }
     func post(slot: UInt8, report: [UInt8]) -> kern_return_t {
         calls.append((env.now, .post(report)))
+        env.elapse(postDuration)
         return postResult
     }
     func postNeutral(slot: UInt8) -> kern_return_t { calls.append((env.now, .neutral)); return KERN_SUCCESS }
@@ -159,6 +165,92 @@ final class VirtualPadSinkTests: XCTestCase {
         XCTAssertLessThanOrEqual(n, 251)
         XCTAssertGreaterThan(n, 240, "the cap should be close to 250 Hz under continuous change")
         XCTAssertEqual(transport.posts.last, report1(last), "the last state is always delivered")
+    }
+
+    // MARK: Rate cap measured from post start
+
+    private let slowPost: UInt64 = 400_000          // 0.4 ms of simulated IOConnect time
+
+    func testCapIntervalIsMeasuredFromPostStartNotCompletion() {
+        let sink = publishedSink()
+        transport.postDuration = slowPost
+        let t0 = env.now
+        let a = PadState(lx: 0.2), b = PadState(lx: 0.4)
+        queue.sync {
+            sink.submit(state: a)                                   // starts at t0, returns at t0 + 0.4 ms
+            env.advance(to: t0 + 4_000_000)                         // exactly one cap interval after the start
+            sink.submit(state: b)
+        }
+        XCTAssertEqual(transport.posts, [report1(a), report1(b)])
+        XCTAssertEqual(transport.calls.map(\.at), [t0, t0 + 4_000_000], "no extra cap wait: b starts at t0 + interval")
+    }
+
+    func testTrailingFlushFiresAtStartPlusIntervalWithASlowPost() {
+        let sink = publishedSink()
+        transport.postDuration = slowPost
+        let t0 = env.now
+        let a = PadState(lx: 0.2), b = PadState(lx: 0.4)
+        queue.sync {
+            sink.submit(state: a)
+            env.advance(to: t0 + 1_000_000); sink.submit(state: b)  // inside the window: waits for the flush timer
+            XCTAssertEqual(transport.posts.count, 1)
+            env.advance(to: t0 + 5_000_000)
+        }
+        XCTAssertEqual(transport.posts, [report1(a), report1(b)])
+        XCTAssertEqual(transport.calls.map(\.at), [t0, t0 + 4_000_000], "flush at start + interval, not completion + interval")
+    }
+
+    func testCapStillHoldsWithASlowPost() {
+        let sink = publishedSink()
+        transport.postDuration = slowPost
+        let t0 = env.now
+        var last = PadState()
+        queue.sync {
+            for i in 0..<1000 {
+                env.advance(to: max(env.now, t0 + UInt64(i) * 1_000_000))
+                last = PadState(lx: -1 + 2 * Double(i) / 999, ly: 0.25)
+                sink.submit(state: last)
+            }
+            env.advance(by: 20)
+        }
+        let starts = transport.calls.compactMap { c -> UInt64? in if case .post = c.call { return c.at } else { return nil } }
+        XCTAssertLessThanOrEqual(starts.count, 251)
+        XCTAssertGreaterThan(starts.count, 240)
+        for (x, y) in zip(starts, starts.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(y - x, 4_000_000, "post starts are never closer than the cap interval")
+        }
+        XCTAssertEqual(transport.posts.last, report1(last), "the last state is always delivered")
+    }
+
+    func testFasterChangesAreStillCoalescedWithASlowPost() {
+        let sink = publishedSink()
+        transport.postDuration = slowPost
+        let t0 = env.now
+        let a = PadState(lx: 0.2), b = PadState(lx: 0.4), c = PadState(lx: 0.6)
+        queue.sync {
+            sink.submit(state: a)
+            env.advance(to: t0 + 1_000_000); sink.submit(state: b)
+            env.advance(to: t0 + 2_000_000); sink.submit(state: c)
+            env.advance(to: t0 + 10_000_000)
+        }
+        XCTAssertEqual(transport.posts, [report1(a), report1(c)], "b is coalesced into c")
+    }
+
+    func testNeutralIsImmediateAndDoesNotMoveTheCapWithASlowPost() {
+        let sink = publishedSink()
+        transport.postDuration = slowPost
+        let t0 = env.now
+        queue.sync {
+            sink.submit(state: PadState(lx: 0.2))
+            env.advance(to: t0 + 1_000_000); sink.submit(state: PadState(lx: 0.9))     // pending
+            sink.neutral()
+            XCTAssertEqual(transport.neutrals, 1, "neutral goes out at once, inside the cap window")
+            env.advance(to: t0 + 4_000_000); sink.submit(state: PadState(buttons: .b))
+            env.advance(by: 20)
+        }
+        XCTAssertEqual(transport.posts, [report1(PadState(lx: 0.2)), report1(PadState(buttons: .b))],
+                       "the pending state is discarded by neutral")
+        XCTAssertEqual(transport.calls.last!.at, t0 + 4_000_000, "the next post is still start-of-previous-post + interval")
     }
 
     func testRateCapHonoursAConfiguredLowerRate() {
@@ -613,6 +705,61 @@ final class VirtualPadSinkTests: XCTestCase {
         XCTAssertEqual(transport.calls.last!.at - transport.calls.first!.at, 1_000_000)
     }
 
+    // MARK: 2000 Hz default cap against a jittered 1 kHz source
+
+    func testJitteredOneKilohertzFramesAreAllPostedAtArrivalAt2000Hz() {
+        var cfg = VirtualPadSink.Config(); cfg.maxRateHz = 2000
+        let sink = publishedSink(cfg)
+        transport.postDuration = 300_000                    // 0.3 ms IOConnect
+        let t0 = env.now + 10_000_000
+        var arrivals: [UInt64] = []
+        queue.sync {
+            for k in 1...200 {
+                // 1.000 ms grid, alternating -0.05 / +0.05 ms jitter: gaps of 1.1 and 0.9 ms
+                let t = UInt64(Int64(t0) + Int64(k) * 1_000_000 + (k % 2 == 0 ? -50_000 : 50_000))
+                env.advance(to: max(env.now, t))
+                arrivals.append(env.now)
+                sink.submit(state: PadState(lx: Double(k) / 250))
+            }
+            env.advance(by: 20)
+        }
+        let starts = transport.calls.compactMap { c -> UInt64? in if case .post = c.call { return c.at } else { return nil } }
+        XCTAssertEqual(starts, arrivals, "every changed frame is posted at its own arrival")
+        XCTAssertEqual(env.oneShots.count, 0, "no flush timer was ever needed")
+        XCTAssertEqual(sink.meter.coalesced, 0)
+    }
+
+    func testTwoChangesTwoTenthsOfAMillisecondApartAreStillCoalescedAt2000Hz() {
+        var cfg = VirtualPadSink.Config(); cfg.maxRateHz = 2000
+        let sink = publishedSink(cfg)
+        let t0 = env.now
+        let a = PadState(lx: 0.1), b = PadState(lx: 0.2), c = PadState(lx: 0.3), d = PadState(lx: 0.4)
+        queue.sync {
+            sink.submit(state: a)
+            env.advance(to: t0 + 600_000); sink.submit(state: b)       // past the 0.5 ms interval: posted at once
+            env.advance(to: t0 + 800_000); sink.submit(state: c)       // 0.2 ms after b: parked
+            env.advance(to: t0 + 1_000_000); sink.submit(state: d)     // 0.2 ms after c: replaces it
+            XCTAssertEqual(transport.posts, [report1(a), report1(b)])
+            env.advance(to: t0 + 2_000_000)
+        }
+        XCTAssertEqual(transport.posts, [report1(a), report1(b), report1(d)], "c is coalesced into d")
+        XCTAssertEqual(transport.calls.last!.at, t0 + 1_100_000, "flush at the previous post's start + 0.5 ms")
+        XCTAssertEqual(sink.meter.coalesced, 1)
+    }
+
+    func testQuarterMillisecondIntervalNeverArmsAPastTimerOrSpins() {
+        var cfg = VirtualPadSink.Config(); cfg.maxRateHz = 4000
+        let sink = publishedSink(cfg)
+        let t0 = env.now
+        queue.sync {
+            sink.submit(state: PadState(lx: 0.1))
+            env.advance(to: t0 + 100_000); sink.submit(state: PadState(lx: 0.2))
+            env.advance(to: t0 + 1_000_000)
+        }
+        XCTAssertEqual(env.oneShots.map(\.ns), [150_000], "one timer, for exactly the remaining 0.15 ms")
+        XCTAssertEqual(transport.calls.map(\.at), [t0, t0 + 250_000])
+    }
+
     func testOnlyTheFlushTimersAreStrict() {
         let sink = publishedSink()
         let a = PadState(lx: 0.2), b = PadState(lx: 0.4)
@@ -632,9 +779,9 @@ final class VirtualPadSinkTests: XCTestCase {
         XCTAssertEqual(env.oneShots.map(\.strict), [true, false, false], "the recreate timer is not strict")
     }
 
-    func testTheRuntimeRateDefaultsTo1000AndIsClamped() {
+    func testTheRuntimeRateDefaultsTo2000AndIsClamped() {
         XCTAssertEqual(VirtualPadSink.Config().maxRateHz, 250, "Config's own default keeps the tests' meaning")
-        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 1000, "unset key")
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 2000, "unset key")
         defaults.set(125.0, forKey: VirtualPadSink.maxRateKey)
         XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 125)
         defaults.set(Float(500), forKey: VirtualPadSink.maxRateKey)
@@ -642,9 +789,11 @@ final class VirtualPadSinkTests: XCTestCase {
         defaults.set(5.0, forKey: VirtualPadSink.maxRateKey)
         XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 60)
         defaults.set(9000.0, forKey: VirtualPadSink.maxRateKey)
-        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 1000)
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 4000)
+        defaults.set(1500.0, forKey: VirtualPadSink.maxRateKey)
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 1500)
         defaults.set("fast", forKey: VirtualPadSink.maxRateKey)
-        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 1000, "not a number")
+        XCTAssertEqual(VirtualPadSink.runtimeMaxRateHz(defaults: defaults), 2000, "not a number")
     }
 
     // MARK: Latency meter wiring (latency plan §3)

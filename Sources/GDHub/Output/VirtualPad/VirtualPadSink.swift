@@ -123,13 +123,15 @@ final class VirtualPadSink: @unchecked Sendable {
 
     /// `UserDefaults` key for the runtime rate cap (Hz), read when the sink is built.
     static let maxRateKey = "vpadMaxRateHz"
-    static let runtimeDefaultRateHz = 1000.0
+    static let runtimeDefaultRateHz = 2000.0
 
-    /// The cap GDHub runs with: `vpadMaxRateHz` clamped to 60…1000, 1000 when unset or not a finite number.
+    /// The cap GDHub runs with: `vpadMaxRateHz` clamped to 60…4000, 2000 when unset or not a finite number.
+    /// The default is twice the receiver's 1 kHz report rate on purpose: a cap equal to the source rate parks about half
+    /// of the jittered frames for the flush timer and can only delay them.
     /// `Config()` itself stays at 250 Hz so the unit tests keep their meaning.
     static func runtimeMaxRateHz(defaults: UserDefaults = .standard) -> Double {
         guard let v = (defaults.object(forKey: maxRateKey) as? NSNumber)?.doubleValue, v.isFinite else { return runtimeDefaultRateHz }
-        return min(max(v, 60), 1000)
+        return min(max(v, 60), 4000)
     }
 
     /// Queue-confined counters, read by the Driver menu's status poller.
@@ -488,7 +490,7 @@ final class VirtualPadSink: @unchecked Sendable {
         lastSentState = s
         if posted {
             let tR = clock()
-            lastPostAt = tR
+            lastPostAt = tS             // the cap spaces post STARTS; measuring from tR would add the IOConnect time to every gap
             stats.flushes += 1
             if let stamp { meter.record(tK: stamp.tK, tC: stamp.tC, tD: stamp.tD, tS: tS, tR: tR) }
         }

@@ -1,5 +1,5 @@
 <section class="card" id="plain-summary">
-<p class="status">Approved 2026-11-09 · T0 passed and the test driver is removed · T1 next</p>
+<p class="status">Approved 2026-11-09 · T0 and T1 passed · T2 next</p>
 <h2>In plain words</h2>
 <h3>Where it stands</h3>
 <ul>
@@ -7,6 +7,7 @@
 <li><b>Crash test:</b> the test driver was crashed 7 times in 27 seconds. macOS restarted it in about 0.04 seconds each time, did not restart the Mac, and the engine never lost the controller.</li>
 <li><b>Rollback works:</b> macOS accepted an older driver version, and removing the test driver handed the interface back to Apple's handler at once.</li>
 <li>The test driver is removed. The installed driver is still build 17 and nothing in the real driver has changed yet.</li>
+<li><b>T1, the rate-limiter fix, passed.</b> The engine's typical delay is now about 0.3 ms (it was 1.19 ms this morning), with no driver change. That is already close to what the takeover was estimated to reach, so what the takeover still adds is mostly robustness and a tighter worst case, not a lower typical delay.</li>
 </ul>
 <h3>What the plan does</h3>
 <ul>
@@ -16,14 +17,14 @@
 </ul>
 <h3>What you get</h3>
 <div class="tw"><table>
-<thead><tr><th></th><th>Today</th><th>After takeover (estimate)</th></tr></thead>
+<thead><tr><th></th><th>This morning</th><th>Now, after T1 (measured)</th><th>After takeover (estimate)</th></tr></thead>
 <tbody>
-<tr><td>Typical delay</td><td>1.19 ms</td><td>0.2–0.35 ms</td></tr>
-<tr><td>99 of 100 updates under</td><td>2.69 ms</td><td>0.5–1.0 ms</td></tr>
-<tr><td>Rare 3–9 ms gaps</td><td>present</td><td>still present: T0 showed they come from the receiver, before macOS sees the data</td></tr>
+<tr><td>Typical delay</td><td>1.19 ms</td><td>0.29–0.33 ms</td><td>0.2–0.35 ms</td></tr>
+<tr><td>99 of 100 updates under</td><td>2.69 ms</td><td>0.8–1.0 ms</td><td>0.5–1.0 ms</td></tr>
+<tr><td>Rare 3–9 ms gaps</td><td>present</td><td>present</td><td>still present: T0 showed they come from the receiver, before macOS sees the data</td></tr>
 </tbody></table></div>
 <ul>
-<li>About 0.65 ms of that gain comes from a one-line fix to our own rate limiter (step T1), which needs no driver change.</li>
+<li>The T1 numbers were measured with Game Mode off; the same check under Game Mode is still to do at your next play session.</li>
 <li>The main gain is that the controller keeps working if the engine crashes or hangs.</li>
 </ul>
 <h3>Steps</h3>

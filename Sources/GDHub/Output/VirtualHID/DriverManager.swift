@@ -108,7 +108,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
         self.agent = agent ?? EngineAgent()
         let backend: DextBackend = mode == .inApp ? (injected ?? DextClient(queue: vhidQueue)) : InertDext()
         dext = backend
-        // 1000 Hz unless `defaults write com.interlinked.gdhub vpadMaxRateHz -float <60…1000>` says otherwise; read here, so
+        // 2000 Hz unless `defaults write com.interlinked.gdhub vpadMaxRateHz -float <60…4000>` says otherwise; read here, so
         // changing it needs a relaunch. `Config()` itself stays at 250 Hz.
         var config = VirtualPadSink.Config()
         config.maxRateHz = VirtualPadSink.runtimeMaxRateHz()

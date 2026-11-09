@@ -49,7 +49,7 @@ details.toc a{text-decoration:none}
 <main>
 <p class="note">GDHub · generated from <code>docs/plans/receiver-takeover-plan.md</code>, which is the source of truth</p>
 <section class="card" id="plain-summary">
-<p class="status">Approved 2026-11-09 · T0 passed and the test driver is removed · T1 next</p>
+<p class="status">Approved 2026-11-09 · T0 and T1 passed · T2 next</p>
 <h2>In plain words</h2>
 <h3>Where it stands</h3>
 <ul>
@@ -57,6 +57,7 @@ details.toc a{text-decoration:none}
 <li><b>Crash test:</b> the test driver was crashed 7 times in 27 seconds. macOS restarted it in about 0.04 seconds each time, did not restart the Mac, and the engine never lost the controller.</li>
 <li><b>Rollback works:</b> macOS accepted an older driver version, and removing the test driver handed the interface back to Apple's handler at once.</li>
 <li>The test driver is removed. The installed driver is still build 17 and nothing in the real driver has changed yet.</li>
+<li><b>T1, the rate-limiter fix, passed.</b> The engine's typical delay is now about 0.3 ms (it was 1.19 ms this morning), with no driver change. That is already close to what the takeover was estimated to reach, so what the takeover still adds is mostly robustness and a tighter worst case, not a lower typical delay.</li>
 </ul>
 <h3>What the plan does</h3>
 <ul>
@@ -66,14 +67,14 @@ details.toc a{text-decoration:none}
 </ul>
 <h3>What you get</h3>
 <div class="tw"><table>
-<thead><tr><th></th><th>Today</th><th>After takeover (estimate)</th></tr></thead>
+<thead><tr><th></th><th>This morning</th><th>Now, after T1 (measured)</th><th>After takeover (estimate)</th></tr></thead>
 <tbody>
-<tr><td>Typical delay</td><td>1.19 ms</td><td>0.2–0.35 ms</td></tr>
-<tr><td>99 of 100 updates under</td><td>2.69 ms</td><td>0.5–1.0 ms</td></tr>
-<tr><td>Rare 3–9 ms gaps</td><td>present</td><td>still present: T0 showed they come from the receiver, before macOS sees the data</td></tr>
+<tr><td>Typical delay</td><td>1.19 ms</td><td>0.29–0.33 ms</td><td>0.2–0.35 ms</td></tr>
+<tr><td>99 of 100 updates under</td><td>2.69 ms</td><td>0.8–1.0 ms</td><td>0.5–1.0 ms</td></tr>
+<tr><td>Rare 3–9 ms gaps</td><td>present</td><td>present</td><td>still present: T0 showed they come from the receiver, before macOS sees the data</td></tr>
 </tbody></table></div>
 <ul>
-<li>About 0.65 ms of that gain comes from a one-line fix to our own rate limiter (step T1), which needs no driver change.</li>
+<li>The T1 numbers were measured with Game Mode off; the same check under Game Mode is still to do at your next play session.</li>
 <li>The main gain is that the controller keeps working if the engine crashes or hangs.</li>
 </ul>
 <h3>Steps</h3>
@@ -186,6 +187,7 @@ details.toc a{text-decoration:none}
 <li><a href="#what-t0-changes-in-this-plan">What T0 changes in this plan</a></li>
 </ul>
 </li>
+<li><a href="#t1-results-2026-11-09-passed-with-one-extension">T1 results (2026-11-09): passed, with one extension</a></li>
 <li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
 <li><a href="#review-resolution">Review resolution</a></li>
 </ul>
@@ -235,13 +237,13 @@ details.toc a{text-decoration:none}
 <td>T1</td>
 <td>Engine limiter fix (rank 5) and the new baseline</td>
 <td>No</td>
-<td>▶ current</td>
+<td>done (passed 2026-11-09, see "T1 results"; Game Mode baseline still to take)</td>
 </tr>
 <tr>
 <td>T2</td>
 <td>One shared C translator; the engine runs it</td>
 <td>No</td>
-<td>pending</td>
+<td>▶ current</td>
 </tr>
 <tr>
 <td>T3</td>
@@ -3084,6 +3086,55 @@ The last line must be `status is now on` or `Game mode enabled`.
 <li><strong>T12 (AutoArm)</strong> has no relaunch signal (A25 refuted) and is dropped unless one is found.</li>
 <li><strong>Sleep timer:</strong> GDHub must re-apply the timer after each controller link (outside this plan).</li>
 </ol>
+<hr />
+<h2 id="t1-results-2026-11-09-passed-with-one-extension">T1 results (2026-11-09): passed, with one extension</h2>
+<p>All <span class="tag">M</span>, engine path, Release build 17, owner moving both sticks, Game Mode off.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Build</th>
+<th>Cap</th>
+<th><code>cap</code> stage p50 / p99</th>
+<th>Total p50 / p99</th>
+<th>Coalesced</th>
+<th>Posts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Before T1 (E1 gate, Game Mode on, §1)</td>
+<td>1000 Hz, measured from post end</td>
+<td>0.65 ms / —</td>
+<td>1.19 / 2.69 ms</td>
+<td>21 %</td>
+<td>217 Hz median</td>
+</tr>
+<tr>
+<td><code>lastPostAt = tS</code> only</td>
+<td>1000 Hz</td>
+<td>0.33–0.41 / 0.97–0.98 ms</td>
+<td>0.71–0.76 / 1.78–1.84 ms</td>
+<td>7 %</td>
+<td>246–326 Hz</td>
+</tr>
+<tr>
+<td><code>lastPostAt = tS</code> + cap 2000 Hz (shipped)</td>
+<td>2000 Hz</td>
+<td><strong>0.00–0.01 / 0.02–0.03 ms</strong></td>
+<td><strong>0.29–0.33 / 0.79–1.02 ms</strong></td>
+<td><strong>0 %</strong></td>
+<td>235–894 Hz</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Pass criteria:</strong> <code>cap</code> p50 ≤ 0.05 ms and coalesced &lt; 20 %: met in all six 10 s windows of the shipped build.</li>
+<li><strong>Why the one-line fix was not enough.</strong> The receiver delivers on a 1.000 ms grid. With a cap interval of exactly 1.000 ms, about half of consecutive changed frames reach the sink slightly less than one interval after the previous post start and are parked for the flush timer. A cap equal to the source rate can only delay. T1 therefore also raises the runtime default from 1000 to 2000 Hz and the <code>vpadMaxRateHz</code> clamp from 60…1000 to 60…4000. Bursts closer than 0.5 ms are still coalesced (unit-tested).</li>
+<li><strong>Remaining stages on the engine path (p50):</strong> kernel→callback 0.08, drain 0.09–0.10, cap 0.01, IOConnect 0.19–0.22 ms.</li>
+<li><strong>What this does to the takeover's latency case.</strong> §1 estimated the in-dext total at 0.15–0.35 ms p50 and 0.5–1.0 ms p99. The engine path now measures 0.29–0.33 ms p50 and 0.79–1.02 ms p99, inside or next to that range. The latency left for the takeover to win is about 0.1–0.2 ms at p50 (the IOConnect and drain stages) plus a tighter tail (T0: in-driver max ≤ 0.55 ms against 1.5–5.5 ms here). The non-latency gains in §1 are unchanged.</li>
+<li><strong>Not yet verified:</strong> the same numbers under confirmed Game Mode (L6: 3 × 10 min). To be taken at the owner's next play session; the engine's immunity to Game Mode was shown in E1.</li>
+<li>Tests: 189 (8 new in <code>VirtualPadSinkTests</code>).</li>
+</ul>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
 <div class="tw"><table>
