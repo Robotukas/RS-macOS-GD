@@ -1,0 +1,234 @@
+{
+  "complete" : true,
+  "effectivePath" : "live",
+  "endedAt" : "2026-11-09T14:10:09:40+01:00",
+  "header" : {
+    "appBuild" : "41",
+    "decodeTable" : {
+      "placements" : [
+
+      ],
+      "reports" : [
+
+      ]
+    },
+    "dextBuild" : "7",
+    "engineBuild" : "41",
+    "guiMode" : "engine",
+    "mapping" : {
+      "buttons" : {
+
+      },
+      "physicalBits" : {
+
+      },
+      "sticks" : {
+
+      }
+    },
+    "mappingHash" : "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+    "padIdentity" : "xbox-bt16-02e0",
+    "readerMatched" : 1,
+    "templateId" : "sample",
+    "templateSha256" : "abababababababababababababababababababababababababababababababab",
+    "templateVersion" : 2,
+    "vpadMaxRateHz" : 1000,
+    "xlateCore" : "c"
+  },
+  "notes" : [
+    "fixture"
+  ],
+  "pathEvents" : [
+    {
+      "armed" : "live",
+      "liveUnavailable" : false,
+      "tMs" : 0
+    }
+  ],
+  "requestedPath" : "driver",
+  "schema" : 1,
+  "startedAt" : "2026-11-09T14:10:05+01:00",
+  "steps" : [
+    {
+      "attempts" : [
+        {
+          "effectivePath" : {
+            "atEnd" : "live",
+            "atReady" : "live",
+            "atStart" : "live"
+          },
+          "entryRaw" : [
+
+          ],
+          "metrics" : {
+            "detail" : "",
+            "expectedChanges" : 4,
+            "framesPerSecond" : 60,
+            "framesSeen" : 180,
+            "lossRatio" : 1,
+            "movingMs" : 1200,
+            "onsetMs" : 9,
+            "padChanged" : 4,
+            "padReports" : 160,
+            "rawDropped" : 0,
+            "values" : {
+              "bit.falls" : 2,
+              "bit.rises" : 2
+            }
+          },
+          "pathUnconfirmed" : false,
+          "raw" : [
+            {
+              "bytes" : "01 00 80",
+              "id" : 1,
+              "phase" : "ready",
+              "tMs" : -20
+            },
+            {
+              "bytes" : "01 01 80",
+              "id" : 1,
+              "phase" : "window",
+              "tMs" : 310.5
+            }
+          ],
+          "readyNs" : 3000000000,
+          "startedNs" : 1000000000,
+          "superseded" : false,
+          "verdict" : {
+            "verdict" : "pass"
+          },
+          "windowEndNs" : 6500000000,
+          "windowStartNs" : 3500000000
+        }
+      ],
+      "controls" : [
+        "lb"
+      ],
+      "expected" : {
+        "buttons" : [
+          "LB"
+        ],
+        "guide" : false
+      },
+      "index" : 0,
+      "kind" : "digital",
+      "stepId" : "lb"
+    },
+    {
+      "attempts" : [
+        {
+          "effectivePath" : {
+            "atEnd" : "live",
+            "atReady" : "live",
+            "atStart" : "live"
+          },
+          "entryRaw" : [
+
+          ],
+          "metrics" : {
+            "detail" : "",
+            "expectedChanges" : 40,
+            "framesPerSecond" : 30,
+            "framesSeen" : 90,
+            "lossRatio" : 0.025,
+            "movingMs" : 1200,
+            "padChanged" : 1,
+            "padReports" : 10,
+            "rawDropped" : 0,
+            "values" : {
+              "bit.falls" : 0,
+              "bit.rises" : 0
+            }
+          },
+          "pathUnconfirmed" : false,
+          "raw" : [
+            {
+              "bytes" : "01 00 80",
+              "id" : 1,
+              "phase" : "ready",
+              "tMs" : -20
+            },
+            {
+              "bytes" : "01 01 80",
+              "id" : 1,
+              "phase" : "window",
+              "tMs" : 310.5
+            }
+          ],
+          "readyNs" : 3000000000,
+          "startedNs" : 1000000000,
+          "superseded" : true,
+          "verdict" : {
+            "reason" : "first try",
+            "verdict" : "inconclusive"
+          },
+          "windowEndNs" : 6500000000,
+          "windowStartNs" : 3500000000
+        },
+        {
+          "effectivePath" : {
+            "atEnd" : "live",
+            "atReady" : "live",
+            "atStart" : "live"
+          },
+          "entryRaw" : [
+
+          ],
+          "metrics" : {
+            "detail" : "",
+            "expectedChanges" : 40,
+            "framesPerSecond" : 58.333333333333336,
+            "framesSeen" : 175,
+            "lossRatio" : 0.75,
+            "movingMs" : 1200,
+            "onsetMs" : 4,
+            "padChanged" : 30,
+            "padReports" : 250,
+            "rawDropped" : 0,
+            "values" : {
+              "bit.falls" : 15,
+              "bit.rises" : 15
+            }
+          },
+          "pathUnconfirmed" : false,
+          "raw" : [
+            {
+              "bytes" : "01 00 80",
+              "id" : 1,
+              "phase" : "ready",
+              "tMs" : -20
+            },
+            {
+              "bytes" : "01 01 80",
+              "id" : 1,
+              "phase" : "window",
+              "tMs" : 310.5
+            }
+          ],
+          "readyNs" : 3000000000,
+          "startedNs" : 1000000000,
+          "superseded" : false,
+          "verdict" : {
+            "reason" : "trigger peak 0.62 (needs 0.90)",
+            "verdict" : "fail"
+          },
+          "windowEndNs" : 6500000000,
+          "windowStartNs" : 3500000000
+        }
+      ],
+      "controls" : [
+        "rt"
+      ],
+      "expected" : {
+        "buttons" : [
+
+        ],
+        "guide" : false
+      },
+      "index" : 1,
+      "kind" : "trigger",
+      "stepId" : "rt"
+    }
+  ],
+  "t0Ns" : 1000000000
+}

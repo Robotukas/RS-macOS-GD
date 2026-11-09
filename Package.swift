@@ -29,7 +29,8 @@ let package = Package(
         .testTarget(
             name: "GDHubTests",
             dependencies: ["GDHub", "GDHubXlate", "GDHubDextCore"],
-            path: "Tests/GDHubTests"
+            path: "Tests/GDHubTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )
