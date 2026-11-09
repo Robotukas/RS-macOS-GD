@@ -62,6 +62,13 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     var onFrame: ((GamepadFrame, ControlMapping, LatencyStamp) -> Void)?
     /// Called when `status` changes: asleep, receiver idle and disconnected all mean "pad neutral".
     var onStatusChange: ((Status) -> Void)?
+    /// Developer mode: every parsed report 0x06 with its kernel timestamp (ns on `LatencyMeter.nowNs()`), on the main
+    /// actor, before the 125 Hz publish cap. Set only while a run is going, so a normal session pays nothing for it.
+    var frameTap: ((GamepadFrame, UInt64) -> Void)?
+    /// Developer mode needs the driver manager (input path, engine pid, tap status); the app sets it at launch.
+    var driverForDeveloper: DriverManager?
+    /// Developer mode: non-nil while the mode is on. Exclusive with the layout editor and the guided learn.
+    @Published private(set) var dev: DevSession?
 
     private let store: MappingStore
     private var latestFrame = GamepadFrame()
@@ -155,6 +162,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         latestFrame = new
         hasFrame = true
         onFrame?(new, mapping, stamp)
+        frameTap?(new, stamp.tK != 0 ? stamp.tK : LatencyMeter.nowNs())
         publish(new)
         learn?.feed(new, now: now)
     }
@@ -189,6 +197,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     private var layoutBeforeEdit: ControlLayout?
 
     func beginEditingLayout() {
+        guard dev == nil else { return }
         layoutBeforeEdit = layout
         layout?.writePreEditSnapshot()
         editor.isEditing = true
@@ -282,7 +291,28 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
 
     func cancelLearn() { learn?.cancel() }
 
+    // MARK: Developer mode
+
+    /// Switches Developer mode on. Cancels a learn in progress; refuses while the layout is being edited, while it is
+    /// already on, or when there is no driver manager to run against.
+    @discardableResult
+    func beginDeveloper() -> Bool {
+        guard dev == nil, !editor.isEditing, let driver = driverForDeveloper else { return false }
+        cancelLearn()
+        dev = DevSession(device: self, driver: driver)
+        return true
+    }
+
+    /// Switches Developer mode off: stops a run (which writes its report and restores the input path), closes the pad
+    /// reader and drops the session.
+    func endDeveloper() {
+        guard let session = dev else { return }
+        session.shutDown()
+        dev = nil
+    }
+
     private func beginLearn(controls: [ControlLayout.Control], mode: LearnSession.Mode) {
+        guard dev == nil else { return }
         learn?.cancel()
         let session = LearnSession(
             controls: controls, mode: mode, baseline: latestFrame,

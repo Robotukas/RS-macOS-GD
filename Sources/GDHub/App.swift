@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import IOKit.hid
 import Combine
+import os
 
 /// Owns the HID monitor and device modules and routes reports to them.
 @MainActor
@@ -64,6 +65,18 @@ final class AppModel: ObservableObject {
         }
         monitor.start()
         envision.recoverInterruptedEditIfNeeded()
+        envision.driverForDeveloper = driver
+        // A Developer run that never finished (crash, kill) left the input path switched: put it back.
+        if let note = DevInputPathControl().restoreOnLaunchIfNeeded(mode: mode) {
+            Logger(subsystem: "com.interlinked.gdhub", category: "devmode").notice("\(note, privacy: .public)")
+        }
+        // Cmd-Q in the middle of a run: write the report and put the input path back before the process ends, in every
+        // mode (the in-app observer below only deals with the pad).
+        let devTerminate = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.envision.dev?.finishForTermination() }
+        }
+        lifecycleObservers.append(devTerminate)
         if mode == .inApp { wireVirtualPad() }
         // The engine could not start: this session owns the pad itself (E1 fallback).
         driver.onFallbackToInApp = { [weak self] in self?.wireVirtualPad() }
@@ -89,7 +102,7 @@ final class AppModel: ObservableObject {
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { driver.prepareForTermination() }
         }
-        lifecycleObservers = [sleep, terminate]
+        lifecycleObservers += [sleep, terminate]
     }
 }
 
