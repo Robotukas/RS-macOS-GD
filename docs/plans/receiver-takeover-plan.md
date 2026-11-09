@@ -31,8 +31,8 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 
 | Phase | Title | Needs dext replacement? | Status |
 |---|---|---|---|
-| T0 | Probe dext: does it load, does it win the match, one process, raw reads intact, reports in-driver, crash relaunch, downgrade | Probe dext only (4 probe operations; production untouched) | ▶ current (T0.1: probe written, sign-only build passes; not installed) |
-| T1 | Engine limiter fix (rank 5) and the new baseline | No | pending |
+| T0 | Probe dext: does it load, does it win the match, one process, raw reads intact, reports in-driver, crash relaunch, downgrade | Probe dext only (4 probe operations; production untouched) | done (passed 2026-11-09, see "T0 results"; probe removed) |
+| T1 | Engine limiter fix (rank 5) and the new baseline | No | ▶ current |
 | T2 | One shared C translator; the engine runs it | No | pending |
 | T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | pending |
 | T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | pending |
@@ -43,7 +43,7 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending |
 | T10 | Rumble (after the 0x09 capture) | Yes | pending |
 | T11 | Macro overlay (MERGE with TTL) and D8 slots under the root | Yes | pending |
-| T12 | AutoArm: pad with no user process (optional; needs a measured relaunch signal) | Yes | pending |
+| T12 | AutoArm: pad with no user process (optional; needs a measured relaunch signal) | Yes | blocked (T0.3: no in-dext relaunch signal) |
 
 ---
 
@@ -1461,7 +1461,7 @@ Closed by the SDK headers:
 
 ---
 
-## T0 results (2026-11-09, in progress)
+## T0 results (2026-11-09): passed, probe removed
 
 All **M**, probe dext `com.interlinked.gdhub.TapProbe`. Raw captures are in `~/GDHub-rollback/T0-facts/` (not in the repo).
 
@@ -1488,7 +1488,44 @@ Other findings:
 - **Upgrade with `IOUserServerOneProcess` keeps the old process.** After the 1 → 2 replacement sysextd reported `activated enabled` for build 2 and `terminating for upgrade` for build 1, but the build-1 process stayed (its root service is still matched) and the re-probed tap started in it again, running build-1 code. The production upgrade path therefore depends on devTerminate ending the old process (A18); for the probe it takes a reboot.
 - Parallels Desktop can capture the whole receiver for a VM; while it does, no macOS driver is attached to any interface.
 
-### T0.3–T0.5: pending
+### T0.3 crash drill (probe build 2, `PROBE_CRASH=1`): passed, with more crashes than planned
+
+The owner held the chord longer than 2 s. Each relaunched process saw the chord still held and crashed again, so there were **7 crashes in 27 s** (12:17:39–12:18:06) against the planned "at most 3, 2 min apart". The drill had no guard for a hold already in progress; a later drill must require a release first.
+
+| Question | Result |
+|---|---|
+| A9: relaunch | **Relaunched every time, about 40 ms after the trap** (crash 12:17:39.684, new process's `tap start` 12:17:39.724). kernelmanagerd relaunches it; the kernel logs `Driver … has crashed N time(s)` and `Corpse allowed 1 of 5`. |
+| Who gets interface 3 | **The probe, at once, without a power cycle.** Apple's event driver never attached in between. |
+| OS response | **None.** No reboot, no throttling, no user-visible message after 7 crashes in 27 s. 7 `.ips` reports in `/Library/Logs/DiagnosticReports`. R9/R21 stay as risks, with this as the measured floor. |
+| Engine during crashes | **Unaffected.** No `controller interface down` line; `cb(all frames)` stayed at 906–918 Hz. The engine fallback does not depend on the tap's process. |
+| Start order | **Any order.** In 2 of 7 relaunches the tap's Start ran before the root's (`rootSeen=0 rootPid=0`), in the same process. The §4.3 registry must not assume the root is first. |
+| A25: `IODEXTMatchCount` as relaunch signal | **Refuted.** It stayed 5 on IOUserResources and unchanged in the receiver tree. No crash counter is exposed in the registry either. The root's registry entry ID does change on relaunch (0x100001a07 → 0x100001a4c), which user space can see but the dext cannot. **T12 has no measured in-dext relaunch signal, so T12 is not done** unless a later phase finds one. |
+| Gaps | The largest gap between frames per 10 s window is 3.0–5.0 ms and is the same in the kernel timestamps and in arrival times (difference ≤ 0.12 ms). The gaps come from before the kernel timestamp (radio/receiver/USB), so the takeover cannot remove them. |
+
+In-driver delay over 23 strategy-B windows of build 2: rate 919–955/s, worst window p99 ≤ 0.28 ms, worst max 0.55 ms.
+
+### T0.4 downgrade: passed
+
+- A23 **holds**: `probe: replacing 2 -> 1`, then `systemextensionsctl list` showed 0.1.0/1 `activated enabled` and 0.1.0/2 `terminating for upgrade via delegate`.
+- As in the 1 → 2 upgrade, the old process kept running and re-took interface 3, so the lower version would only have run after a reboot. That reboot was skipped: the pass criterion is the accepted request.
+- Because build 1 never ran in a fresh process with the capture on, **A8 stays indirect**. Related direct evidence: when the probe was deactivated, Apple's event driver was back on interface 3 within seconds, without a power cycle.
+
+### T0.5 removal: passed
+
+- `--dev-probe-dext deactivate` returned "will complete after reboot", but the probe's process exited at once (`tap stop`, `root stop`), the extension left `systemextensionsctl list`, its directory left `/Library/SystemExtensions`, and Apple's driver re-attached to interface 3. No reboot and no password prompt were needed.
+- Probe target, requester, `--probe` mode and `Xcode/probe-build` are removed; the app was rebuilt with `--same-build` (production dext still 17). `receiver-check --expect-if3 AppleUserHIDEventDriver` passes; `gcprobe`, `sdlmatch` and the SCUF rows of `hidutil list` match the T0.1 baseline.
+- Reboots used in T0: **one** (to start probe build 2), against a budget of four.
+
+### What T0 changes in this plan
+
+1. **A10 is refuted.** New personalities are probed at once. Upgrade and rollback steps that wait for a power cycle before checking the binding can check immediately; the power cycle stays as a robustness check only.
+2. **Dext logs are live-only.** Every check that reads dext lines (L2, L8, L10, the T4–T7 live checks) needs a `log stream` capture started first, and every dext log line must stay under about 250 characters. `log stream` can drop lines, so counters that matter must also be readable through status2.
+3. **L3 uses the tap's own counters** (`poolMiss`, `readdFail`), not the registry `DebugState`. The rate criterion is "equal to the engine's `cb(all frames)` rate in the same window", not 940–970/s.
+4. **Upgrades:** with `IOUserServerOneProcess` the old process survives a replacement and takes the interface again with the old code. §7.1 must end the old process with devTerminate (A18) before judging the new build; otherwise it takes a reboot.
+5. **Rollback by deactivation is immediate** for a dext whose services can all be stopped.
+6. **Crash behaviour:** a tap crash costs about 40 ms of tap input and nothing on the engine path. The in-dext fuse (§6.5) is what stops a crash-on-every-frame loop, since the OS does not.
+7. **T12 (AutoArm)** has no relaunch signal (A25 refuted) and is dropped unless one is found.
+8. **Sleep timer:** GDHub must re-apply the timer after each controller link (outside this plan).
 
 ---
 

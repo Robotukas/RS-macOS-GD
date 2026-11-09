@@ -1,0 +1,37 @@
+<section class="card" id="plain-summary">
+<p class="status">Approved 2026-11-09 · T0 passed and the test driver is removed · T1 next</p>
+<h2>In plain words</h2>
+<h3>Where it stands</h3>
+<ul>
+<li><b>T0, the throwaway test driver, passed.</b> macOS loads our driver with the extra permission, it wins the receiver's controller interface over Apple's handler, both driver parts share one process, and it reads every controller update while the app's own reader keeps working. Games saw no change.</li>
+<li><b>Crash test:</b> the test driver was crashed 7 times in 27 seconds. macOS restarted it in about 0.04 seconds each time, did not restart the Mac, and the engine never lost the controller.</li>
+<li><b>Rollback works:</b> macOS accepted an older driver version, and removing the test driver handed the interface back to Apple's handler at once.</li>
+<li>The test driver is removed. The installed driver is still build 17 and nothing in the real driver has changed yet.</li>
+</ul>
+<h3>What the plan does</h3>
+<ul>
+<li><b>How it takes over:</b> our driver gets a second part that attaches to the receiver's controller interface in place of Apple's generic handler. It reads the controller data there and drives the virtual Xbox pad itself.</li>
+<li><b>What stays as it is:</b> Apple's USB driver stays underneath, so the app's live view, learn mode, battery and sleep timer keep working. The audio interfaces are not touched.</li>
+<li><b>The background engine:</b> it stops forwarding and becomes the supervisor and automatic fallback. One command switches back to it at any time, and it stays the default until a play test passes.</li>
+</ul>
+<h3>What you get</h3>
+<div class="tw"><table>
+<thead><tr><th></th><th>Today</th><th>After takeover (estimate)</th></tr></thead>
+<tbody>
+<tr><td>Typical delay</td><td>1.19 ms</td><td>0.2–0.35 ms</td></tr>
+<tr><td>99 of 100 updates under</td><td>2.69 ms</td><td>0.5–1.0 ms</td></tr>
+<tr><td>Rare 3–9 ms gaps</td><td>present</td><td>still present: T0 showed they come from the receiver, before macOS sees the data</td></tr>
+</tbody></table></div>
+<ul>
+<li>About 0.65 ms of that gain comes from a one-line fix to our own rate limiter (step T1), which needs no driver change.</li>
+<li>The main gain is that the controller keeps working if the engine crashes or hangs.</li>
+</ul>
+<h3>Steps</h3>
+<ol>
+<li><b>T0, test driver:</b> done.</li>
+<li><b>T1–T2, app only:</b> the limiter fix, then one shared translation core that the engine runs first.</li>
+<li><b>T3–T7, driver:</b> move the pad, add the new part switched off, run it in shadow mode beside the engine, then switch it live.</li>
+<li><b>T8, gate:</b> measurements plus your play test. Only then does the driver path become the default.</li>
+<li><b>T9–T11, later:</b> rumble and macros. Running with no app process at all (T12) is blocked: the test found no way for the driver to tell a fresh start from a restart after a crash.</li>
+</ol>
+</section>
