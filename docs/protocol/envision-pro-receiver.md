@@ -106,6 +106,24 @@ Tool: `scuf-envision/tools/bragi.swift` (`bragi <target>:<hex> …`). Transport:
 Sequence used to change the sleep timer (all acknowledged with status 0, read back correctly):
 `09:01030002` → `09:010e00<ms LE32>` → `09:01030001`. Not yet confirmed: persistence across a controller power cycle, and whether the new timer is honoured without OpenLinkHub's extra `01 03 00 04` step.
 
+## G keys, Start and Profile: what each press sends (captured 2026-11-09)
+
+Two identical passes with `scuf-envision/tools/hidcap` over the Slipstream receiver, factory profile, short presses.
+
+| Key | Report 0x06 (interface 3) | Report 0x11 (interface 4, Consumer) |
+|---|---|---|
+| G1 | button 12 | nothing |
+| G2 | button 13 | `11 02` on press, `11 00` on release: **volume down** (bit 1) |
+| G3 | button 14 | `11 01` / `11 00`: **volume up** (bit 0) |
+| G4 | button 15 | `11 04` / `11 00`: **mute** (bit 2) |
+| G5 | button 16 | nothing |
+| Start (centre) | button 11 | nothing |
+| Profile | button 17 | nothing |
+
+- For G2–G4 the button and the media key arrive in the same millisecond, on two different interfaces. macOS acts on the media key through Apple's event driver on interface 4. To make a remapped G2–G4 stop changing the volume, that media-key path has to be intercepted; the button on interface 3 is unaffected by that.
+- A short press of Profile produced no other report on either interface. Whether it switched the controller's stored profile (which would change what the paddles and SAX echo) was not checked in this capture.
+- In one earlier pass an accidental squeeze showed `LB` (button 5) together with extra bit 4 (SAX left). The table above lists SAX left's echo as button 1 (A), so either the stored profile differs from the factory one or that table is wrong for SAX; to be checked before the paddle/SAX remap step.
+
 ## Windows reference: what Corsair's own software does (observed 2026-11-09)
 
 Read from a Windows 11 guest with iCUE 5.42.70 installed (Parallels, read-only queries and iCUE's driver `.inf` files; no binaries were opened).
