@@ -28,7 +28,7 @@ Of the 32 candidate lessons, 14 were refuted in review. Most of the others turne
 
 Five bigger ideas were rejected: moving work into the dext, real-time threads, task QoS tiers, moving the engine to SMAppService, and swapping the user-client entitlement. At p50 1.19 ms against Shadow's 10 ms joystick poll, each would cost far more than it could return.
 
-**Owner direction, 2026-11-09 (after this research was started).** The owner asked for the dext to take over the receiver's controller interface (interface 3), on the grounds that only this controller uses the receiver. The review below rejected that as a latency fix (§3, *in-dext-usb-interface-claim*): about 0.5 ms of typical gain, with the app's raw-data reads to rebuild. Whether to go ahead anyway is the owner's decision and is open.
+**Owner direction, 2026-11-09 (after this research was started).** The owner asked for the dext to take over the receiver's controller interface (interface 3), on the grounds that only this controller uses the receiver. The review below rejected that as a latency fix (§3, *in-dext-usb-interface-claim*): about 0.5 ms of typical gain, with the app's raw-data reads to rebuild. Whether to go ahead anyway is the owner's decision and is open. The takeover plan is `docs/plans/receiver-takeover-plan.md` (written the same day; not yet approved).
 
 ---
 
