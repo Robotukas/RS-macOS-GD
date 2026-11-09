@@ -337,6 +337,52 @@ final class DevRunCoreTests: XCTestCase {
         XCTAssertLessThan(a.windowEndNs - a.windowStartNs, 4_000_000_000, "ended early")
     }
 
+    /// The owner's first real run: rolling until the ring fills, letting go only afterwards. The release tail must
+    /// stretch until the stick is back at rest instead of judging a still-deflected stick after 0.5 s.
+    func testStickRolledUntilTheRingFillsPassesOnceReleased() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.leftStick])
+        r.untilGo()
+        // Keep circling for 5.6 s: past the 5 s window and past the nominal 0.5 s tail.
+        for i in 0..<1120 {
+            let a = Double(i) / 300 * 2 * .pi
+            var f = GamepadFrame.idle
+            f.x = Int16(30000 * cos(a)); f.y = Int16(30000 * sin(a))
+            var s = PadState()
+            s.lx = 0.9 * cos(a); s.ly = -0.9 * sin(a)
+            r.frame = f
+            r.advance(5)
+            r.setPad(s)
+        }
+        XCTAssertEqual(r.core.state, .step(index: 0, phase: .release), "still waiting for the release")
+        r.releaseAll(hold: 100)
+        r.advance(1000)
+        XCTAssertEqual(r.core.state, .finished)
+        XCTAssertEqual(r.verdict(0), .pass, r.core.results[0][0]?.attempts.last?.metrics.detail ?? "")
+    }
+
+    /// Never letting go ends the step after the grace, with the honest failure.
+    func testStickNeverReleasedFailsAfterTheReleaseGrace() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.leftStick])
+        r.untilGo()
+        for i in 0..<2000 {
+            let a = Double(i) / 300 * 2 * .pi
+            var f = GamepadFrame.idle
+            f.x = Int16(30000 * cos(a)); f.y = Int16(30000 * sin(a))
+            var s = PadState()
+            s.lx = 0.9 * cos(a); s.ly = -0.9 * sin(a)
+            r.frame = f
+            r.advance(5)
+            r.setPad(s)
+        }
+        XCTAssertEqual(r.core.state, .finished)
+        guard case .fail(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertTrue(why.contains("outside the dead zone"), why)
+    }
+
     func testRestStepJudgesTheFullWindow() {
         let r = Rig()
         r.prepare()

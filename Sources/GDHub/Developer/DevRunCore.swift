@@ -237,6 +237,9 @@ struct DevRunCore {
         /// Reports still on their way from the reader when a window ends.
         static let grace: UInt64 = 30_000_000
         static let backRestartsWithin: UInt64 = 1_000_000_000
+        /// The release tail stretches until the control has been at rest for `restForEarlyEnd`, up to this much
+        /// beyond its nominal length: an owner who rolls the stick until the ring fills needs a moment to let go.
+        static let releaseGrace: UInt64 = 3_000_000_000
         static let liveEvery: UInt64 = 250_000_000
     }
 
@@ -694,7 +697,17 @@ struct DevRunCore {
         guard let c = cur, let end = c.releaseEndNs ?? c.windowEndNs else { return }
         switch state {
         case .step(_, .release):
-            if now >= end { setPhase(.judging, now: now) }
+            if now >= end {
+                // Nominal tail over: judge as soon as the control has been at rest long enough, or give up after the grace.
+                let atRest = !c.wantedNowActive && (c.lastWantedActiveNs.map { now >= $0 && now - $0 >= Timing.restForEarlyEnd } ?? true)
+                let hardEnd = (c.windowEndNs ?? end) + UInt64(rs.map { $0.step.effectiveReleaseSeconds * 1e9 } ?? 0) + Timing.releaseGrace
+                if atRest || now >= hardEnd {
+                    cur!.releaseEndNs = now
+                    setPhase(.judging, now: now)
+                } else {
+                    return
+                }
+            }
         default: break
         }
         if case .step(_, .judging) = state, now >= end + Timing.grace {
@@ -877,16 +890,17 @@ struct DevRunCore {
               let ws = cur!.windowStartNs, t >= ws else { return }
         cur!.frameTimes.append(t)
         if changed { cur!.refChanges.append(t) }
-        if phase2 == .window {
-            let act = wantedActive(r, f, sum.pad)
-            if act {
+        // Tracked in the release phase too: the tail ends when the control has come back to rest.
+        let act = wantedActive(r, f, sum.pad)
+        if act {
+            if phase2 == .window {
                 if !cur!.wantedNowActive { cur!.wantedRises += 1 }
                 cur!.wantedActiveSeen = true
-                cur!.lastWantedActiveNs = t
                 cur!.evalVersion += 1
             }
-            cur!.wantedNowActive = act
+            cur!.lastWantedActiveNs = t
         }
+        cur!.wantedNowActive = act
     }
 
     // MARK: Pad reports
@@ -1275,7 +1289,10 @@ struct DevRunCore {
             case .window:
                 return (r.step.title, r.step.detail, secs, c.windowStartNs)
             case .release:
-                return ("Let go", "Keep it released.", UInt64(r.step.effectiveReleaseSeconds * 1e9), c.windowEndNs)
+                let nominal = UInt64(r.step.effectiveReleaseSeconds * 1e9)
+                let overdue = c.windowEndNs.map { now >= $0 + nominal } ?? false
+                return ("Let go now", overdue ? "Waiting for the control to come back to rest." : "Release it and keep your hands off.",
+                        nominal + Timing.releaseGrace, c.windowEndNs)
             case .judging:
                 return ("Checking…", "", nil, nil)
             }
