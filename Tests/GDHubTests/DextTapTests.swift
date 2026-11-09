@@ -224,7 +224,7 @@ final class DextCoreTapTests: XCTestCase {
         XCTAssertEqual(d.framesIgnored, 5); XCTAssertEqual(d.framesBad, 6); XCTAssertEqual(d.poolMiss, 7)
         XCTAssertEqual(d.readdFail, 8); XCTAssertEqual(d.openFailures, 9)
         XCTAssertEqual(d.k2d, DextMeterSummary(count: 9000, p50Ns: 60_000, p99Ns: 110_000, maxNs: 400_000, meanNs: 65_400))
-        XCTAssertEqual(d.tapLogText, "tap: state=1/1 opened=1 frames=31483360 r06=31483000 other=360 poolMiss=7 readdFail=8 openFail=9 k2d p50/p99/max/mean 60/110/400/65.4 us")
+        XCTAssertEqual(d.tapLogText, "tap: state=1/1 opened=1 frames=31483360 r06=31483000 other=360 poolMiss=7 readdFail=8 openFail=9 starts=4 frees=0 k2d p50/p99/max/mean 60/110/400/65.4 us")
     }
 
     func testNoTapMeansNoTapText() throws {

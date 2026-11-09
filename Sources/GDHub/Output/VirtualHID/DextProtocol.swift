@@ -245,6 +245,7 @@ struct DextStatus2: Equatable {
         if openFailures > 0 { t += " openFail=\(openFailures)" }
         if closeFailures > 0 { t += " closeFail=\(closeFailures)" }
         if reopens > 0 { t += " reopens=\(reopens)" }
+        if tapStarts > 0 { t += " starts=\(tapStarts) frees=\(tapFrees)" }   // starts == frees + live instances when nothing leaks
         if k2d.count > 0 { t += " k2d p50/p99/max/mean \(k2d.microsecondsText) us" }
         if tapPid != 0 && tapPid != rootPid { t += " tapPid=\(tapPid)!=rootPid" }
         return t

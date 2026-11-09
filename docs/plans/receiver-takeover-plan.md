@@ -35,8 +35,8 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T1 | Engine limiter fix (rank 5) and the new baseline | No | done (passed 2026-11-09, see "T1 results"; Game Mode baseline still to take) |
 | T2 | One shared C translator; the engine runs it | No | done (passed 2026-11-09, see "T2 results"; 10 min play check still to do) |
 | T3 | Root owns the pad; registry; fixed-length post buffers; DextClient matching fix | Yes | done (passed 2026-11-09, dext builds 18 and 19, see "T3 results") |
-| T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | ▶ current |
-| T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | pending |
+| T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | done (passed 2026-11-09, dext builds 20–22, see "T4 results") |
+| T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | ▶ current |
 | T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | pending |
 | T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | pending |
 | T8 | Gate and play test; LIVE becomes the default | No | pending |
@@ -1600,6 +1600,40 @@ All **M**. Dext lines were read from a `log stream` capture started before each 
 **Pre-install review** (independent, before build 18): no blocker; four findings fixed before install (`CreatePad` no longer assumes `Create` waits for Start, finer meter buckets plus mean, neutral before destroy, slot emptied on every `createDevice` failure).
 
 Tests: 295. Rollback copy of the T2 app: `~/GDHub-rollback/T3-pre/`.
+
+---
+
+## T4 results (2026-11-09): passed (production dext builds 20, 21 and 22)
+
+All **M**. Dext lines from a `log stream` capture; counters from status2 through the engine's meter line.
+
+| Check | Result |
+|---|---|
+| A2/A3 in production | Build 20 loads with `transport.hid`. `GDHubReceiverTap` holds interface 3 only, IOProbeScore **8200** (as predicted in §2.2); interface 4 stays `AppleUserHIDEventDriver`. The tap attached at once after each upgrade, without a power cycle. |
+| L2 one process | One `com.interlinked.gdhub.VirtualHID` process; `tap start … pid=` equals the root's pid. |
+| Starts INERT | `tap: state=0/0 opened=0 frames=0` after every upgrade and every engine start that did not ask for COUNT. |
+| COUNT (L3) | `inputPath = count` is picked up within 1 s (A20 holds); `tap open rc=0x0` 1 ms after `setForwarding(COUNT)`. Frames in the tap equal the engine's `cb(all frames)` rate (9538 against 9515 per 10 s); `r06` = all frames; `poolMiss` 0 over 2.4 million frames. k2d mean 49–95 µs, p99 ≤ 125–225 µs, max ≤ 0.38 ms. |
+| A24 poke path | `tap close (inert)` is logged in the same millisecond as the engine's `setForwarding(INERT)`, with the tick at 1 s, so the DispatchAsync poke did the work. |
+| Close / re-Open | COUNT → INERT → COUNT on one instance: frames resume, `poolMiss` stays 0 (a fresh pool per Open), `reopens` counts it. |
+| Owner loss | `kill -9` of the engine while counting: `client stop` → `tap close (inert)` at once. The restarted engine armed COUNT again (same dext instance, new engine run). |
+| L8 with the tap attached (A18) | 20 → 21: `devTerminate` → `pad stop` → `tap stop #1` → `tap free #1` → `root stop`; the process exited and build 21 answered 4 s after U4. `Terminate` works on a matched service called from inside the dext. |
+| L9 rollback | 21 → 19 with the archived T3 app: the old app drove the new dext through hello and devTerminate; build 19 `activated enabled` after 4 s; interface 3 back on `AppleUserHIDEventDriver` at once. Forward again 19 → 22 in 4 s. |
+| L4 raw readers | Engine `cb(all frames)` 909–955 Hz in INERT and in COUNT; the battery read on interface 4 works. |
+| L5 device lists | `gcprobe` and `sdlmatch` identical to T0.1; `hidutil list` loses only the raw 0xFF58 `AppleUserHIDEventService` row; the 02E0 pad rows are unchanged (accept). |
+| S1 soak in COUNT | 22 controller off/on cycles and 3 Mac sleep/wake cycles: the same dext pid throughout, no new crash report (27 before and after, all from 2026-11-08), binding correct at every link-up, `starts=23 frees=22` (one live instance, no leak). The 10 sleep-timer cycles were not run (the T0 run showed a timer sleep is the same re-enumeration as a power-off). |
+| Mac sleep (A13 in production) | `SetPowerState flags=0x0` with the interface open at sleep; on wake a new instance starts and opens again by itself because COUNT is still asked for in the same process. The old instance's `tap stop`/`tap free` lines are not in the capture (the stream loses lines across sleep), but the `frees` counter accounts for them. |
+| Attach timing | `tap: attached 118–119 ms after the controller interface came up` (n=1 each run). The F2 grace of max(1 s, 3 × p99) is therefore 1 s. |
+| Dext replacements | 19 → 20 → 21 → 19 → 22: four, none needing a reboot or a prompt. |
+
+**Pre-install review** (independent): no blocker and no crash path. Fixed before install: the engine re-arming COUNT after a dext relaunch (now a nonce trip: no re-arm across dext instances until `inputPath` changes or the engine restarts), 10 Hz status2 polling on the posting queue (now at most 1 Hz while armed), pool bookkeeping across Close/re-Open, ownership check on selector 9, action reference cycles (the tap is freed on Stop; `client free` shows the user client is too), the one-way terminating flag, self-terminate for unregistered taps, adaptive tick (50 ms busy, 1 s idle).
+
+**Not verified:**
+- A seized device (a user-space client opening 0xFF58 with seize): the Open-retry path has only unit tests.
+- The nonce trip against a real dext crash (no crash occurred).
+- "Restart driver (dev)" with the tap personality installed (documented as "reboot afterwards").
+- The controller's sleep timer still read 3,600,000 ms after 22 power cycles, unlike the T0 run where it had reset to 600,000; what reset it then is unknown.
+
+**State left:** `inputPath = engine` (tap attached, INERT). Rollback copy of the T3 app: `~/GDHub-rollback/T4-pre/`. Tests: 363.
 
 ---
 

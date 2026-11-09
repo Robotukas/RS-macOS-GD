@@ -49,7 +49,7 @@ details.toc a{text-decoration:none}
 <main>
 <p class="note">GDHub · generated from <code>docs/plans/receiver-takeover-plan.md</code>, which is the source of truth</p>
 <section class="card" id="plain-summary">
-<p class="status">Approved 2026-11-09 · T0 to T3 passed · installed driver is build 19 · T4 next</p>
+<p class="status">Approved 2026-11-09 · T0 to T4 passed · installed driver is build 22 · T5 next</p>
 <h2>In plain words</h2>
 <h3>Where it stands</h3>
 <ul>
@@ -57,6 +57,7 @@ details.toc a{text-decoration:none}
 <li><b>Crash test:</b> the test driver was crashed 7 times in 27 seconds. macOS restarted it in about 0.04 seconds each time, did not restart the Mac, and the engine never lost the controller.</li>
 <li><b>Rollback works:</b> macOS accepted an older driver version, and removing the test driver handed the interface back to Apple's handler at once.</li>
 <li>The test driver is removed.</li>
+<li><b>T4, the takeover part inside the real driver, passed.</b> It is attached to the receiver's controller interface and switched off by default. In its counting-only test mode it saw every controller update with no misses. It survived 22 controller off/on cycles and 3 Mac sleeps with no crash, and the driver was upgraded, rolled back and upgraded again without a reboot. The engine still does all the real work.</li>
 <li><b>T3, the first real driver change, passed.</b> The virtual pad is now owned by the driver itself. The driver was replaced twice (17 → 18 → 19) without a reboot. Force-quitting the engine still removes the pad at once, freezing it still releases all controls after 2 seconds, and the last hop inside the driver costs about a millionth of a second.</li>
 <li><b>T2, the shared translator, passed.</b> The engine now translates the controller data with the same code the driver will use later. It gives byte-identical output to the old translator on a million test inputs, and a side-by-side measurement showed no difference in delay.</li>
 <li><b>T1, the rate-limiter fix, passed.</b> The engine's typical delay is now about 0.3 ms (it was 1.19 ms this morning), with no driver change. That is already close to what the takeover was estimated to reach, so what the takeover still adds is mostly robustness and a tighter worst case, not a lower typical delay.</li>
@@ -192,6 +193,7 @@ details.toc a{text-decoration:none}
 <li><a href="#t1-results-2026-11-09-passed-with-one-extension">T1 results (2026-11-09): passed, with one extension</a></li>
 <li><a href="#t2-results-2026-11-09-passed">T2 results (2026-11-09): passed</a></li>
 <li><a href="#t3-results-2026-11-09-passed-production-dext-builds-18-and-19">T3 results (2026-11-09): passed (production dext builds 18 and 19)</a></li>
+<li><a href="#t4-results-2026-11-09-passed-production-dext-builds-20-21-and-22">T4 results (2026-11-09): passed (production dext builds 20, 21 and 22)</a></li>
 <li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
 <li><a href="#review-resolution">Review resolution</a></li>
 </ul>
@@ -259,13 +261,13 @@ details.toc a{text-decoration:none}
 <td>T4</td>
 <td>Tap in production, INERT and COUNT only; soak; upgrade and rollback drills</td>
 <td>Yes</td>
-<td>▶ current</td>
+<td>done (passed 2026-11-09, dext builds 20–22, see "T4 results")</td>
 </tr>
 <tr>
 <td>T5</td>
 <td>Translator inside the dext, SHADOW only; mapping blob</td>
 <td>Yes</td>
-<td>pending</td>
+<td>▶ current</td>
 </tr>
 <tr>
 <td>T6</td>
@@ -3246,6 +3248,86 @@ The last line must be `status is now on` or `Game mode enabled`.
 - Anything written for T4–T7 that relies on "external methods are serialized with the watchdog" is wrong; anything that relies on "external methods are serialized with root methods" is right.</p>
 <p><strong>Pre-install review</strong> (independent, before build 18): no blocker; four findings fixed before install (<code>CreatePad</code> no longer assumes <code>Create</code> waits for Start, finer meter buckets plus mean, neutral before destroy, slot emptied on every <code>createDevice</code> failure).</p>
 <p>Tests: 295. Rollback copy of the T2 app: <code>~/GDHub-rollback/T3-pre/</code>.</p>
+<hr />
+<h2 id="t4-results-2026-11-09-passed-production-dext-builds-20-21-and-22">T4 results (2026-11-09): passed (production dext builds 20, 21 and 22)</h2>
+<p>All <span class="tag">M</span>. Dext lines from a <code>log stream</code> capture; counters from status2 through the engine's meter line.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A2/A3 in production</td>
+<td>Build 20 loads with <code>transport.hid</code>. <code>GDHubReceiverTap</code> holds interface 3 only, IOProbeScore <strong>8200</strong> (as predicted in §2.2); interface 4 stays <code>AppleUserHIDEventDriver</code>. The tap attached at once after each upgrade, without a power cycle.</td>
+</tr>
+<tr>
+<td>L2 one process</td>
+<td>One <code>com.interlinked.gdhub.VirtualHID</code> process; <code>tap start … pid=</code> equals the root's pid.</td>
+</tr>
+<tr>
+<td>Starts INERT</td>
+<td><code>tap: state=0/0 opened=0 frames=0</code> after every upgrade and every engine start that did not ask for COUNT.</td>
+</tr>
+<tr>
+<td>COUNT (L3)</td>
+<td><code>inputPath = count</code> is picked up within 1 s (A20 holds); <code>tap open rc=0x0</code> 1 ms after <code>setForwarding(COUNT)</code>. Frames in the tap equal the engine's <code>cb(all frames)</code> rate (9538 against 9515 per 10 s); <code>r06</code> = all frames; <code>poolMiss</code> 0 over 2.4 million frames. k2d mean 49–95 µs, p99 ≤ 125–225 µs, max ≤ 0.38 ms.</td>
+</tr>
+<tr>
+<td>A24 poke path</td>
+<td><code>tap close (inert)</code> is logged in the same millisecond as the engine's <code>setForwarding(INERT)</code>, with the tick at 1 s, so the DispatchAsync poke did the work.</td>
+</tr>
+<tr>
+<td>Close / re-Open</td>
+<td>COUNT → INERT → COUNT on one instance: frames resume, <code>poolMiss</code> stays 0 (a fresh pool per Open), <code>reopens</code> counts it.</td>
+</tr>
+<tr>
+<td>Owner loss</td>
+<td><code>kill -9</code> of the engine while counting: <code>client stop</code> → <code>tap close (inert)</code> at once. The restarted engine armed COUNT again (same dext instance, new engine run).</td>
+</tr>
+<tr>
+<td>L8 with the tap attached (A18)</td>
+<td>20 → 21: <code>devTerminate</code> → <code>pad stop</code> → <code>tap stop #1</code> → <code>tap free #1</code> → <code>root stop</code>; the process exited and build 21 answered 4 s after U4. <code>Terminate</code> works on a matched service called from inside the dext.</td>
+</tr>
+<tr>
+<td>L9 rollback</td>
+<td>21 → 19 with the archived T3 app: the old app drove the new dext through hello and devTerminate; build 19 <code>activated enabled</code> after 4 s; interface 3 back on <code>AppleUserHIDEventDriver</code> at once. Forward again 19 → 22 in 4 s.</td>
+</tr>
+<tr>
+<td>L4 raw readers</td>
+<td>Engine <code>cb(all frames)</code> 909–955 Hz in INERT and in COUNT; the battery read on interface 4 works.</td>
+</tr>
+<tr>
+<td>L5 device lists</td>
+<td><code>gcprobe</code> and <code>sdlmatch</code> identical to T0.1; <code>hidutil list</code> loses only the raw 0xFF58 <code>AppleUserHIDEventService</code> row; the 02E0 pad rows are unchanged (accept).</td>
+</tr>
+<tr>
+<td>S1 soak in COUNT</td>
+<td>22 controller off/on cycles and 3 Mac sleep/wake cycles: the same dext pid throughout, no new crash report (27 before and after, all from 2026-11-08), binding correct at every link-up, <code>starts=23 frees=22</code> (one live instance, no leak). The 10 sleep-timer cycles were not run (the T0 run showed a timer sleep is the same re-enumeration as a power-off).</td>
+</tr>
+<tr>
+<td>Mac sleep (A13 in production)</td>
+<td><code>SetPowerState flags=0x0</code> with the interface open at sleep; on wake a new instance starts and opens again by itself because COUNT is still asked for in the same process. The old instance's <code>tap stop</code>/<code>tap free</code> lines are not in the capture (the stream loses lines across sleep), but the <code>frees</code> counter accounts for them.</td>
+</tr>
+<tr>
+<td>Attach timing</td>
+<td><code>tap: attached 118–119 ms after the controller interface came up</code> (n=1 each run). The F2 grace of max(1 s, 3 × p99) is therefore 1 s.</td>
+</tr>
+<tr>
+<td>Dext replacements</td>
+<td>19 → 20 → 21 → 19 → 22: four, none needing a reboot or a prompt.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Pre-install review</strong> (independent): no blocker and no crash path. Fixed before install: the engine re-arming COUNT after a dext relaunch (now a nonce trip: no re-arm across dext instances until <code>inputPath</code> changes or the engine restarts), 10 Hz status2 polling on the posting queue (now at most 1 Hz while armed), pool bookkeeping across Close/re-Open, ownership check on selector 9, action reference cycles (the tap is freed on Stop; <code>client free</code> shows the user client is too), the one-way terminating flag, self-terminate for unregistered taps, adaptive tick (50 ms busy, 1 s idle).</p>
+<p><strong>Not verified:</strong>
+- A seized device (a user-space client opening 0xFF58 with seize): the Open-retry path has only unit tests.
+- The nonce trip against a real dext crash (no crash occurred).
+- "Restart driver (dev)" with the tap personality installed (documented as "reboot afterwards").
+- The controller's sleep timer still read 3,600,000 ms after 22 power cycles, unlike the T0 run where it had reset to 600,000; what reset it then is unknown.</p>
+<p><strong>State left:</strong> <code>inputPath = engine</code> (tap attached, INERT). Rollback copy of the T3 app: <code>~/GDHub-rollback/T4-pre/</code>. Tests: 363.</p>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
 <div class="tw"><table>

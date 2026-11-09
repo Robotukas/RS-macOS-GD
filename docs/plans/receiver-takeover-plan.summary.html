@@ -1,5 +1,5 @@
 <section class="card" id="plain-summary">
-<p class="status">Approved 2026-11-09 · T0 to T3 passed · installed driver is build 19 · T4 next</p>
+<p class="status">Approved 2026-11-09 · T0 to T4 passed · installed driver is build 22 · T5 next</p>
 <h2>In plain words</h2>
 <h3>Where it stands</h3>
 <ul>
@@ -7,6 +7,7 @@
 <li><b>Crash test:</b> the test driver was crashed 7 times in 27 seconds. macOS restarted it in about 0.04 seconds each time, did not restart the Mac, and the engine never lost the controller.</li>
 <li><b>Rollback works:</b> macOS accepted an older driver version, and removing the test driver handed the interface back to Apple's handler at once.</li>
 <li>The test driver is removed.</li>
+<li><b>T4, the takeover part inside the real driver, passed.</b> It is attached to the receiver's controller interface and switched off by default. In its counting-only test mode it saw every controller update with no misses. It survived 22 controller off/on cycles and 3 Mac sleeps with no crash, and the driver was upgraded, rolled back and upgraded again without a reboot. The engine still does all the real work.</li>
 <li><b>T3, the first real driver change, passed.</b> The virtual pad is now owned by the driver itself. The driver was replaced twice (17 → 18 → 19) without a reboot. Force-quitting the engine still removes the pad at once, freezing it still releases all controls after 2 seconds, and the last hop inside the driver costs about a millionth of a second.</li>
 <li><b>T2, the shared translator, passed.</b> The engine now translates the controller data with the same code the driver will use later. It gives byte-identical output to the old translator on a million test inputs, and a side-by-side measurement showed no difference in delay.</li>
 <li><b>T1, the rate-limiter fix, passed.</b> The engine's typical delay is now about 0.3 ms (it was 1.19 ms this morning), with no driver change. That is already close to what the takeover was estimated to reach, so what the takeover still adds is mostly robustness and a tighter worst case, not a lower typical delay.</li>
