@@ -54,3 +54,10 @@ The user pressed every control once on the physical SCUF; the recorder saw the v
 | 18 s hard left-stick circling | 3649 value changes, 199/s average | under the 250/s cap |
 
 Note: during the mapping session on 2026-11-08 the paddles echoed as D-pad directions and SAX as A/B. Tonight they echo as X/A/Y/B and LB/RB, so the controller was on a different onboard profile. The passthrough forwards whatever the onboard profile emits; pressing the Profile button changes it. GDHub's own remapping (using the paddle/SAX identity bits, independent of the onboard profile) arrives with the mapping engine.
+
+## Shadow PC, 2026-11-09 00:22 (identity `xbox-bt16-02e0`)
+
+- **Detection:** Shadow's stream client (SDL2 2.24) lists our pad as controller 1, "Xbox One S Controller (Bluetooth)", plugged into Windows as an Xbox One pad (`~/.shadow/shadow.log`: `ask OCapture to plug gamepad 1 XboxOne as XboxOne`, state PLUGGED). Screenshot: `shadow-gamepad-list.jpg`.
+- **Second pad:** controller 2 is "Xbox 360 Controller" (wired). That is Razer's virtual pad (045E:028E), not ours.
+- **USB forwarding conflict:** at session start ShadowUSB auto-forwarded the SCUF receiver (`onDeviceForwarded`, IORegistry `UsbExclusiveOwner = "pid 808, ShadowUSB"`). While forwarded, macOS loses the receiver's HID interfaces, so GDHub gets no input and the virtual pad stays neutral. Fix: Shadow quick menu › Control › USB › untick "SCUF Envision Pro Wireless USB Receiver V2". After unticking, the log shows `Successfully unforwarded` and the HID interfaces return. Whether Shadow remembers this for the next session is not yet confirmed.
+- **Pending (needs the user in a game):** every input in Windows, latency compared with the USB-forwarded path, Guide button, rumble (D5 not built).
