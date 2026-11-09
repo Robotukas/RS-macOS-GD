@@ -1,6 +1,6 @@
 # Developer mode: guided, recorded test runs
 
-Status: **step 1 built and in use** (2026-11-09 evening: 7 commits, 705 Swift + 11 Python tests; first real runs found and fixed a release-tail timing rule, a UInt64 trap on early-stamped frames, a clipped panel; added the focused single-view drawing, the `paddles-sax-echo` template and the "who drives the controller" wording). Plan v2 below is the spec it was built to.
+Status: **step 1 built and in use** (2026-11-09 evening: 7 commits, 705 Swift + 11 Python tests; first real runs found and fixed a release-tail timing rule, a UInt64 trap on early-stamped frames, a clipped panel; added the focused single-view drawing, the `paddles-sax-echo` template and the "who drives the controller" wording). Step 2a (held steps + `toggleInputPath` actions, `t7-rt-hold-toggle`) followed the same night and closed the T7 hand-over check. Plan v2 below is the spec it was built to.
 Mockup: `docs/mockups/developer-mode.html` (v1; the differences listed under "Mockup corrections" apply).
 Decisions taken with the owner's "continue": **A** a third toolbar button next to "Edit layout"; **B** sound last,
 off by default; **C** build order below. Owner's rules for this feature, verbatim: "it would highlight what to press

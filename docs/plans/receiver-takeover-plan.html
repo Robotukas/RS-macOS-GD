@@ -198,7 +198,7 @@ details.toc a{text-decoration:none}
 <li><a href="#t4-results-2026-11-09-passed-production-dext-builds-20-21-and-22">T4 results (2026-11-09): passed (production dext builds 20, 21 and 22)</a></li>
 <li><a href="#t5-results-2026-11-09-passed-production-dext-build-23">T5 results (2026-11-09): passed (production dext build 23)</a></li>
 <li><a href="#t6-results-2026-11-09-passed-app-only-dext-build-23-unchanged">T6 results (2026-11-09): passed (app only; dext build 23 unchanged)</a></li>
-<li><a href="#t7-results-2026-11-09-in-progress-live-engaged-and-verified-on-production-dext-build-24">T7 results (2026-11-09, in progress): LIVE engaged and verified on production dext build 24</a></li>
+<li><a href="#t7-results-2026-11-09-passed-production-dext-build-24-developer-mode-built-the-same-evening-to-run-the-checks">T7 results (2026-11-09): passed (production dext build 24; Developer mode built the same evening to run the checks)</a></li>
 <li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
 <li><a href="#review-resolution">Review resolution</a></li>
 </ul>
@@ -284,13 +284,13 @@ details.toc a{text-decoration:none}
 <td>T7</td>
 <td>LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together)</td>
 <td>Yes (+1 fix replacement allowed)</td>
-<td>▶ current</td>
+<td>✓ done</td>
 </tr>
 <tr>
 <td>T8</td>
 <td>Gate and play test; LIVE becomes the default</td>
 <td>No</td>
-<td>pending</td>
+<td>▶ current</td>
 </tr>
 <tr>
 <td>T9</td>
@@ -3479,7 +3479,7 @@ The last line must be `status is now on` or `Game mode enabled`.
 <p><strong>Found while checking (not part of this plan):</strong> the mapping editor binds an on-screen control to a physical button; it has no "this control acts as that button" remap. Re-learning G1 with Y pressed therefore made the G1 drawing light up with Y and left the physical G1 button unbound. G1 was restored to button 12. Remapping G-keys and paddles to pad buttons is the "mapping engine" item on the to-do list; GDHM v1 already allows two sources per output item, so the translator side exists.</p>
 <p>Tests: 478.</p>
 <hr />
-<h2 id="t7-results-2026-11-09-in-progress-live-engaged-and-verified-on-production-dext-build-24">T7 results (2026-11-09, in progress): LIVE engaged and verified on production dext build 24</h2>
+<h2 id="t7-results-2026-11-09-passed-production-dext-build-24-developer-mode-built-the-same-evening-to-run-the-checks">T7 results (2026-11-09): passed (production dext build 24; Developer mode built the same evening to run the checks)</h2>
 <div class="tw"><table>
 <thead>
 <tr>
@@ -3517,12 +3517,52 @@ The last line must be `status is now on` or `Game mode enabled`.
 <td>The <code>full</code> template pressed Profile twice before the paddles, and the echo set changed between the App and Driver runs (D-pad/B → A X Y B/RB); SAX left has now shown A, LB and X on different occasions. The echo is whatever the controller's current profile sends, as the protocol notes suspected. <code>full</code> now has Profile last; <code>docs/protocol/envision-pro-receiver.md</code> updated. For the remap step: identify paddles and SAX by their extra bits, never by the echoed button.</td>
 </tr>
 <tr>
+<td>12 hand-overs App ↔ Driver with RT held (M)</td>
+<td><code>t7-rt-hold-toggle</code> template (the app toggles <code>inputPath</code> every 3 s while the owner holds RT; <code>dev-runs/2026-11-09T23-22-22_engine_t7-rt-hold-toggle.json</code>): 12/12 switches followed by the engine (6× live, 6× inert; driver write → shadow 0.7 s → live 2.1 s; engine write → inert 0.7 s). At every switch the pad showed the design's switch neutral and the new source's full-state repost <strong>0.39–0.87 ms</strong> later; RT at full otherwise; no stuck input. The held rule now reports releases under 5 ms as "switch blips".</td>
+</tr>
+<tr>
+<td>L10 stall drill (M)</td>
+<td><code>tapDrill pause5</code> in LIVE 23:05:37.301 → <code>fallback: tap stalled</code> 23:05:37.597 (<strong>296 ms</strong>) → COUNT; <code>fallback cleared</code> +5 s → SHADOW → LIVE 2.1 s later.</td>
+</tr>
+<tr>
+<td>Engine frozen 5 s (SIGSTOP) in LIVE</td>
+<td>No neutral posted (0 pad reports with the controller idle), driver stayed live; on SIGCONT the engine logged <code>resume: LIVE asked again after the wake, hold cleared</code> (its clock-jump path) and nothing else.</td>
+</tr>
+<tr>
+<td>Orphan timer (M)</td>
+<td><code>kill -9</code> + <code>engine-agent.sh bootout_wait</code>: pad present at 10 s, gone at 35 s. <code>engine-agent.sh install</code> → connected, pad back, LIVE.</td>
+</tr>
+<tr>
+<td>Controller off / on in LIVE (M)</td>
+<td>Off: receiver → 3A09, if3 gone, engine <code>controller interface down</code>, <strong>pad kept id 0x10001f278</strong>. On: <code>tap: attached 11 ms after the controller interface came up</code>, LIVE again, same pad id.</td>
+</tr>
+<tr>
+<td>Mac sleep / wake ×2 in LIVE (M)</td>
+<td>23:30:52 <code>will sleep: pad neutral, hold</code>; the receiver re-enumerated during the dark wake (tap re-attached 11 ms / 92 ms); full wake 23:31:05 / 23:34:39 <code>woke</code> → <code>resume: LIVE asked again after the wake, hold cleared</code>; stick moved right after the second wake: +1016 pad posts in 10 s; pad id unchanged both times; no false F6, no fallback. (The controller cannot wake the Mac: a key is needed — a receiver property, not ours.)</td>
+</tr>
+<tr>
+<td><code>kill -9</code> engine ×2 in LIVE (M)</td>
+<td>launchd relaunched the engine both times; pad id unchanged (0x10001f278 → 0x10001f278), armed live again within 1 s.</td>
+</tr>
+<tr>
+<td><code>engine-agent.sh uninstall</code> / <code>install</code></td>
+<td>Uninstall removed the pinned pad (0 pads after 3 s); install created a new pad (new id 0x100020624, expected) and went LIVE.</td>
+</tr>
+<tr>
+<td>L6 in-dext numbers</td>
+<td><code>tap live b=24 total p50/p99/max 100/225/346 µs, occ p99 75, submit p50/p99 1/1, addpool p99 50 µs</code>; Developer-mode onset (GUI frame → pad report): Driver 0.04–0.26 ms vs App 0.10–0.54 ms across all 31 controls.</td>
+</tr>
+<tr>
+<td>Crash reports (dext)</td>
+<td>None new (27 before, 27 after). Engine: none.</td>
+</tr>
+<tr>
 <td>Same echoes on both paths (M)</td>
 <td><code>paddles-sax-echo</code> template (no Profile press; App then Driver back to back, <code>…T22-54-16_{engine,driver}_paddles-sax-echo.json</code>): 12/12 pass, identical echoes on both paths (paddles W N S E, SAX A B), onset App 0.27–0.60 ms, Driver 0.06–0.22 ms. <strong>The driver's translation is correct; the earlier differences were the profile.</strong></td>
 </tr>
 </tbody>
 </table></div>
-<p><strong>Still to run (owner's hands; now as Developer-mode templates where a template fits):</strong> back to App with full-state repost (done implicitly after every Developer run: the path restore re-opened the gate each time, 6 of 6); 50 toggles engine ↔ driver with RT held (needs <code>actions</code>, step 2 of Developer mode); L10 <code>tapDrill pause5</code> → <code>fallback: tap stalled</code> ≤ 300 ms and re-arm; SIGSTOP engine 5 s; controller sleep → neutral ≤ 300 ms; controller off/on; Mac sleep/wake ×2; RT-hold <code>kill -9</code> ×2; orphan test; <code>engine-agent.sh uninstall</code> removes the pinned pad; in-app GUI fallback; learn edit in LIVE; S1 soak; L6 numbers.</p>
+<p><strong>Not verified (carried to T8/T9):</strong> S1 24 h soak in LIVE; in-app GUI fallback (engine uninstalled, GUI drives); a GUI learn edit while LIVE; controller sleep → silence neutral ≤ 300 ms (needs the 5-min timer and patience; the off/on path covers the stop neutral); A21 logout / fast user switching; A22 a seizing reader. <code>inputPath</code> is back on <code>engine</code> until T8 decides the default.</p>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
 <div class="tw"><table>

@@ -38,8 +38,8 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T4 | Tap in production, INERT and COUNT only; soak; upgrade and rollback drills | Yes | done (passed 2026-11-09, dext builds 20–22, see "T4 results") |
 | T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | done (passed 2026-11-09, dext build 23, see "T5 results") |
 | T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | done (passed 2026-11-09, see "T6 results") |
-| T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | ▶ current |
-| T8 | Gate and play test; LIVE becomes the default | No | pending |
+| T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | ✓ done |
+| T8 | Gate and play test; LIVE becomes the default | No | ▶ current |
 | T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending (T3 measured the hop at about 1 µs, so unlikely to be needed) |
 | T10 | Rumble (after the 0x09 capture) | Yes | pending |
 | T11 | Macro overlay (MERGE with TTL) and D8 slots under the root | Yes | pending |
@@ -1704,7 +1704,7 @@ Tests: 478.
 
 ---
 
-## T7 results (2026-11-09, in progress): LIVE engaged and verified on production dext build 24
+## T7 results (2026-11-09): passed (production dext build 24; Developer mode built the same evening to run the checks)
 
 | Check | Result |
 |---|---|
@@ -1715,9 +1715,19 @@ Tests: 478.
 | Crash reports | Dext: none new (27 before and after). GUI: two `EXC_BREAKPOINT` at 22:17 in the new Developer mode (UInt64 overflow on an early-stamped receiver frame), fixed the same evening (705 tests). |
 | `full` template on both paths (M) | `…T22-47-24_engine_full.json` 31/32 pass; `…T22-47-43_driver_full.json` 27/32 pass. Every control that reached the pad: loss ratio 1.00 on both paths; onset App 0.10–0.54 ms, **Driver 0.04–0.26 ms** (faster on every control). The five Driver fails and the one App fail were paddle/SAX echoes that differed from the factory table (A/X/Y/B and RB instead of D-pad and B). |
 | Profile button cycles the onboard profile (finding) | The `full` template pressed Profile twice before the paddles, and the echo set changed between the App and Driver runs (D-pad/B → A X Y B/RB); SAX left has now shown A, LB and X on different occasions. The echo is whatever the controller's current profile sends, as the protocol notes suspected. `full` now has Profile last; `docs/protocol/envision-pro-receiver.md` updated. For the remap step: identify paddles and SAX by their extra bits, never by the echoed button. |
+| 12 hand-overs App ↔ Driver with RT held (M) | `t7-rt-hold-toggle` template (the app toggles `inputPath` every 3 s while the owner holds RT; `dev-runs/2026-11-09T23-22-22_engine_t7-rt-hold-toggle.json`): 12/12 switches followed by the engine (6× live, 6× inert; driver write → shadow 0.7 s → live 2.1 s; engine write → inert 0.7 s). At every switch the pad showed the design's switch neutral and the new source's full-state repost **0.39–0.87 ms** later; RT at full otherwise; no stuck input. The held rule now reports releases under 5 ms as "switch blips". |
+| L10 stall drill (M) | `tapDrill pause5` in LIVE 23:05:37.301 → `fallback: tap stalled` 23:05:37.597 (**296 ms**) → COUNT; `fallback cleared` +5 s → SHADOW → LIVE 2.1 s later. |
+| Engine frozen 5 s (SIGSTOP) in LIVE | No neutral posted (0 pad reports with the controller idle), driver stayed live; on SIGCONT the engine logged `resume: LIVE asked again after the wake, hold cleared` (its clock-jump path) and nothing else. |
+| Orphan timer (M) | `kill -9` + `engine-agent.sh bootout_wait`: pad present at 10 s, gone at 35 s. `engine-agent.sh install` → connected, pad back, LIVE. |
+| Controller off / on in LIVE (M) | Off: receiver → 3A09, if3 gone, engine `controller interface down`, **pad kept id 0x10001f278**. On: `tap: attached 11 ms after the controller interface came up`, LIVE again, same pad id. |
+| Mac sleep / wake ×2 in LIVE (M) | 23:30:52 `will sleep: pad neutral, hold`; the receiver re-enumerated during the dark wake (tap re-attached 11 ms / 92 ms); full wake 23:31:05 / 23:34:39 `woke` → `resume: LIVE asked again after the wake, hold cleared`; stick moved right after the second wake: +1016 pad posts in 10 s; pad id unchanged both times; no false F6, no fallback. (The controller cannot wake the Mac: a key is needed — a receiver property, not ours.) |
+| `kill -9` engine ×2 in LIVE (M) | launchd relaunched the engine both times; pad id unchanged (0x10001f278 → 0x10001f278), armed live again within 1 s. |
+| `engine-agent.sh uninstall` / `install` | Uninstall removed the pinned pad (0 pads after 3 s); install created a new pad (new id 0x100020624, expected) and went LIVE. |
+| L6 in-dext numbers | `tap live b=24 total p50/p99/max 100/225/346 µs, occ p99 75, submit p50/p99 1/1, addpool p99 50 µs`; Developer-mode onset (GUI frame → pad report): Driver 0.04–0.26 ms vs App 0.10–0.54 ms across all 31 controls. |
+| Crash reports (dext) | None new (27 before, 27 after). Engine: none. |
 | Same echoes on both paths (M) | `paddles-sax-echo` template (no Profile press; App then Driver back to back, `…T22-54-16_{engine,driver}_paddles-sax-echo.json`): 12/12 pass, identical echoes on both paths (paddles W N S E, SAX A B), onset App 0.27–0.60 ms, Driver 0.06–0.22 ms. **The driver's translation is correct; the earlier differences were the profile.** |
 
-**Still to run (owner's hands; now as Developer-mode templates where a template fits):** back to App with full-state repost (done implicitly after every Developer run: the path restore re-opened the gate each time, 6 of 6); 50 toggles engine ↔ driver with RT held (needs `actions`, step 2 of Developer mode); L10 `tapDrill pause5` → `fallback: tap stalled` ≤ 300 ms and re-arm; SIGSTOP engine 5 s; controller sleep → neutral ≤ 300 ms; controller off/on; Mac sleep/wake ×2; RT-hold `kill -9` ×2; orphan test; `engine-agent.sh uninstall` removes the pinned pad; in-app GUI fallback; learn edit in LIVE; S1 soak; L6 numbers.
+**Not verified (carried to T8/T9):** S1 24 h soak in LIVE; in-app GUI fallback (engine uninstalled, GUI drives); a GUI learn edit while LIVE; controller sleep → silence neutral ≤ 300 ms (needs the 5-min timer and patience; the off/on path covers the stop neutral); A21 logout / fast user switching; A22 a seizing reader. `inputPath` is back on `engine` until T8 decides the default.
 
 ---
 
