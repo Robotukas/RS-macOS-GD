@@ -4,7 +4,7 @@
 #
 # Usage: scripts/engine-agent.sh install|uninstall|restart|status|latency|log|bootout_wait|bootstrap_retry|wait_connected
 #   install     copy the plist from /Applications/GDHub.app, bootout (waiting), bootstrap, wait until connected, status
-#   uninstall   bootout (waiting) and remove the plist; the GUI is in-app mode from its next launch
+#   uninstall   bootout (waiting) and remove the plist, then release a pinned pad (--release-pad); the GUI is in-app mode from its next launch
 #   restart     kickstart -k, then wait until connected
 #   status      launchd state; exit 0 only if running, interactive, and the engine's last `connection:` line is connected
 #   latency     live stream of the engine's rolling meter line (every 10 s): callback delay of ALL frames + changed-frame
@@ -97,6 +97,28 @@ case ${1:-} in
   uninstall)
     bootout_wait; rc=$?
     rm -f "$DST"
+    # T7: a pad the driver pinned (LIVE, the engine was killed) is removed now, not after the 30 s orphan timer. The release runs the
+    # app binary as a short-lived foreground process (hello, setForwarding(INERT, RELEASE_PAD), exit). Three safeguards, because an
+    # older installed app (this is step U1 of the T7 install itself, and of every rollback) does not know the flag and would start a
+    # full engine that never returns: (1) it only runs when the binary contains the feature marker that this build's tool carries (read
+    # with grep, the app is not executed); (2) it runs in the background with a hard 8 s limit, then it is killed; (3) its output goes
+    # to a temp file that is shown, never discarded, and nothing it does can fail the uninstall.
+    bin=/Applications/GDHub.app/Contents/MacOS/GDHub
+    if [[ -x $bin ]]; then
+      if grep -aq 'gdhub-feature:release-pad-v1' "$bin"; then
+        out=$(mktemp -t gdhub-release); "$bin" --engine --engine-foreground --release-pad >"$out" 2>&1 &
+        rpid=$!
+        ( sleep 8; kill -9 $rpid 2>/dev/null ) &
+        wd=$!
+        wait $rpid 2>/dev/null; rrc=$?
+        kill $wd 2>/dev/null; wait $wd 2>/dev/null
+        if (( rrc == 137 || rrc == 143 )); then print "release-pad: killed after 8 s (no answer); the driver's 30 s orphan timer removes a pinned pad"
+        else tail -3 "$out"; print "release-pad: exit $rrc"; fi
+        rm -f "$out"
+      else
+        print "release-pad: the installed app is older and does not know it; skipped (a pinned pad is removed by the driver after 30 s)"
+      fi
+    fi
     print "engine agent uninstalled (the /Applications GUI is in in-app mode from its next launch)"
     exit $rc ;;
   restart)

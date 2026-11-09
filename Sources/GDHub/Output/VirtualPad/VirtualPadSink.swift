@@ -6,10 +6,19 @@ import os
 /// sink's queue.
 protocol PadTransport: AnyObject {
     func createDevice(_ spec: DeviceSpec) -> kern_return_t
+    /// T7: create the device, or adopt a live pinned one with the same spec. `padSource` is the dext's answer (1 user client,
+    /// 2 tap). The default is `createDevice`: a transport without adoption never adopts.
+    func createDevice2(_ spec: DeviceSpec) -> (kr: kern_return_t, adopted: Bool, padSource: UInt64)
     func destroyDevice(slot: UInt8) -> kern_return_t
     func post(slot: UInt8, report: [UInt8]) -> kern_return_t
     func postNeutral(slot: UInt8) -> kern_return_t
     func heartbeat() -> kern_return_t
+}
+
+extension PadTransport {
+    func createDevice2(_ spec: DeviceSpec) -> (kr: kern_return_t, adopted: Bool, padSource: UInt64) {
+        (createDevice(spec), false, UInt64(DextProtocol.PadSource.userClient.rawValue))
+    }
 }
 
 extension DextClient: PadTransport {}
@@ -155,6 +164,8 @@ final class VirtualPadSink: @unchecked Sendable {
     private static let log = Logger(subsystem: "com.interlinked.gdhub", category: "vhid")
     static let identitySwitchGap: UInt64 = 300_000_000          // ns
     static let recreateDelay: UInt64 = 1_000_000_000            // ns, after a lost device
+    static let createRetryDelay: UInt64 = 400_000_000           // ns, after the dext answered Busy to createDevice2 (it removed an orphan)
+    static let createRetryLimit = 5
     static let enabledKey = "vhid.pad.enabled"
     static let identityKey = "vhid.pad.identity"
     private static let slot = DextProtocol.Slot.pad.rawValue
@@ -187,6 +198,7 @@ final class VirtualPadSink: @unchecked Sendable {
     private var xlateRevision: UInt32 = 0
     private var xlateNote: String
     private var generation = 0                          // invalidates delayed create/retry closures
+    private var createRetries = 0
 
     // Frame mailbox (any thread). Controller frames arrive at ~1 kHz, mostly identical at rest; identical frames are
     // dropped before they cost a queue hop, and a busy queue only ever processes the newest frame.
@@ -196,6 +208,7 @@ final class VirtualPadSink: @unchecked Sendable {
         var last: (frame: GamepadFrame, revision: Int)?
         var drainScheduled = false
         var received = 0
+        var gateClosed = false                      // T7: the driver's tap drives the pad; the engine posts nothing
     }
     private let mailbox = OSAllocatedUnfairLock(initialState: Mailbox())
 
@@ -245,6 +258,45 @@ final class VirtualPadSink: @unchecked Sendable {
     var createdPad: (identity: PadIdentity, spec: [UInt8])? {
         guard created, let id = createdIdentity, let spec = createdSpecBytes else { return nil }
         return (id, spec)
+    }
+
+    /// T7: what the dext said when the device was created: adopted (a live pinned pad became ours) and who drives it then. Queue-confined.
+    private(set) var createdAdopted = false
+    private(set) var createdPadSource = UInt64(DextProtocol.PadSource.userClient.rawValue)
+    /// True while the device in force is a pad this process adopted from the driver's tap (the supervisor's startup stay-LIVE cue).
+    /// Forgotten with the device: a destroyed, lost or re-created one was not adopted.
+    var createdAdoptedTapPad: Bool { created && createdAdopted && createdPadSource == UInt64(DextProtocol.PadSource.tap.rawValue) }
+    private func forgetCreatedOrigin() {
+        createdAdopted = false
+        createdPadSource = UInt64(DextProtocol.PadSource.userClient.rawValue)
+    }
+    /// True while the driver's tap drives the pad: the engine posts nothing (the posting gate). Queue-confined.
+    private(set) var driverDrives = false
+    var onDriveChange: ((Bool) -> Void)?
+    /// Called when the SINK opens the gate on its own (connection lost or restored, the device destroyed): the supervisor learns that
+    /// LIVE ended without having asked for it. (`setDriverDrives` is the supervisor's own call and does not use it.)
+    var onGateForcedOpen: (() -> Void)?
+
+    /// The posting gate (plan 6.2). `true`: the driver's tap drives the pad, so the engine stops posting and discards whatever it
+    /// was holding. `false`: the pad is the engine's again (fallback, INERT, the connection went away): the delivery state is
+    /// forgotten and the next controller frame (the stream is full-state at ~955/s) is posted in full, so a button held across the
+    /// switch is not lost and a state the pad already shows is not deduped away. Called by the supervisor right after the dext's
+    /// answer, on this queue; the dext's own switch (source + neutral) happens inside that call, during which this queue posts nothing.
+    func setDriverDrives(_ on: Bool) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard on != driverDrives else { return }
+        driverDrives = on
+        mailbox.withLock { $0.gateClosed = on }
+        pending = nil; pendingCore = nil; pendingStamp = nil
+        flushTimer?.cancel(); flushTimer = nil
+        if on {
+            stopPattern(neutral: false)             // the test pattern needs source UC; NO neutral here: the driver posted its own at the switch, and a forced one would set its hold
+        } else {
+            resetDeliveryState()                    // also clears the mailbox's last frame; the heartbeat is restarted below
+            if created { startHeartbeat() }
+        }
+        Self.log.notice("posting gate: \(on ? "closed, the driver drives the pad" : "open, the engine posts", privacy: .public)")
+        onDriveChange?(on)
     }
 
     /// Which translator is running, as logged: "c", "swift (xlateCore=swift)" or "swift (fallback, <reason>)". Queue-confined.
@@ -302,9 +354,11 @@ final class VirtualPadSink: @unchecked Sendable {
     /// created again from `desired` after a dext restart or reconnect.
     func transportConnected() {
         dispatchPrecondition(condition: .onQueue(queue))
+        openGate()
         connected = true
         resetDeliveryState()
         created = false; createdIdentity = nil          // a new connection starts with no devices
+        forgetCreatedOrigin()
         if desired == nil, defaults.bool(forKey: Self.enabledKey) {
             desired = PadIdentity.named(defaults.string(forKey: Self.identityKey) ?? "") ?? .default
         }
@@ -314,8 +368,10 @@ final class VirtualPadSink: @unchecked Sendable {
     /// Called when the connection is gone: the dext destroyed our devices with the user client.
     func transportLost() {
         dispatchPrecondition(condition: .onQueue(queue))
+        openGate()
         connected = false
         created = false; createdIdentity = nil
+        forgetCreatedOrigin()
         generation += 1
         stopPattern()
         resetDeliveryState()
@@ -336,19 +392,44 @@ final class VirtualPadSink: @unchecked Sendable {
         }
         do {
             let spec = try id.spec()
-            let kr = transport.createDevice(spec)
+            let c = transport.createDevice2(spec)
+            let kr = c.kr
+            if kr == DextProtocol.krBusy, createRetries < Self.createRetryLimit {
+                // The dext removed a pinned pad that has another spec (or the old one is still going away): the HID system needs
+                // the same gap as an identity switch before the new device can appear.
+                createRetries += 1
+                let gen = generation
+                setState(.publishing(id.id))
+                scheduler.after(Self.createRetryDelay) { [weak self] in
+                    guard let self, self.generation == gen else { return }
+                    self.createIfWanted()
+                }
+                return
+            }
             guard kr == KERN_SUCCESS else {
+                createRetries = 0                       // the tries are used up (or it was another error): the next publish counts afresh
                 let e = DextError(kr)
                 Self.log.error("createDevice \(id.id, privacy: .public) failed: \(e.description, privacy: .public)")
                 setState(.error("\(id.id): \(e.description)"))
                 return
             }
+            createRetries = 0
             created = true; createdIdentity = id
             createdSpecBytes = try? spec.encoded()
+            createdAdopted = c.adopted
+            createdPadSource = c.padSource
             resetDeliveryState()
-            _ = transport.postNeutral(slot: Self.slot)
-            lastSentState = .neutral
-            lastSentBytes = neutralBytes(id)
+            if c.adopted {
+                // A live pinned pad with this spec became ours: it already shows the controller (the driver's tap has been driving
+                // it), so no neutral is posted and nothing is assumed about what it shows.
+                lastSentState = nil
+                lastSentBytes = [:]
+                Self.log.notice("adopted the pad \(id.id, privacy: .public) (source \(c.padSource))")
+            } else {
+                _ = transport.postNeutral(slot: Self.slot)
+                lastSentState = .neutral
+                lastSentBytes = neutralBytes(id)
+            }
             startHeartbeat()
             Self.log.info("published \(id.id, privacy: .public)")
             setState(.published(id.id))
@@ -359,13 +440,15 @@ final class VirtualPadSink: @unchecked Sendable {
     }
 
     private func destroyCurrent() {
-        if created { _ = transport.destroyDevice(slot: Self.slot) }
+        if created { _ = transport.destroyDevice(slot: Self.slot) }       // the dext leaves LIVE first: source UC, neutral, INERT, destroy
+        openGate()
         created = false; createdIdentity = nil; createdSpecBytes = nil
+        forgetCreatedOrigin()
         resetDeliveryState()
     }
 
     /// Forgets everything about what was sent and stops the timers tied to a device.
-    private func resetDeliveryState() {
+    func resetDeliveryState() {
         xlateCache = nil                            // the device (hence the spec the blob targets) may be a different one
         pendingCore = nil
         mailbox.withLock { $0.last = nil }          // frames dropped while no device existed must not hide a held state
@@ -431,6 +514,7 @@ final class VirtualPadSink: @unchecked Sendable {
     func submit(frame: GamepadFrame, mapping: ControlMapping, revision: Int = 0, tK: UInt64 = 0, tC: UInt64 = 0) {
         let schedule: Bool = mailbox.withLock { m in
             m.received += 1
+            if m.gateClosed { return false }            // the driver drives the pad: nothing to post, nothing to remember
             if let l = m.last, l.frame == frame, l.revision == revision { return false }
             m.last = (frame, revision)
             if m.slot == nil { m.tK = tK; m.tC = tC }
@@ -460,7 +544,7 @@ final class VirtualPadSink: @unchecked Sendable {
     /// Queue-confined body of the frame path. While the test pattern runs, frames are ignored.
     func handle(frame: GamepadFrame, mapping: ControlMapping, stamp: LatencyStamp? = nil) {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard created, !isPatternRunning else { return }
+        guard created, !isPatternRunning, !driverDrives else { return }
         if let core = xlateCore(for: mapping) {
             let pad = core.eval(frame)                  // already snapped by the C core
             let same = lastSentState.map { core.unchanged(pad, XlateCore.pad(from: $0)) } ?? false
@@ -591,6 +675,7 @@ final class VirtualPadSink: @unchecked Sendable {
         guard created, let id = createdIdentity else { return }
         stopPattern()
         created = false; createdIdentity = nil
+        forgetCreatedOrigin()
         resetDeliveryState()
         generation += 1
         setState(.publishing(id.id))
@@ -601,10 +686,26 @@ final class VirtualPadSink: @unchecked Sendable {
         }
     }
 
+    /// Opens the gate without announcing it (the connection or the device is gone; there is nothing to resume yet).
+    private func openGate() {
+        guard driverDrives else { return }
+        driverDrives = false
+        mailbox.withLock { $0.gateClosed = false }
+        Self.log.notice("posting gate: open (connection or device gone)")
+        onDriveChange?(false)
+        onGateForcedOpen?()
+    }
+
     /// Neutral pad now: used when the controller sleeps or disconnects, on system sleep, on app termination and when
     /// the test pattern stops. Anything waiting for a trailing flush is discarded.
-    func neutral() {
+    ///
+    /// While the driver drives the pad (LIVE) the controller going quiet is the driver's business (its silence neutral and its Stop
+    /// neutral), and a neutral request from here would set the driver's hold and could keep the tap's frames away after the
+    /// controller returns. So only `force` (system sleep, where the hold is wanted and the wake resumes LIVE) is sent then.
+    func neutral(force: Bool = true) {
         dispatchPrecondition(condition: .onQueue(queue))
+        if driverDrives && !force { return }
+        if driverDrives { Self.log.notice("hold: neutral requested while the driver drives the pad (the driver holds its frames back)") }
         mailbox.withLock { $0.last = nil }          // the next frame must be processed even if it equals the last
         pending = nil
         pendingCore = nil
@@ -685,7 +786,7 @@ final class VirtualPadSink: @unchecked Sendable {
     /// Feeds the pattern at 100 Hz. `loop` repeats it with a 3 s pause until stopped. Neutral on stop.
     func runTestPattern(loop: Bool = false) {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard created, patternTimer == nil else { return }
+        guard created, patternTimer == nil, !driverDrives else { return }      // the pattern needs source UC; refused while the driver drives
         patternLoop = loop
         patternStartNs = clock()
         patternTimer = scheduler.every(10_000_000) { [weak self] in self?.patternTick() }
@@ -710,11 +811,11 @@ final class VirtualPadSink: @unchecked Sendable {
         }
     }
 
-    private func stopPattern() {
+    private func stopPattern(neutral sendNeutral: Bool = true) {
         guard let t = patternTimer else { return }
         t.cancel()
         patternTimer = nil
-        neutral()
+        if sendNeutral { neutral() }
         Self.log.info("test pattern stopped")
         onTestPattern?(false)
     }

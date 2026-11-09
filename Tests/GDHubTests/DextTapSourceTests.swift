@@ -108,13 +108,17 @@ final class DextTapSourceTests: XCTestCase {
         XCTAssertFalse(code[start.lowerBound..<stop.lowerBound].contains("GDH_FWD_COUNT"), "and does not arm anything")
     }
 
-    /// The tap takes no pointer to the root, the owner or the pad and makes no synchronous call to any GDHub object.
+    /// The tap takes no pointer to the root or the owner. From T7 its ONLY synchronous call into a GDHub object is the pad's
+    /// submitInput / postNeutralFrom (rank 3 -> 4, each wrapped in GDH_SYNC); it never calls the root or the user client.
     func testTapCallsNoGDHubObject() throws {
         let code = try tapSource()
-        for banned in ["GDHubVirtualHID", "GDHubVirtualPad", "GDHubCopyRoot", "GDHubCopyOwner", "GDHubCopyPad", "->CreatePad(", "->DestroyPad(",
-                       "->submitInput(", "->postNeutralFrom(", "GDHubClaimOwner", "gdhr_copy_root", "gdhr_copy_owner", "gdhr_pad_"] {
+        for banned in ["GDHubVirtualHID ", "GDHubVirtualHID*", "GDHubVirtualHIDUserClient", "GDHubCopyRoot", "GDHubCopyOwner", "->CreatePad(", "->DestroyPad(",
+                       "GDHubClaimOwner", "gdhr_copy_root", "gdhr_copy_owner", "GDHubOrphan", "gdhr_pad_take"] {
             XCTAssertFalse(code.contains(banned), "the tap mentions \(banned)")
         }
+        XCTAssertEqual(code.components(separatedBy: "->submitInput(").count - 1, 1, "one submit call site")
+        XCTAssertEqual(code.components(separatedBy: "->postNeutralFrom(").count - 1, 1, "one neutral call site")
+        XCTAssertEqual(code.components(separatedBy: "GDH_SYNC(GDHR_RANK_TAP, GDHR_RANK_PAD").count - 1, 2, "both wrapped, tap -> pad")
         XCTAssertFalse(code.contains("IOSleep"), "nothing blocks the tap's queue")
         XCTAssertFalse(code.contains("DispatchSync"), "and nothing waits on another queue")
         XCTAssertFalse(code.contains("handleReport"))
@@ -125,7 +129,9 @@ final class DextTapSourceTests: XCTestCase {
         let code = try tapSource()
         let s = try XCTUnwrap(code.range(of: "IMPL(GDHubReceiverTap, ReportAvailable)"))
         let body = String(code[s.lowerBound...])
-        XCTAssertEqual(body.components(separatedBy: "GDLog(").count - 1, 1)
+        // four lines in all: the pause start and end (once per pause, guarded by pauseLogged) and the two once-per-window meter lines
+        XCTAssertEqual(body.components(separatedBy: "GDLog(").count - 1, 4)
+        XCTAssertTrue(body.contains("pauseLogged"))
         XCTAssertTrue(body.contains("gdh_meter_sample("))
         for banned in ["Create(", "withBytes", "IONew", "IOMalloc", "CreateMapping", "SetLength", "IOSleep"] {
             XCTAssertFalse(body.contains(banned), "the frame path contains \(banned)")
@@ -178,8 +184,8 @@ final class DextTapSourceTests: XCTestCase {
 
     func testOwnerLossPokesTheTap() throws {
         let reg = try text("Dext/GDHubVirtualHID/GDHubRegistry.cpp")
-        let s = try XCTUnwrap(reg.range(of: "void GDHubReleaseOwner"))
-        XCTAssertTrue(String(reg[s.lowerBound...].prefix(900)).contains("GDHubPokeTap()"))
+        let s = try XCTUnwrap(reg.range(of: "bool GDHubReleaseOwner"))
+        XCTAssertTrue(String(reg[s.lowerBound...].prefix(2600)).contains("GDHubPokeTap()"))
     }
 
     // MARK: T4 review fixes

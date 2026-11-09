@@ -2,6 +2,7 @@
 #define GDHubVirtualHID_h
 #include <Availability.h>
 #include <DriverKit/IOService.iig>
+#include <DriverKit/IOTimerDispatchSource.iig>
 class IOUserClient;
 class GDHubVirtualHID : public IOService {
 public:
@@ -14,5 +15,7 @@ public:
     // (rank 1 -> rank 2). `ownerGen` is the generation GDHubClaimOwner returned; a stale one is refused.
     virtual kern_return_t CreatePad(uint64_t ownerGen);
     virtual kern_return_t DestroyPad(uint64_t ownerGen);
+    // T7: the 30 s orphan timer (a pinned pad whose owner left). Runs on this service's default queue.
+    virtual void OrphanFired(OSAction * action TARGET, uint64_t time) TYPE(IOTimerDispatchSource::TimerOccurred);
 };
 #endif

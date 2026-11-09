@@ -95,10 +95,26 @@ void *gdhr_copy_root(gdhr *r)
 
 static void map_clear_locked(gdhr *r);
 
+/* The caller is the current owner AND the pad in the slot is its own (it created or adopted it). A client that merely says hello
+ * while a pinned pad waits for a new owner is an owner of nothing: it may adopt, replace, release or leave, and change nothing else. */
+static inline int owns_pad_locked(const gdhr *r, void *uc)
+{
+    return r->owner && r->owner == uc && r->padState != GDHR_PAD_NONE && r->padGen == r->ownerGen;
+}
+
 /* Empties the slot. The registry's references move to the caller through *specOut and the return value. */
 static void *take_locked(gdhr *r, void **specOut)
 {
     ATOMIC_STORE(&r->padSource, GDHR_SRC_NONE);      /* first: nothing new is accepted from here on */
+    ATOMIC_STORE(&r->orphaned, 0);
+    if (r->pad) {
+        __atomic_fetch_add(&r->padEpoch, 1u, __ATOMIC_RELEASE);             /* the tap drops its reference at its next look */
+        /* A pad leaving the slot (it stopped by itself, the create failed, root Stop, destroy, orphan removal): the next pad starts as
+         * UC. LIVE never survives its pad, so a desired LIVE goes to INERT; COUNT and SHADOW stay asked for (an old engine keeps its
+         * arming across an identity switch). The mapping targeted the old spec and the hold belonged to the old pad. */
+        if (ATOMIC_LOAD(&r->desiredState) == GDH_FWD_LIVE) ATOMIC_STORE(&r->desiredState, GDH_FWD_INERT);
+        ATOMIC_STORE(&r->holdNeutral, 0);
+    }
     void *pad = r->pad;
     *specOut = r->padSpec;
     r->pad = 0;
@@ -131,6 +147,12 @@ uint64_t gdhr_claim_owner(gdhr *r, void *uc)
 
 void *gdhr_release_owner(gdhr *r, void *uc)
 {
+    return gdhr_release_owner_pin(r, uc, 0, 0, 0);       /* a caller that does not ask about pinning never pins */
+}
+
+void *gdhr_release_owner_pin(gdhr *r, void *uc, uint64_t nowTicks, uint64_t orphanTicks, int *pinned)
+{
+    if (pinned) *pinned = 0;
     if (!ready(r)) return 0;
     void *oldOwner = 0, *pad = 0, *spec = 0;
     LOCK(r);
@@ -139,9 +161,20 @@ void *gdhr_release_owner(gdhr *r, void *uc)
         oldOwner = r->owner;
         r->owner = 0;
         r->ownerGen = 0;
-        ATOMIC_STORE(&r->desiredState, GDH_FWD_INERT);       /* nothing keeps counting for a dead owner (T4 rule C) */
-        map_clear_locked(r);                                 /* and no mapping outlives its owner (T5 rule C) */
-        if (r->padState != GDHR_PAD_NONE && r->padGen == gen) pad = take_locked(r, &spec);
+        if (pinned && r->padState == GDHR_PAD_LIVE && r->padGen == gen &&
+            ATOMIC_LOAD(&r->desiredState) == GDH_FWD_LIVE && ATOMIC_LOAD(&r->padSource) == GDHR_SRC_TAP) {
+            /* Pinned: the tap keeps driving the pad, the mapping stays, LIVE stays. The claim is gone; the timer is running. */
+            r->orphanDeadline = nowTicks + orphanTicks;
+            ATOMIC_STORE(&r->orphaned, 1);
+            *pinned = 1;
+        } else if (r->padState != GDHR_PAD_NONE && r->padGen != gen) {
+            /* A pad that is not this client's (an orphan it never adopted): its leaving changes nothing about the pad, its source,
+             * its state or its mapping. The orphan timer is the pad's only owner now. */
+        } else {
+            ATOMIC_STORE(&r->desiredState, GDH_FWD_INERT);       /* nothing keeps counting for a dead owner (T4 rule C) */
+            map_clear_locked(r);                                 /* and no mapping outlives its owner (T5 rule C) */
+            if (r->padState != GDHR_PAD_NONE && r->padGen == gen) pad = take_locked(r, &spec);
+        }
     }
     UNLOCK(r);
     rel(r, spec);
@@ -233,6 +266,8 @@ int gdhr_pad_started(gdhr *r, void *pad)
         r->ops->retain(pad);
         r->pad = pad;
         r->padState = GDHR_PAD_LIVE;
+        __atomic_fetch_add(&r->padEpoch, 1u, __ATOMIC_RELEASE);
+        ATOMIC_STORE(&r->holdNeutral, 0);
         ATOMIC_STORE(&r->padSource, GDHR_SRC_UC);
         rc = GDHR_OK;
     }
@@ -333,6 +368,18 @@ uint64_t gdhr_ctr_get(const gdhr *r, int id)
 
 int gdhr_register_tap(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *desired)
 {
+    uint64_t token;
+    return gdhr_register_tap_ex(r, tap, queue, pid, desired, &token);
+}
+
+uint64_t gdhr_tap_token(const gdhr *r)
+{
+    return r ? __atomic_load_n(&r->tapToken, __ATOMIC_ACQUIRE) : 0;
+}
+
+int gdhr_register_tap_ex(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *desired, uint64_t *token)
+{
+    if (token) *token = 0;
     if (desired) *desired = GDH_FWD_INERT;
     if (!ready(r) || !tap || !queue) return 0;
     void *oldTap = 0, *oldQueue = 0;
@@ -343,6 +390,11 @@ int gdhr_register_tap(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *d
     oldQueue = r->tapQueue;
     r->tap = tap;
     r->tapQueue = queue;
+    {
+        uint64_t t = r->tapToken + 1;
+        __atomic_store_n(&r->tapToken, t, __ATOMIC_RELEASE);            /* an older tap's token is stale from here on */
+        if (token) *token = t;
+    }
     ATOMIC_STORE(&r->tapOpened, 0);
     ATOMIC_STORE(&r->tapApplied, GDH_FWD_INERT);
     ATOMIC_STORE(&r->tapTranslating, 0);
@@ -367,6 +419,7 @@ void gdhr_unregister_tap(gdhr *r, void *tap)
         oldQueue = r->tapQueue;
         r->tap = 0;
         r->tapQueue = 0;
+        __atomic_store_n(&r->tapToken, r->tapToken + 1, __ATOMIC_RELEASE);      /* nobody holds a current token any more */
         ATOMIC_STORE(&r->tapPresent, 0);
         ATOMIC_STORE(&r->tapOpened, 0);
         ATOMIC_STORE(&r->tapApplied, GDH_FWD_INERT);
@@ -467,6 +520,7 @@ int gdhr_map_publish(gdhr *r, void *uc, const void *bytes, uint32_t len, uint32_
     LOCK(r);
     if (!r->owner || r->owner != uc) rc = GDHR_E_NOT_OWNER;
     else if (r->padState != GDHR_PAD_LIVE) rc = GDHR_E_NO_PAD;
+    else if (!owns_pad_locked(r, uc)) rc = GDHR_E_NOT_OURS;
     else if (r->padSpecCrc != specCrc) rc = GDHR_E_SPEC;
     else { map_store_locked(r, bytes, len, revision, specCrc); rc = GDHR_OK; }
     UNLOCK(r);
@@ -558,10 +612,12 @@ void gdhr_tap_publish_xlate(gdhr *r, void *tap, uint32_t appliedRevision, uint32
 int gdhr_set_desired_if_owner(gdhr *r, void *uc, uint32_t state)
 {
     if (!ready(r) || !uc) return GDHR_E_STATE;
+    if (state == GDH_FWD_LIVE) return GDHR_E_STATE;                 /* LIVE is entered only through gdhr_live_begin / commit */
     int rc;
     LOCK(r);
-    if (r->owner && r->owner == uc) { ATOMIC_STORE(&r->desiredState, state); rc = GDHR_OK; }
-    else rc = GDHR_E_NOT_OWNER;
+    if (!r->owner || r->owner != uc) rc = GDHR_E_NOT_OWNER;
+    else if (r->padState != GDHR_PAD_NONE && !owns_pad_locked(r, uc)) rc = GDHR_E_NOT_OURS;    /* a pad exists and it is not this client's */
+    else { ATOMIC_STORE(&r->desiredState, state); rc = GDHR_OK; }
     UNLOCK(r);
     return rc;
 }
@@ -588,13 +644,15 @@ uint32_t gdhr_terminating(const gdhr *r)
 
 int gdh_fwd_validate(uint64_t state, uint64_t flags)
 {
-    if (flags != 0) return 1;
-    return (state == GDH_FWD_INERT || state == GDH_FWD_COUNT || state == GDH_FWD_SHADOW) ? 0 : 1;
+    if (state > GDH_FWD_LIVE) return 1;
+    if (flags & ~(uint64_t)(GDH_FWD_FLAG_DEV_PAUSE_TAP | GDH_FWD_FLAG_RELEASE_PAD)) return 1;      /* bit 0 (STAMP_SOURCE_TIME) is not implemented */
+    if ((flags & GDH_FWD_FLAG_RELEASE_PAD) && (state != GDH_FWD_INERT || (flags & GDH_FWD_FLAG_DEV_PAUSE_TAP))) return 1;
+    return 0;
 }
 
 int gdh_tap_decide(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t stopping, uint32_t retryDue)
 {
-    int armed = (desired == GDH_FWD_COUNT || desired == GDH_FWD_SHADOW);     /* the interface is open in COUNT and in SHADOW */
+    int armed = (desired == GDH_FWD_COUNT || desired == GDH_FWD_SHADOW || desired == GDH_FWD_LIVE);     /* the interface is open from COUNT up */
     if (stopping) return opened ? GDH_TAP_CLOSE : GDH_TAP_NONE;
     if (opened) return armed ? GDH_TAP_NONE : GDH_TAP_CLOSE;
     if (armed && powered && retryDue) return GDH_TAP_OPEN;
@@ -604,6 +662,7 @@ int gdh_tap_decide(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t
 int gdh_tap_fast_tick(uint32_t desired, uint32_t opened, uint32_t powered, uint32_t stopping, uint32_t terminating)
 {
     if (terminating) return 1;
+    if (desired == GDH_FWD_LIVE && opened && !stopping) return 1;       /* the 250 ms silence neutral needs a 50 ms look */
     return gdh_tap_decide(desired, opened, powered, stopping, 1) != GDH_TAP_NONE;
 }
 
@@ -710,6 +769,8 @@ void gdhr_snapshot(gdhr *r, gdhr_snap *out)
     out->probeExt = gdhr_probe_get(r, GDHR_PROBE_EXT);
     out->probePad = gdhr_probe_get(r, GDHR_PROBE_SUBMIT);
     out->padSource = gdhr_pad_source(r);
+    out->holdNeutral = ATOMIC_LOAD(&r->holdNeutral);
+    out->padOrphaned = ATOMIC_LOAD(&r->orphaned);
     LOCK(r);
     out->padState = r->padState;
     out->padSpecCrc = r->padSpecCrc;
@@ -717,4 +778,222 @@ void gdhr_snapshot(gdhr *r, gdhr_snap *out)
     out->rootPresent = r->root != 0;
     UNLOCK(r);
     for (i = 0; i < GDHR_CTR_COUNT; i++) out->counters[i] = gdhr_ctr_get(r, i);
+}
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/* T7: LIVE, pinning, adoption (plan 6.2, 6.3) */
+
+int gdhr_live_begin(gdhr *r, void *uc)
+{
+    if (!ready(r) || !uc) return GDHR_E_STATE;
+    int rc;
+    LOCK(r);
+    if (!r->owner || r->owner != uc) rc = GDHR_E_NOT_OWNER;
+    else if (r->padState != GDHR_PAD_LIVE) rc = GDHR_E_NO_PAD;
+    else if (!owns_pad_locked(r, uc)) rc = GDHR_E_NOT_OURS;
+    else if (ATOMIC_LOAD(&r->selfTest) != GDHR_SELFTEST_PASS) rc = GDHR_E_SELFTEST;
+    else if (!ATOMIC_LOAD(&r->tapPresent)) rc = GDHR_E_NO_TAP;
+    else if (ATOMIC_LOAD(&r->tapApplied) != GDH_FWD_SHADOW || ATOMIC_LOAD(&r->desiredState) != GDH_FWD_SHADOW) rc = GDHR_E_NOT_SHADOW;
+    else if (__atomic_load_n(&r->mapLen, __ATOMIC_RELAXED) == 0) rc = GDHR_E_NO_MAP;
+    else if (__atomic_load_n(&r->mapSpecCrc, __ATOMIC_RELAXED) != r->padSpecCrc) rc = GDHR_E_SPEC;
+    else {
+        if (ATOMIC_LOAD(&r->padSource) != GDHR_SRC_TAP) {
+            ATOMIC_STORE(&r->padSource, GDHR_SRC_TAP);          /* from here the pad refuses UC submissions and accepts TAP ones */
+            __atomic_fetch_add(&r->counters[GDHR_CTR_SOURCE_SWITCHES], 1, __ATOMIC_RELAXED);
+        }
+        rc = GDHR_OK;
+    }
+    UNLOCK(r);
+    return rc;
+}
+
+int gdhr_live_commit(gdhr *r, void *uc)
+{
+    if (!ready(r) || !uc) return GDHR_E_STATE;
+    int rc;
+    LOCK(r);
+    if (!r->owner || r->owner != uc || r->padState != GDHR_PAD_LIVE || !owns_pad_locked(r, uc)) rc = GDHR_E_NOT_OWNER;
+    else {
+        ATOMIC_STORE(&r->holdNeutral, 0);
+        ATOMIC_STORE(&r->desiredState, GDH_FWD_LIVE);
+        rc = GDHR_OK;
+    }
+    UNLOCK(r);
+    return rc;
+}
+
+void gdhr_live_abort(gdhr *r)
+{
+    (void)gdhr_leave_live(r);
+}
+
+int gdhr_leave_live(gdhr *r)
+{
+    uint32_t expected = GDHR_SRC_TAP;
+    if (!r) return 0;
+    if (__atomic_compare_exchange_n(&r->padSource, &expected, GDHR_SRC_UC, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        __atomic_fetch_add(&r->counters[GDHR_CTR_SOURCE_SWITCHES], 1, __ATOMIC_RELAXED);
+        return 1;
+    }
+    return 0;
+}
+
+int gdhr_is_live(const gdhr *r)
+{
+    return r && ATOMIC_LOAD(&r->desiredState) == GDH_FWD_LIVE && ATOMIC_LOAD(&r->padSource) == GDHR_SRC_TAP;
+}
+
+uint32_t gdhr_hold(const gdhr *r) { return r ? ATOMIC_LOAD(&r->holdNeutral) : 0; }
+void gdhr_set_hold(gdhr *r, uint32_t v) { if (r) ATOMIC_STORE(&r->holdNeutral, v ? 1u : 0u); }
+void gdhr_pause_set(gdhr *r, uint64_t untilTicks) { if (r) ATOMIC_STORE(&r->pauseUntil, untilTicks); }
+uint64_t gdhr_pause_until(const gdhr *r) { return r ? ATOMIC_LOAD(&r->pauseUntil) : 0; }
+uint32_t gdhr_pad_epoch(const gdhr *r) { return r ? ATOMIC_LOAD(&r->padEpoch) : 0; }
+uint32_t gdhr_pad_orphaned(const gdhr *r) { return r ? ATOMIC_LOAD(&r->orphaned) : 0; }
+uint64_t gdhr_orphan_deadline(const gdhr *r) { return r ? ATOMIC_LOAD(&r->orphanDeadline) : 0; }
+
+int gdhr_pad_adopt(gdhr *r, uint64_t gen, uint32_t specCrc)
+{
+    if (!ready(r) || !gen) return GDHR_E_STATE;
+    int rc;
+    LOCK(r);
+    if (!r->owner || r->ownerGen != gen) rc = GDHR_E_NOT_OWNER;
+    else if (r->padState != GDHR_PAD_LIVE || !ATOMIC_LOAD(&r->orphaned)) rc = GDHR_E_NO_PAD;
+    else if (r->padSpecCrc != specCrc) rc = GDHR_E_SPEC;
+    else {
+        r->padGen = gen;                                        /* the new owner now owns the pad */
+        ATOMIC_STORE(&r->holdNeutral, 0);                       /* a hold belonged to the previous owner's session */
+        ATOMIC_STORE(&r->orphaned, 0);
+        __atomic_fetch_add(&r->counters[GDHR_CTR_ADOPTS], 1, __ATOMIC_RELAXED);
+        rc = GDHR_OK;
+    }
+    UNLOCK(r);
+    return rc;
+}
+
+int gdhr_orphan_begin(gdhr *r, uint64_t nowTicks)
+{
+    int yes = 0;
+    if (!ready(r)) return 0;
+    LOCK(r);
+    if (ATOMIC_LOAD(&r->orphaned) && !r->owner && r->padState == GDHR_PAD_LIVE && nowTicks >= r->orphanDeadline) {
+        ATOMIC_STORE(&r->padSource, GDHR_SRC_UC);               /* nobody drives it any more; the glue posts the neutral next */
+        ATOMIC_STORE(&r->desiredState, GDH_FWD_INERT);
+        yes = 1;
+    }
+    UNLOCK(r);
+    return yes;
+}
+
+int gdhr_orphan_force_begin(gdhr *r)
+{
+    int yes = 0;
+    if (!ready(r)) return 0;
+    LOCK(r);
+    if (ATOMIC_LOAD(&r->orphaned) && r->padState == GDHR_PAD_LIVE) {
+        ATOMIC_STORE(&r->padSource, GDHR_SRC_UC);
+        ATOMIC_STORE(&r->desiredState, GDH_FWD_INERT);
+        yes = 1;
+    }
+    UNLOCK(r);
+    return yes;
+}
+
+/* Removes an orphaned pad whether or not some client is connected as owner (that client never owned it). The forced paths (an old
+ * app's createDevice, a different-spec createDevice2, RELEASE_PAD) all run with a connected owner. */
+void *gdhr_orphan_force_finish(gdhr *r)
+{
+    void *pad = 0, *spec = 0;
+    if (!ready(r)) return 0;
+    LOCK(r);
+    if (ATOMIC_LOAD(&r->orphaned) && r->padState == GDHR_PAD_LIVE) {
+        map_clear_locked(r);
+        pad = take_locked(r, &spec);
+        __atomic_fetch_add(&r->counters[GDHR_CTR_ORPHAN_DESTROYS], 1, __ATOMIC_RELAXED);
+    }
+    UNLOCK(r);
+    rel(r, spec);
+    return pad;
+}
+
+int gdhr_owns_pad(gdhr *r, void *uc)
+{
+    int yes;
+    if (!ready(r) || !uc) return 0;
+    LOCK(r);
+    yes = owns_pad_locked(r, uc) && r->padState == GDHR_PAD_LIVE;
+    UNLOCK(r);
+    return yes;
+}
+
+int gdhr_pad_not_ours(gdhr *r, void *uc)
+{
+    int yes;
+    if (!ready(r)) return 0;
+    LOCK(r);
+    yes = r->padState != GDHR_PAD_NONE && !owns_pad_locked(r, uc);
+    UNLOCK(r);
+    return yes;
+}
+
+int gdhr_owner_present(gdhr *r)
+{
+    int yes;
+    if (!ready(r)) return 0;
+    LOCK(r);
+    yes = r->owner != 0;
+    UNLOCK(r);
+    return yes;
+}
+
+/* When the orphan timer should next fire, in mach ticks, or 0 for "do not arm". No owner and a pad still orphaned: the later of the
+ * registry's deadline and now + grace (grace is used when an owner has just left: the timer must not fire at once on a past
+ * deadline). With a client connected as owner the orphan is that client's to adopt, replace or release for `ownerGraceTicks` past
+ * the deadline: the timer is armed at max(deadline, now) + ownerGraceTicks (never a time in the past, and never a loop: a timer
+ * that fires at once and cannot remove the pad would spin on the root's queue). */
+uint64_t gdh_orphan_arm_time(uint32_t orphaned, uint32_t ownerPresent, uint64_t deadline, uint64_t now, uint64_t graceTicks,
+                             uint64_t ownerGraceTicks)
+{
+    uint64_t at = now + graceTicks;
+    if (!orphaned) return 0;
+    if (ownerPresent) {
+        uint64_t base = deadline > now ? deadline : now;
+        return base + ownerGraceTicks;
+    }
+    return deadline > at ? deadline : at;
+}
+
+/* A client has sat on an unadopted orphan as connected owner for `ownerGraceTicks` past the deadline: the pad is removed (forced). */
+int gdh_orphan_owner_overstay(uint32_t orphaned, uint32_t ownerPresent, uint64_t deadline, uint64_t now, uint64_t ownerGraceTicks)
+{
+    return orphaned && ownerPresent && now >= deadline + ownerGraceTicks;
+}
+
+void *gdhr_orphan_finish(gdhr *r)
+{
+    void *pad = 0, *spec = 0;
+    if (!ready(r)) return 0;
+    LOCK(r);
+    if (ATOMIC_LOAD(&r->orphaned) && !r->owner) {
+        map_clear_locked(r);
+        pad = take_locked(r, &spec);                             /* also clears `orphaned` and bumps the epoch */
+        __atomic_fetch_add(&r->counters[GDHR_CTR_ORPHAN_DESTROYS], 1, __ATOMIC_RELAXED);
+    }
+    UNLOCK(r);
+    rel(r, spec);
+    return pad;
+}
+
+int gdh_live_submit_ok(int liveActive, uint32_t hold, uint64_t myToken, uint64_t curToken, uint32_t myEpoch, uint32_t curEpoch,
+                       uint32_t padSource)
+{
+    return liveActive && hold == 0 && myToken == curToken && myEpoch == curEpoch && padSource == GDHR_SRC_TAP;
+}
+
+int gdh_silence_due(int wantLive, int opened, int powered, int silenced, uint32_t hold, uint32_t padSource, uint64_t lastDelivery,
+                    uint64_t now, uint64_t silenceTicks)
+{
+    /* `lastDelivery`: the last time the tap translated a frame and either submitted what changed or found nothing changed (an idle
+     * controller counts as delivering). Frames that arrive but cannot be submitted do not move it. Only a pad the tap drives. */
+    return wantLive && opened && powered && !silenced && hold == 0 && padSource == GDHR_SRC_TAP && lastDelivery != 0 &&
+           now > lastDelivery && now - lastDelivery > silenceTicks;
 }

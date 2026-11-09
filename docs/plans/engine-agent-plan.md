@@ -12,9 +12,9 @@ Their probes live in the session scratch dir (`…/scratchpad/la/`, `…/scratch
 | Phase | Title | Status |
 |---|---|---|
 | E1 | Engine runs passthrough under launchd; GUI stops owning the dext; read-only engine status | done (gate passed 2026-11-09, §8.4) |
-| E2 | XPC channel: live engine status and full Driver-menu control from the GUI, mapping push | pending |
-| E3 | One engine core for both modes (in-app fallback through the same code); install/uninstall from the GUI | pending |
-| E4 | Mapping-engine groundwork: profiles, output channels, self-throttle report, TCC probe | pending |
+| E2 | XPC channel: live engine status and full Driver-menu control from the GUI, mapping push | pending (T6 carries the input-path status over a small status file instead: `TapStatusReport`; T7 note: the engine posts nothing while the driver drives the pad, so an XPC mapping push only needs to reach `invalidateMapping`) |
+| E3 | One engine core for both modes (in-app fallback through the same code); install/uninstall from the GUI | pending (T7 note: the in-app GUI's `DextClient` is unsupervised, adopts a pinned pad with `createDevice2`, sends `setForwarding(INERT)` after hello and then posts itself; `engine-agent.sh uninstall` now runs `GDHub --engine --engine-foreground --release-pad`) |
+| E4 | Mapping-engine groundwork: profiles, output channels, self-throttle report, TCC probe | pending (T7 note: a mapping that GDHM v1 cannot express keeps the engine path; while the driver drives the pad the engine's heartbeat watchdog is irrelevant and `SIGSTOP` of the engine does not interrupt input) |
 
 ---
 

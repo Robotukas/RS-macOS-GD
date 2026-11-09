@@ -309,6 +309,45 @@ size_t gdh_status2_pack(uint8_t *buf, size_t cap, const gdhr_snap *s,
     put64(full, GDHUB_ST2_OFF_MAP_ACCEPTED, s->counters[GDHR_CTR_MAP_ACCEPTED]);
     put64(full, GDHUB_ST2_OFF_MAP_REFUSED, s->counters[GDHR_CTR_MAP_REFUSED]);
     put64(full, GDHUB_ST2_OFF_MAP_SWAPS, s->counters[GDHR_CTR_MAP_SWAPS]);
+    full[GDHUB_ST2_OFF_HOLD_NEUTRAL] = (uint8_t)(s->holdNeutral != 0);
+    full[GDHUB_ST2_OFF_PAD_ORPHANED] = (uint8_t)(s->padOrphaned != 0);
+    put64(full, GDHUB_ST2_OFF_TAP_POSTS, s->counters[GDHR_CTR_TAP_POSTS]);
+    put64(full, GDHUB_ST2_OFF_TAP_REJECTED, s->counters[GDHR_CTR_TAP_REJECTED]);
+    put64(full, GDHUB_ST2_OFF_TAP_SUBMIT_ERRORS, s->counters[GDHR_CTR_TAP_SUBMIT_ERRORS]);
+    put64(full, GDHUB_ST2_OFF_FRAMES_UNCHANGED, s->counters[GDHR_CTR_FRAMES_UNCHANGED]);
+    put64(full, GDHUB_ST2_OFF_SWITCH_NEUTRALS, s->counters[GDHR_CTR_SWITCH_NEUTRALS]);
+    put64(full, GDHUB_ST2_OFF_STOP_NEUTRALS, s->counters[GDHR_CTR_STOP_NEUTRALS]);
+    put64(full, GDHUB_ST2_OFF_SILENCE_NEUTRALS, s->counters[GDHR_CTR_SILENCE_NEUTRALS]);
+    put64(full, GDHUB_ST2_OFF_POWER_NEUTRALS, s->counters[GDHR_CTR_POWER_NEUTRALS]);
+    put64(full, GDHUB_ST2_OFF_HOLD_NEUTRALS, s->counters[GDHR_CTR_HOLD_NEUTRALS]);
+    put64(full, GDHUB_ST2_OFF_ADOPTS, s->counters[GDHR_CTR_ADOPTS]);
+    put64(full, GDHUB_ST2_OFF_ORPHAN_DESTROYS, s->counters[GDHR_CTR_ORPHAN_DESTROYS]);
+    put64(full, GDHUB_ST2_OFF_PAUSE_DROPS, s->counters[GDHR_CTR_PAUSE_DROPS]);
+    put64(full, GDHUB_ST2_OFF_SOURCE_SWITCHES, s->counters[GDHR_CTR_SOURCE_SWITCHES]);
+    put64(full, GDHUB_ST2_OFF_LIVE_NO_PAD, s->counters[GDHR_CTR_LIVE_NO_PAD]);
+    if (extra) {
+        full[GDHUB_ST2_OFF_PAUSED] = (uint8_t)(extra->paused != 0);
+        put32(full, GDHUB_ST2_OFF_TOTAL_COUNT, extra->total.count);
+        put32(full, GDHUB_ST2_OFF_TOTAL_P50_NS, extra->total.p50Ns);
+        put32(full, GDHUB_ST2_OFF_TOTAL_P99_NS, extra->total.p99Ns);
+        put32(full, GDHUB_ST2_OFF_TOTAL_MAX_NS, extra->total.maxNs);
+        put32(full, GDHUB_ST2_OFF_TOTAL_MEAN_NS, extra->total.meanNs);
+        put32(full, GDHUB_ST2_OFF_OCC_COUNT, extra->occ.count);
+        put32(full, GDHUB_ST2_OFF_OCC_P50_NS, extra->occ.p50Ns);
+        put32(full, GDHUB_ST2_OFF_OCC_P99_NS, extra->occ.p99Ns);
+        put32(full, GDHUB_ST2_OFF_OCC_MAX_NS, extra->occ.maxNs);
+        put32(full, GDHUB_ST2_OFF_OCC_MEAN_NS, extra->occ.meanNs);
+        put32(full, GDHUB_ST2_OFF_ADDPOOL_COUNT, extra->addPool.count);
+        put32(full, GDHUB_ST2_OFF_ADDPOOL_P50_NS, extra->addPool.p50Ns);
+        put32(full, GDHUB_ST2_OFF_ADDPOOL_P99_NS, extra->addPool.p99Ns);
+        put32(full, GDHUB_ST2_OFF_ADDPOOL_MAX_NS, extra->addPool.maxNs);
+        put32(full, GDHUB_ST2_OFF_ADDPOOL_MEAN_NS, extra->addPool.meanNs);
+        put32(full, GDHUB_ST2_OFF_SUBMIT_COUNT, extra->submit.count);
+        put32(full, GDHUB_ST2_OFF_SUBMIT_P50_NS, extra->submit.p50Ns);
+        put32(full, GDHUB_ST2_OFF_SUBMIT_P99_NS, extra->submit.p99Ns);
+        put32(full, GDHUB_ST2_OFF_SUBMIT_MAX_NS, extra->submit.maxNs);
+        put32(full, GDHUB_ST2_OFF_SUBMIT_MEAN_NS, extra->submit.meanNs);
+    }
     if (extra) {
         put32(full, GDHUB_ST2_OFF_XLATE_COUNT, extra->xlate.count);
         put32(full, GDHUB_ST2_OFF_XLATE_P50_NS, extra->xlate.p50Ns);

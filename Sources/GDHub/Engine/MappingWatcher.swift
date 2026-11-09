@@ -39,11 +39,12 @@ final class MappingWatcher: @unchecked Sendable {
         s.setEventHandler { [weak self] in self?.changed() }
         s.setCancelHandler { close(fd) }
         s.resume()
-        source = s
+        queue.async { [self] in source = s }       // `source` is touched on the queue only; a stop() queued later sees it
         return true
     }
 
-    func stop() { source?.cancel(); source = nil; pending?.cancel() }
+    /// Safe from any thread: the cancel runs on the watcher's own queue, where `source` and `pending` live.
+    func stop() { queue.async { [self] in source?.cancel(); source = nil; pending?.cancel(); pending = nil } }
 
     /// On `queue`.
     private func changed() {

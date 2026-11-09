@@ -22,14 +22,17 @@ final class DextCoreTapTests: XCTestCase {
         XCTAssertEqual(gdh_fwd_validate(0, 0), 0, "INERT")
         XCTAssertEqual(gdh_fwd_validate(1, 0), 0, "COUNT")
         XCTAssertEqual(gdh_fwd_validate(2, 0), 0, "SHADOW (T5)")
-        for state: UInt64 in [3, 4, 255, UInt64.max] { XCTAssertEqual(gdh_fwd_validate(state, 0), 1, "state \(state) is Unsupported: LIVE arrives in T7") }
-        for flags: UInt64 in [1, 0x100, 0x200, UInt64.max] {
-            XCTAssertEqual(gdh_fwd_validate(0, flags), 1, "flags \(flags): none exist in T4")
-            XCTAssertEqual(gdh_fwd_validate(1, flags), 1)
-            XCTAssertEqual(gdh_fwd_validate(2, flags), 1)
+        XCTAssertEqual(gdh_fwd_validate(3, 0), 0, "LIVE (T7)")
+        for state: UInt64 in [4, 255, UInt64.max] { XCTAssertEqual(gdh_fwd_validate(state, 0), 1, "state \(state) is Unsupported") }
+        for flags: UInt64 in [1, 2, 0x80, 0x400, UInt64.max] {
+            for st: UInt64 in 0...3 { XCTAssertEqual(gdh_fwd_validate(st, flags), 1, "flags \(flags) are not implemented (bit 0 STAMP_SOURCE_TIME included)") }
         }
+        for st: UInt64 in 0...3 { XCTAssertEqual(gdh_fwd_validate(st, 0x100), 0, "the pause flag goes with any state") }
+        XCTAssertEqual(gdh_fwd_validate(0, 0x200), 0, "release-pad goes with INERT")
+        for st: UInt64 in 1...3 { XCTAssertEqual(gdh_fwd_validate(st, 0x200), 1, "and only with INERT") }
+        XCTAssertEqual(gdh_fwd_validate(0, 0x300), 1, "release-pad and pause together make no sense")
         // the Swift mirror agrees
-        for state: UInt64 in 0...5 { for flags: UInt64 in [0, 1, 0x100] {
+        for state: UInt64 in 0...5 { for flags: UInt64 in [0, 1, 0x100, 0x200, 0x300] {
             XCTAssertEqual(DextProtocol.Forwarding.isAccepted(state: state, flags: flags), gdh_fwd_validate(state, flags) == 0)
         } }
     }
@@ -42,12 +45,12 @@ final class DextCoreTapTests: XCTestCase {
                 let a = gdh_tap_decide(desired, opened, powered, stopping, retry)
                 if a == Int32(GDH_TAP_OPEN) {
                     opens += 1
-                    XCTAssertTrue(desired == UInt32(GDH_FWD_COUNT) || desired == UInt32(GDH_FWD_SHADOW)); XCTAssertEqual(opened, 0); XCTAssertEqual(powered, 1)
+                    XCTAssertTrue(desired >= UInt32(GDH_FWD_COUNT) && desired <= UInt32(GDH_FWD_LIVE)); XCTAssertEqual(opened, 0); XCTAssertEqual(powered, 1)
                     XCTAssertEqual(stopping, 0); XCTAssertEqual(retry, 1)
                 }
             } }
         } } }
-        XCTAssertEqual(opens, 2, "of 64 input combinations exactly two open the interface: COUNT and SHADOW, both powered, not open, not stopping, retry due")
+        XCTAssertEqual(opens, 3, "of 64 input combinations exactly three open the interface: COUNT, SHADOW and LIVE, each powered, not open, not stopping, retry due")
     }
 
     func testCloseWhenNoLongerAskedForOrStopping() {
@@ -175,7 +178,7 @@ final class DextCoreTapTests: XCTestCase {
         XCTAssertEqual(gdhr_ctr_get(reg, Int32(GDHR_CTR_FRAMES_IN.rawValue)), 7)
         XCTAssertEqual(gdhr_ctr_get(reg, Int32(GDHR_CTR_POOL_MISS.rawValue)), 2)
         XCTAssertEqual(gdhr_ctr_get(reg, Int32(GDHR_CTR_OPEN_FAILURES.rawValue)), 3)
-        XCTAssertLessThan(Int(GDHR_CTR_COUNT.rawValue), 40, "counters stay a small fixed array")
+        XCTAssertLessThan(Int(GDHR_CTR_COUNT.rawValue), 64, "counters stay a small fixed array")
     }
 
     func testConcurrentTapRegistrationAndCopies() {
@@ -215,8 +218,8 @@ final class DextCoreTapTests: XCTestCase {
             c[Int(GDHR_CTR_OPEN_FAILURES.rawValue)] = 9
         }
         var k2d = gdh_summary(count: 9000, p50Ns: 60_000, p99Ns: 110_000, maxNs: 400_000, meanNs: 65_400)
-        var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, &k2d, nil)
+        var buf = [UInt8](repeating: 0, count: 1024)
+        let n = gdh_status2_pack(&buf, 1024, &s, nil, nil, 0, &k2d, nil)
         XCTAssertEqual(n, DextStatus2.size)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertTrue(d.tapPresent); XCTAssertTrue(d.tapOpened); XCTAssertEqual(d.appliedState, 1); XCTAssertEqual(d.desiredState, 1)
@@ -231,8 +234,8 @@ final class DextCoreTapTests: XCTestCase {
 
     func testNoTapMeansNoTapText() throws {
         var s = gdhr_snap(); s.tapPresent = 0
-        var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil, nil)
+        var buf = [UInt8](repeating: 0, count: 1024)
+        let n = gdh_status2_pack(&buf, 1024, &s, nil, nil, 0, nil, nil)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertFalse(d.tapPresent); XCTAssertNil(d.tapLogText); XCTAssertFalse(d.tapOpened)
     }
@@ -365,9 +368,9 @@ final class DextCoreTapTests: XCTestCase {
             c[Int(GDHR_CTR_CLOSE_FAILURES.rawValue)] = 13; c[Int(GDHR_CTR_REOPENS.rawValue)] = 14
             c[Int(GDHR_CTR_TAP_FREES.rawValue)] = 15; c[Int(GDHR_CTR_TAP_STARTS.rawValue)] = 16
         }
-        var buf = [UInt8](repeating: 0, count: 512)
-        let n = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil, nil)
-        XCTAssertEqual(n, DextStatus2.size); XCTAssertEqual(DextStatus2.size, 480)
+        var buf = [UInt8](repeating: 0, count: 1024)
+        let n = gdh_status2_pack(&buf, 1024, &s, nil, nil, 0, nil, nil)
+        XCTAssertEqual(n, DextStatus2.size); XCTAssertEqual(DextStatus2.size, 676)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
         XCTAssertEqual(d.pokesRun, 11); XCTAssertEqual(d.tickApplies, 12); XCTAssertEqual(d.closeFailures, 13)
         XCTAssertEqual(d.reopens, 14); XCTAssertEqual(d.tapFrees, 15); XCTAssertEqual(d.tapStarts, 16)
@@ -384,8 +387,8 @@ final class DextCoreTapTests: XCTestCase {
     func testBuild19StyleShortStatus2HasNoTap() throws {
         // A build-19 dext sends 172 bytes: the T4 fields read as zero.
         var s = gdhr_snap(); s.tapPresent = 1
-        var buf = [UInt8](repeating: 0, count: 512)
-        _ = gdh_status2_pack(&buf, 512, &s, nil, nil, 0, nil, nil)
+        var buf = [UInt8](repeating: 0, count: 1024)
+        _ = gdh_status2_pack(&buf, 1024, &s, nil, nil, 0, nil, nil)
         var old = Array(buf.prefix(172))
         old[DextStatus2.Offset.size] = 172; old[DextStatus2.Offset.size + 1] = 0
         let d = try XCTUnwrap(DextStatus2.decode(old))
@@ -441,10 +444,16 @@ final class TapSupervisorTests: XCTestCase {
         var hasTap = true
         var hasXlate = true
         var hasLive = false
+        var autoApply = false                                   // the fake dext's tap applies what it is told at once (and moves padSource)
+        var liveResult: kern_return_t?                          // the answer to LIVE (nil: success)
+        var liveAsked = 0
+        var noEffectUntilOwned = false                          // the real driver: a client that does not own the pad yet gets success and NO effect for INERT
+        var freezeApplied = false                               // tests: the tap does not apply pushed mappings (appliedRevision stays)
         var supportsPauseDrill = false
         var pauseCalls: [UInt64] = []
         var pauseKr: kern_return_t = KERN_SUCCESS
-        func pauseTap(ms: UInt64) -> kern_return_t { pauseCalls.append(ms); return pauseKr }
+        var pauseStates: [UInt64] = []
+        func pauseTap(state: UInt64, ms: UInt64) -> kern_return_t { pauseCalls.append(ms); pauseStates.append(state); return pauseKr }
         var mapCalls: [[UInt8]] = []
         var mapKr: kern_return_t = KERN_SUCCESS
         var mapReason: UInt32 = 0
@@ -465,8 +474,13 @@ final class TapSupervisorTests: XCTestCase {
             calls.append(state)
             if dieOnForwarding && state != 0 { relaunch(nonce: status.instanceNonce + 1000); return (Self.transportError, nil) }
             // A refusal (NotPermitted, Unsupported) is about COUNT/SHADOW; the real dext always accepts INERT.
+            if noEffectUntilOwned && state != 0 { return (DextProtocol.krBusy, nil) }          // COUNT / SHADOW / LIVE from a client that does not own the pad
             let refuses = setResult != KERN_SUCCESS && !(state == 0 && (setResult == DextProtocol.krNotPermitted || setResult == DextProtocol.krUnsupported))
-            if !refuses { status.desiredState = UInt8(state) }          // a real dext remembers what it was told
+            if state == 3, let lr = liveResult, lr != KERN_SUCCESS { liveAsked += 1; return (lr, nil) }
+            if !refuses && !(noEffectUntilOwned && state == 0) {
+                status.desiredState = UInt8(state)          // a real dext remembers what it was told
+                if autoApply { status.appliedState = UInt8(state); status.padSource = state == 3 ? 2 : 1 }
+            }
             return refuses ? (setResult, nil) : (KERN_SUCCESS, DextForwardingResult(words: [0, status.tapPresent ? 1 : 0, 1, 0]))
         }
         func status2() -> DextStatus2? { status2Calls += 1; return status }
@@ -634,7 +648,7 @@ final class TapSupervisorTests: XCTestCase {
         s.mappingOffer = { _ in .unsupported("test") }
         queue.sync { s.connection(up: true) }
         ticks(s, 20)
-        XCTAssertTrue(tap.mapCalls.isEmpty); XCTAssertEqual(tap.calls, [2])
+        XCTAssertTrue(tap.mapCalls.isEmpty); XCTAssertEqual(tap.calls, [2, 0], "T7: the driver path stands down (INERT clears the driver's map) and the engine posts")
         XCTAssertFalse(s.parity.ring.enabled)
     }
 
@@ -1255,12 +1269,12 @@ final class TapSupervisorTests: XCTestCase {
         queue.sync { e.connection(up: true) }
         keys.drill = "pause5"; ticks(e, 10)
         XCTAssertTrue(engine.pauseCalls.isEmpty, "not armed: nothing to pause")
-        XCTAssertFalse(DextClientNeverSupportsThePauseDrillYet())
+        XCTAssertFalse(DextClientWithoutLiveSupportsThePauseDrill())
     }
 
-    private func DextClientNeverSupportsThePauseDrillYet() -> Bool {
+    private func DextClientWithoutLiveSupportsThePauseDrill() -> Bool {
         let c = DextClient(queue: queue)
-        return queue.sync { c.supportsPauseDrill || c.pauseTap(ms: 5000) != DextProtocol.krUnsupported || c.hasLive }
+        return queue.sync { c.supportsPauseDrill || c.hasLive }
     }
 
     // MARK: T6: the report the Driver menu reads
@@ -1291,13 +1305,14 @@ final class TapSupervisorTests: XCTestCase {
         queue.sync { s.connection(up: true) }
         let r = s.makeReport()
         XCTAssertEqual(r.mappingNote, "echo suppression (paddle_outer_right -> y)")
-        XCTAssertEqual(r.armed, "shadow", "armed and counting; nothing is pushed and nothing is posted from the tap")
-        XCTAssertNil(r.fallback)
+        XCTAssertEqual(r.armed, "inert", "T7: the driver path stands down: INERT, the map is cleared in the driver, the engine posts")
+        XCTAssertNil(r.fallback, "not a fault: no fallback, no limiter entry")
         queue.sync { s.invalidateMapping() }
         XCTAssertNotNil(s.unsupportedNote)
         s.mappingOffer = { [unowned self] rev in self.offer(rev) }
         queue.sync { s.invalidateMapping() }
         XCTAssertNil(s.makeReport().mappingNote, "cleared when the mapping is supported again")
+        XCTAssertEqual(s.makeReport().armed, "shadow", "and the driver path comes back by itself")
     }
 
     // MARK: T6 review: the owner's pick reaches the engine every time
@@ -1443,6 +1458,561 @@ final class TapSupervisorTests: XCTestCase {
         XCTAssertNil(s.fallback, "the gap restarted the grace period before the first post-wake reading")
         tap.status.tapPresent = true
         for _ in 0..<20 { step(s, clock, tap, frames) }
+        XCTAssertNil(s.fallback)
+    }
+
+    // MARK: T7: LIVE
+
+    private final class Drives: @unchecked Sendable { var events: [Bool] = [] }
+
+    /// A supervisor on a LIVE-capable fake dext, path `driver`, SHADOW sent and the mapping pushed and applied. The fake's tap applies
+    /// what it is told at once and moves padSource like the real one.
+    private func liveSupervisor(path: String = "driver", clock: Clock, frames: Counter, drives: Drives, hasLive: Bool = true,
+                                tap: FakeTap = FakeTap(nonce: 1000)) -> (TapSupervisor, FakeTap, LiveWatch) {
+        tap.hasLive = hasLive; tap.autoApply = true
+        tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+        tap.status.padSpecCRC = 0x77; tap.status.padSource = 1
+        let s = shadowSupervisor(tap, path: path, clock: clock)
+        let watch = LiveWatch(); s.liveWatch = watch
+        s.engineFrames = { frames.value }
+        s.onDrive = { drives.events.append($0) }
+        queue.sync { s.controllerInterface(up: true); s.connection(up: true) }
+        ticks(s, 1)
+        tap.status.acceptedSpecCRC = 0x77
+        tap.status.appliedRevision = tap.status.acceptedRevision
+        return (s, tap, watch)
+    }
+
+    /// One 100 ms step in which the engine's reader sees `perTick` frames and the (fake) tap translates and counts them.
+    private func liveStep(_ s: TapSupervisor, _ clock: Clock, _ tap: FakeTap, _ frames: Counter, perTick: UInt64 = 91, stalled: Bool = false) {
+        clock.ns += 100_000_000
+        frames.value += perTick
+        if !stalled { tap.status.framesIn += perTick; tap.status.framesTranslated += perTick }
+        if !tap.freezeApplied { tap.status.appliedRevision = tap.status.acceptedRevision }          // the tap applies a pushed mapping at its next frame
+        ticks(s, 1)
+    }
+
+    private func runLive(_ s: TapSupervisor, _ clock: Clock, _ tap: FakeTap, _ frames: Counter, steps: Int) {
+        for _ in 0..<steps { liveStep(s, clock, tap, frames) }
+    }
+
+    func testDriverPathGoesShadowThenLiveAfterTwoSecondsAnd100FramesAndClosesTheGate() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        XCTAssertEqual(tap.calls, [2], "SHADOW first")
+        runLive(s, clock, tap, frames, steps: 18)                            // 1.8 s
+        XCTAssertEqual(tap.calls, [2], "not before 2 s of SHADOW"); XCTAssertTrue(drives.events.isEmpty)
+        runLive(s, clock, tap, frames, steps: 4)
+        XCTAssertEqual(tap.calls, [2, 3], "LIVE once SHADOW ran 2 s with >= 100 frames and 0 mismatches")
+        XCTAssertEqual(drives.events, [true], "the posting gate closes right after the dext accepted LIVE")
+        XCTAssertEqual(s.makeReport().armed, "live"); XCTAssertEqual(s.makeReport().path, "driver")
+    }
+
+    func testNoLiveFromADriverWithoutCapLive() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives, hasLive: false)
+        runLive(s, clock, tap, frames, steps: 80)
+        XCTAssertEqual(tap.calls, [2]); XCTAssertTrue(drives.events.isEmpty)
+        XCTAssertTrue(s.makeReport().liveUnavailable)
+    }
+
+    func testLiveWaitsForEveryCondition() throws {
+        let conditions: [(String, (FakeTap) -> Void)] = [
+            ("mapping not applied", { $0.freezeApplied = true; $0.status.appliedRevision = 0 }),
+            ("spec crc differs", { $0.status.acceptedSpecCRC = 0x78 }),
+            ("no map", { $0.status.hasMap = false }),     // (the supervisor re-pushes; the fake accepts and sets it again, so the check below is on appliedRevision)
+            ("self-test not passed", { $0.status.selfTest = DextProtocol.SelfTest.notRun }),
+            ("pad not live", { $0.status.padLive = false }),
+            ("tap absent", { $0.status.tapPresent = false }),
+        ]
+        for (name, mutate) in conditions where name != "no map" {
+            let clock = Clock(), frames = Counter(), drives = Drives()
+            let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+            for _ in 0..<60 { liveStep(s, clock, tap, frames); mutate(tap) }
+            XCTAssertFalse(tap.calls.contains(3), name)
+            XCTAssertTrue(drives.events.isEmpty, name)
+        }
+        // too few frames in SHADOW
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        for _ in 0..<60 { liveStep(s, clock, tap, frames, perTick: 1) }       // 60 frames in 6 s
+        XCTAssertFalse(tap.calls.contains(3), "fewer than 100 translated frames")
+    }
+
+    func testAParityMismatchDuringShadowDelaysLive() throws {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        runLive(s, clock, tap, frames, steps: 5)
+        try mismatch(s, tap, count: 1, ts: 900)
+        runLive(s, clock, tap, frames, steps: 60)
+        XCTAssertFalse(tap.calls.contains(3), "one mismatch since SHADOW was armed: LIVE is not asked for")
+    }
+
+    func testLiveRefusalsAreHandledPerAnswer() {
+        // NotReady: asked again about a second later; SHADOW goes on
+        do {
+            let clock = Clock(), frames = Counter(), drives = Drives()
+            let tap = FakeTap(nonce: 1000); tap.liveResult = DextProtocol.krNotReady
+            let (s, _, _) = liveSupervisor(clock: clock, frames: frames, drives: drives, tap: tap)
+            runLive(s, clock, tap, frames, steps: 22)
+            XCTAssertEqual(tap.liveAsked, 1)
+            runLive(s, clock, tap, frames, steps: 4); XCTAssertEqual(tap.liveAsked, 1, "not within a second")
+            runLive(s, clock, tap, frames, steps: 10); XCTAssertEqual(tap.liveAsked, 2)
+            XCTAssertTrue(drives.events.isEmpty); XCTAssertNil(s.fallback)
+            tap.liveResult = nil
+            runLive(s, clock, tap, frames, steps: 20); XCTAssertEqual(drives.events, [true])
+        }
+        // BadArgument (the accepted mapping targets another pad): the mapping is pushed again, LIVE retried after 2 s
+        do {
+            let clock = Clock(), frames = Counter(), drives = Drives()
+            let tap = FakeTap(nonce: 1000); tap.liveResult = DextProtocol.krBadArgument
+            let (s, _, _) = liveSupervisor(clock: clock, frames: frames, drives: drives, tap: tap)
+            let before = tap.mapCalls.count
+            runLive(s, clock, tap, frames, steps: 40)
+            XCTAssertGreaterThan(tap.mapCalls.count, before, "re-pushed"); XCTAssertLessThanOrEqual(tap.liveAsked, 3)
+            XCTAssertNil(s.fallback)
+        }
+        // NotPermitted: final fallback, INERT
+        do {
+            let clock = Clock(), frames = Counter(), drives = Drives()
+            let tap = FakeTap(nonce: 1000); tap.liveResult = DextProtocol.krNotPermitted
+            let (s, _, _) = liveSupervisor(clock: clock, frames: frames, drives: drives, tap: tap)
+            runLive(s, clock, tap, frames, steps: 30)
+            XCTAssertEqual(tap.calls.last, 0); XCTAssertNil(s.fallback?.rearmAtNs)
+            if case .driverRefused? = s.fallback?.reason {} else { XCTFail("\(String(describing: s.fallback))") }
+        }
+        // Unsupported: stays in SHADOW and is not asked again
+        do {
+            let clock = Clock(), frames = Counter(), drives = Drives()
+            let tap = FakeTap(nonce: 1000); tap.liveResult = DextProtocol.krUnsupported
+            let (s, _, _) = liveSupervisor(clock: clock, frames: frames, drives: drives, tap: tap)
+            runLive(s, clock, tap, frames, steps: 80)
+            XCTAssertEqual(tap.liveAsked, 1); XCTAssertNil(s.fallback); XCTAssertTrue(drives.events.isEmpty)
+        }
+    }
+
+    private func goLive(_ s: TapSupervisor, _ clock: Clock, _ tap: FakeTap, _ frames: Counter) {
+        runLive(s, clock, tap, frames, steps: 25)
+        XCTAssertEqual(tap.calls.last, 3, "precondition: LIVE")
+    }
+
+    func testF1StallInLiveFallsBackToCountWithin400msOpensTheGateAndRearmsThroughShadow() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        runLive(s, clock, tap, frames, steps: 20)
+        XCTAssertNil(s.fallback)
+        let readsBefore = tap.status2Calls
+        var n = 0
+        while s.fallback == nil, n < 20 { liveStep(s, clock, tap, frames, stalled: true); n += 1 }
+        XCTAssertEqual(s.fallback?.reason, .stall)
+        XCTAssertLessThanOrEqual(n, 4, "a 200 ms window, one confirmation, read every 100 ms: the pause drill's 300 ms target (G10)")
+        XCTAssertEqual(tap.calls.last, 1, "LIVE falls back to COUNT: the tap keeps counting"); XCTAssertEqual(drives.events, [true, false], "the engine posts again at once")
+        XCTAssertGreaterThanOrEqual(tap.status2Calls - readsBefore, n, "LIVE reads status2 every tick")
+        XCTAssertEqual(s.makeReport().armed, "inert", "not armed while the fallback lasts"); XCTAssertEqual(s.makeReport().fallback, "tap stalled")
+        // 5 s hold-off, then SHADOW (never straight back to LIVE), then LIVE after 2 s of agreement
+        for _ in 0..<45 { liveStep(s, clock, tap, frames) }
+        XCTAssertEqual(tap.calls.last, 1)
+        for _ in 0..<12 { liveStep(s, clock, tap, frames) }
+        XCTAssertEqual(tap.calls.suffix(2), [1, 2], "re-armed into SHADOW")
+        runLive(s, clock, tap, frames, steps: 30)
+        XCTAssertEqual(tap.calls.last, 3, "and LIVE again after the warm-up"); XCTAssertEqual(drives.events, [true, false, true])
+    }
+
+    func testF2AndTheStatusSourceTestsFallBackToCountFromLive() {
+        // F2
+        do {
+            let clock = Clock(), frames = Counter(), drives = Drives()
+            let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+            goLive(s, clock, tap, frames)
+            tap.status.tapPresent = false
+            runLive(s, clock, tap, frames, steps: 8)
+            XCTAssertEqual(s.fallback?.reason, .tapAbsent); XCTAssertEqual(tap.calls.last, 1)
+        }
+    }
+
+    func testF6OutputStallInEveryForm() {
+        func armedLive(_ body: (TapSupervisor, FakeTap, LiveWatch, Clock, Counter) -> Void, file: StaticString = #filePath, line: UInt = #line) {
+            let clock = Clock(), frames = Counter(), drives = Drives()
+            let (s, tap, watch) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+            goLive(s, clock, tap, frames)
+            body(s, tap, watch, clock, frames)
+            XCTAssertEqual(s.fallback?.reason, .outputStall, file: file, line: line)
+            XCTAssertEqual(tap.calls.last, 1, "COUNT", file: file, line: line); XCTAssertEqual(drives.events.last, false, file: file, line: line)
+        }
+        // the engine's own step would have posted, the driver's tapPosts does not move
+        armedLive { s, tap, watch, clock, frames in
+            for _ in 0..<10 { watch.wouldPostReports += 2; liveStep(s, clock, tap, frames) }
+        }
+        // padSource is no longer TAP
+        armedLive { s, tap, _, clock, frames in tap.status.padSource = 1; for _ in 0..<3 { liveStep(s, clock, tap, frames) } }
+        // appliedState differs from LIVE for longer than 300 ms
+        armedLive { s, tap, _, clock, frames in tap.status.appliedState = 2; for _ in 0..<8 { liveStep(s, clock, tap, frames) } }
+        // framesIgnored rises while the tap says it is powered
+        armedLive { s, tap, _, clock, frames in
+            tap.status.powered = true
+            for _ in 0..<5 { tap.status.framesIgnored += 50; liveStep(s, clock, tap, frames) }
+        }
+    }
+
+    func testF6IsQuietWhenTheDriverKeepsPostingAndForShortGlitches() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, watch) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        for _ in 0..<50 { watch.wouldPostReports += 2; tap.status.tapPosts += 2; liveStep(s, clock, tap, frames) }
+        XCTAssertNil(s.fallback)
+        for _ in 0..<5 { watch.wouldPostReports += 1; liveStep(s, clock, tap, frames) }         // 1 report per window: below the threshold
+        XCTAssertNil(s.fallback)
+        tap.status.appliedState = 2; for _ in 0..<2 { liveStep(s, clock, tap, frames) }          // 200 ms of disagreement
+        tap.status.appliedState = 3; for _ in 0..<10 { liveStep(s, clock, tap, frames) }
+        XCTAssertNil(s.fallback, "appliedState must differ for more than 300 ms")
+    }
+
+    func testF4AndF5InLiveFallBackToInertNotCount() throws {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        for i in 1...3 { try mismatch(s, tap, count: UInt32(i), ts: UInt64(700 + i)); for _ in 0..<2 { liveStep(s, clock, tap, frames) } }
+        XCTAssertEqual(s.fallback?.reason, .parityMismatch)
+        XCTAssertEqual(tap.calls.last, 0, "INERT"); XCTAssertEqual(drives.events, [true, false])
+        XCTAssertNil(s.fallback?.rearmAtNs)
+    }
+
+    func testAMappingThatBecomesUnsupportedTakesTheDriverPathDownAndTheEnginePosts() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        s.mappingOffer = { _ in .unsupported("echo suppression") }
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(tap.calls.last, 0, "INERT: the driver clears its map and the engine path resumes")
+        XCTAssertEqual(drives.events, [true, false]); XCTAssertEqual(s.makeReport().mappingNote, "echo suppression")
+        XCTAssertNil(s.fallback, "not a fault")
+        runLive(s, clock, tap, frames, steps: 80)
+        XCTAssertEqual(tap.calls.last, 0, "and it stays down while the mapping is unsupported")
+        s.mappingOffer = { [unowned self] rev in self.offer(rev) }
+        queue.sync { s.invalidateMapping() }
+        runLive(s, clock, tap, frames, steps: 40)
+        XCTAssertEqual(tap.calls.last, 3, "the mapping is expressible again: SHADOW, then LIVE")
+    }
+
+    func testStartupStayLiveAdoptsTheDriversStateWithoutAnyCallAndPushesTheMapping() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let tap = FakeTap(nonce: 5000); tap.hasLive = true; tap.autoApply = true
+        tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+        tap.status.desiredState = 3; tap.status.appliedState = 3; tap.status.padSource = 2; tap.status.padSpecCRC = 0x77
+        let s = shadowSupervisor(tap, path: "driver", clock: clock)
+        s.onDrive = { drives.events.append($0) }; s.padAdopted = { true }; s.liveWatch = LiveWatch()
+        queue.sync { s.controllerInterface(up: true); s.connection(up: true) }
+        XCTAssertTrue(tap.calls.isEmpty, "no setForwarding at all: no SHADOW warm-up, no neutral, no interruption")
+        XCTAssertEqual(drives.events, [true]); XCTAssertEqual(s.makeReport().armed, "live")
+        XCTAssertEqual(tap.mapCalls.count, 1, "the engine's current mapping goes to the driver at once")
+        // the instance is armed: a restart of the driver trips instead of re-arming
+        tap.relaunch(nonce: 6000)
+        queue.sync { s.connection(up: false); s.connection(up: true) }
+        XCTAssertTrue(s.tripped)
+    }
+
+    func testStartupStayLiveNeedsEveryCondition() {
+        func attempt(path: String = "driver", adopted: Bool = true, hasLive: Bool = true, _ mutate: (FakeTap) -> Void = { _ in }) -> (FakeTap, Drives) {
+            let clock = Clock(), drives = Drives()
+            let tap = FakeTap(nonce: 5000); tap.hasLive = hasLive; tap.autoApply = true
+            tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+            tap.status.desiredState = 3; tap.status.appliedState = 3; tap.status.padSource = 2; tap.status.padSpecCRC = 0x77
+            mutate(tap)
+            let s = shadowSupervisor(tap, path: path, clock: clock)
+            s.onDrive = { drives.events.append($0) }; s.padAdopted = { adopted }; s.liveWatch = LiveWatch()
+            queue.sync { s.connection(up: true) }
+            return (tap, drives)
+        }
+        let (ok, okDrives) = attempt(); XCTAssertTrue(ok.calls.isEmpty); XCTAssertEqual(okDrives.events, [true])
+        for (name, r) in [("not adopted", attempt(adopted: false)), ("path shadow", attempt(path: "shadow")), ("path engine", attempt(path: "engine")),
+                          ("no CAP_LIVE", attempt(hasLive: false)), ("self-test not passed", attempt { $0.status.selfTest = 0 }),
+                          ("source UC", attempt { $0.status.padSource = 1 }), ("applied SHADOW", attempt { $0.status.appliedState = 2 }),
+                          ("desired SHADOW", attempt { $0.status.desiredState = 2 }), ("pad not live", attempt { $0.status.padLive = false }),
+                          ("no owner", attempt { $0.status.ownerPresent = false }), ("tap absent", attempt { $0.status.tapPresent = false })] {
+            XCTAssertFalse(r.1.events.contains(true), "\(name): not stay-LIVE")
+            XCTAssertFalse(r.0.calls.contains(3), "\(name): LIVE is never sent without the warm-up")
+        }
+        // an adopted LIVE pad on a path that is not `driver`: the supervisor takes it down properly (INERT: source UC, neutral)
+        let (down, _) = attempt(path: "engine"); XCTAssertEqual(down.calls, [0])
+    }
+
+    func testPauseDrillCarriesTheCurrentStateAndFallsBackThenRearms() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        tap.supportsPauseDrill = true
+        goLive(s, clock, tap, frames)
+        keys.drill = "pause5"
+        runLive(s, clock, tap, frames, steps: 10)
+        XCTAssertEqual(tap.pauseCalls, [5000]); XCTAssertEqual(tap.pauseStates, [3], "the pause flag goes with the state the tap is in")
+        XCTAssertEqual(keys.drillCleared, 1)
+    }
+
+    func testWakeAsksForLiveAgainToClearTheHold() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        let n = tap.calls.count
+        queue.sync { s.didWake() }
+        XCTAssertEqual(tap.calls.count, n + 1); XCTAssertEqual(tap.calls.last, 3, "idempotent in the driver: it only clears the hold")
+        XCTAssertNil(s.fallback)
+    }
+
+    func testLeavingTheDriverPathFromLiveSendsInertAndOpensTheGate() {
+        let clock = Clock(), frames = Counter(), drives = Drives(); let box = ValueBox("driver")
+        let tap = FakeTap(nonce: 1000)
+        tap.hasLive = true; tap.autoApply = true; tap.status.tapPresent = true; tap.status.padLive = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+        tap.status.padSpecCRC = 0x77; tap.status.padSource = 1; tap.status.ownerPresent = true
+        let s = make(box, tap: tap, clock: clock); s.mappingOffer = { [unowned self] rev in self.offer(rev) }
+        s.engineFrames = { frames.value }; s.onDrive = { drives.events.append($0) }; s.liveWatch = LiveWatch()
+        queue.sync { s.controllerInterface(up: true); s.connection(up: true) }
+        ticks(s, 1); tap.status.acceptedSpecCRC = 0x77; tap.status.appliedRevision = tap.status.acceptedRevision
+        goLive(s, clock, tap, frames)
+        box.value = "engine"
+        for _ in 0..<12 { liveStep(s, clock, tap, frames) }
+        XCTAssertEqual(tap.calls.last, 0); XCTAssertEqual(drives.events, [true, false])
+        // and a clean exit from LIVE: INERT first
+        let clock2 = Clock(), frames2 = Counter(), drives2 = Drives()
+        let (s2, tap2, _) = liveSupervisor(clock: clock2, frames: frames2, drives: drives2)
+        goLive(s2, clock2, tap2, frames2)
+        queue.sync { s2.shutdown() }
+        XCTAssertEqual(tap2.calls.last, 0); XCTAssertEqual(drives2.events, [true, false])
+    }
+
+    func testAConnectionLostWhileLiveOpensTheGateAndTheRestartTrips() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        queue.sync { s.connection(up: false) }
+        XCTAssertEqual(drives.events, [true, false])
+        tap.relaunch(nonce: 2000)
+        queue.sync { s.connection(up: true) }
+        XCTAssertTrue(s.tripped, "a new dext instance is never armed again (its pad died with it)")
+        XCTAssertFalse(tap.calls.suffix(1).contains(3))
+    }
+
+    func testStatusReadsTenTimesASecondInLive() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        let before = tap.status2Calls
+        runLive(s, clock, tap, frames, steps: 50)
+        XCTAssertEqual(tap.status2Calls - before, 50, "every tick: 10 Hz while the engine posts nothing")
+    }
+
+    // MARK: Review E2-E7
+
+    /// E2: the controller going off and on (the tap goes away and comes back as a new instance, its counters restart or jump) and a
+    /// Mac sleep with its wake never trip F6 (or anything else) in LIVE; three cycles of each.
+    func testF6StaysQuietAcrossControllerOffOnAndSleepWakeCycles() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        let callsBefore = tap.calls
+        for cycle in 1...3 {
+            // controller off: the tap goes away (appliedState INERT, padSource stays TAP), the engine sees no frames, a while passes
+            queue.sync { s.controllerInterface(up: false) }
+            tap.status.tapPresent = false; tap.status.appliedState = 0
+            for _ in 0..<6 { liveStep(s, clock, tap, frames, perTick: 0, stalled: true) }
+            XCTAssertNil(s.fallback, "cycle \(cycle): tap gone")
+            // controller on: a NEW tap instance (tapStarts +1), its first frames are ignored while it comes up
+            queue.sync { s.controllerInterface(up: true) }
+            tap.status.tapPresent = true; tap.status.tapStarts += 1; tap.status.appliedState = 3
+            tap.status.framesIgnored += 7                          // the process-wide counters never go backwards; the new instance ignored its first frames
+            for _ in 0..<15 { liveStep(s, clock, tap, frames) }
+            XCTAssertNil(s.fallback, "cycle \(cycle): tap back")
+            // Mac sleep: the tap powers off and counts the frames it ignores; the engine wakes, the supervisor is told
+            tap.status.powered = false
+            for _ in 0..<4 { tap.status.framesIgnored += 40; liveStep(s, clock, tap, frames, perTick: 0, stalled: true) }
+            tap.status.powered = true
+            queue.sync { s.didWake() }
+            for _ in 0..<15 { liveStep(s, clock, tap, frames) }
+            XCTAssertNil(s.fallback, "cycle \(cycle): asleep and awake")
+        }
+        XCTAssertEqual(drives.events, [true], "the gate never opened")
+        XCTAssertTrue(tap.calls.dropFirst(callsBefore.count).allSatisfy { $0 == 3 }, "only the wake's idempotent LIVE: \(tap.calls)")
+        XCTAssertEqual(tap.calls.dropFirst(callsBefore.count).count, 3, "one per wake")
+    }
+
+    /// E2: a real stall of the framesIgnored kind is still caught: the same instance, powered on both readings.
+    func testFramesIgnoredRisingOnOneInstanceWhilePoweredStillTripsF6() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        tap.status.powered = true
+        for _ in 0..<4 { tap.status.framesIgnored += 30; liveStep(s, clock, tap, frames) }
+        XCTAssertEqual(s.fallback?.reason, .outputStall)
+        XCTAssertEqual(tap.calls.last, 1, "COUNT")
+    }
+
+    /// E3: a pinned pad nobody owns is waiting and the engine has none: nothing is sent to the driver until the sink adopts it (the
+    /// pad is published on the first controller report), for at most one second after that report; adoption then stays LIVE.
+    func testStartupDefersForAnUnownedPinnedPadThenStaysLiveWhenThePadIsPublished() {
+        let clock = Clock(), drives = Drives()
+        func pinned(hasPadNow: Bool = false) -> (TapSupervisor, FakeTap) {
+            let tap = FakeTap(nonce: 5000); tap.hasLive = true; tap.autoApply = true
+            tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+            tap.status.desiredState = 3; tap.status.appliedState = 3; tap.status.padSource = 2; tap.status.padSpecCRC = 0x77
+            tap.status.padOrphaned = true
+            let s = shadowSupervisor(tap, path: "driver", clock: clock)
+            s.onDrive = { drives.events.append($0) }; s.liveWatch = LiveWatch()
+            return (s, tap)
+        }
+        // restart in LIVE with the real-time thread holding: the connection comes up before any controller report
+        let (s, tap) = pinned()
+        queue.sync { s.connection(up: true) }
+        ticks(s, 30)
+        XCTAssertTrue(tap.calls.isEmpty, "waiting for the pad, nothing is sent: no SHADOW over a LIVE pad, no INERT")
+        // the first controller report arrives; the sink creates its device and adopts the pad
+        queue.sync { s.controllerActive() }
+        clock.ns += 400_000_000; ticks(s, 4)
+        XCTAssertTrue(tap.calls.isEmpty, "still inside the window")
+        s.padAdopted = { true }; s.sinkHasPad = { true }
+        tap.status.padOrphaned = false
+        queue.sync { s.padPublished() }
+        XCTAssertTrue(tap.calls.isEmpty, "adopted: stays LIVE without a single call"); XCTAssertEqual(drives.events, [true])
+        XCTAssertEqual(s.makeReport().armed, "live"); XCTAssertEqual(tap.mapCalls.count, 1)
+        // when no adoption happens the window ends (about a second after the first report) and the normal path takes over
+        drives.events = []
+        let (s2, tap2) = pinned()
+        queue.sync { s2.connection(up: true); s2.controllerActive() }
+        clock.ns += 900_000_000; ticks(s2, 3)
+        XCTAssertTrue(tap2.calls.isEmpty, "before the second is over")
+        clock.ns += 400_000_000; ticks(s2, 5)
+        XCTAssertFalse(tap2.calls.isEmpty, "the window ended: the engine goes on by the normal rules")
+        XCTAssertFalse(tap2.calls.contains(3), "and never LIVE without the warm-up")
+    }
+
+    /// R1: the engine is on a path that never asks for the driver (the runtime rollback during a crash loop: `engine`) and a LIVE pinned
+    /// pad is waiting. INERT after hello had no effect (not the owner yet), the sink then adopts the pad at the first controller
+    /// report: INERT must be sent again, now that the pad is ours.
+    func testEnginePathAdoptsALivePinnedPadLaterAndTakesItBackWithInertAgain() {
+        for path in ["engine", "count", "shadow"] {
+            let clock = Clock()
+            let tap = FakeTap(nonce: 5000); tap.hasLive = true; tap.autoApply = true; tap.noEffectUntilOwned = true
+            tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+            tap.status.desiredState = 3; tap.status.appliedState = 3; tap.status.padSource = 2; tap.status.padSpecCRC = 0x77; tap.status.padOrphaned = true
+            let s = shadowSupervisor(tap, path: path, clock: clock); s.liveWatch = LiveWatch()
+            queue.sync { s.connection(up: true) }
+            if path == "engine" { XCTAssertEqual(tap.calls, [0], "INERT after hello (success with no effect: not the pad's owner yet)") }
+            XCTAssertEqual(tap.status.padSource, 2, "\(path): still the tap's")
+            // first controller report: the sink auto-publishes and ADOPTS the TAP-driven pad
+            s.padAdopted = { true }; s.sinkHasPad = { true }; tap.status.padOrphaned = false; tap.noEffectUntilOwned = false
+            let before = tap.calls.count
+            clock.ns += 1_100_000_000                                  // past the one-second back-off of a refused call
+            queue.sync { s.controllerActive(); s.padPublished() }
+            ticks(s, 30)
+            XCTAssertGreaterThan(tap.calls.count, before, "\(path): the wanted state is sent again: \(tap.calls)")
+            guard tap.calls.count > before else { continue }
+            XCTAssertEqual(tap.calls[before], path == "engine" ? 0 : (path == "count" ? 1 : 2), "\(path)")
+            XCTAssertEqual(tap.status.desiredState, path == "engine" ? 0 : (path == "count" ? 1 : 2), "\(path)")
+            XCTAssertEqual(tap.status.padSource, 1, "\(path): the pad is the engine's again (source UC)")
+            XCTAssertNotEqual(tap.status.appliedState, 3)
+        }
+        // an adopted LIVE pad on the driver path is NOT taken back: it stays LIVE (the startup stay-LIVE case)
+        let clock = Clock()
+        let tap = FakeTap(nonce: 5000); tap.hasLive = true; tap.autoApply = true
+        tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+        tap.status.desiredState = 3; tap.status.appliedState = 3; tap.status.padSource = 2; tap.status.padSpecCRC = 0x77; tap.status.padOrphaned = true
+        let s = shadowSupervisor(tap, path: "driver", clock: clock); s.liveWatch = LiveWatch()
+        queue.sync { s.connection(up: true) }
+        s.padAdopted = { true }; s.sinkHasPad = { true }; tap.status.padOrphaned = false
+        queue.sync { s.controllerActive(); s.padPublished() }
+        ticks(s, 10)
+        XCTAssertTrue(tap.calls.isEmpty, "stay-LIVE sends nothing: \(tap.calls)")
+    }
+
+    /// R2: the engine's willSleep hold stalls the driver's posts on purpose (the tap is still powered until the system sleeps); F6 must
+    /// neither fall back nor count it, and what happened before the hold is not compared with what comes after it.
+    func testF6IgnoresTheEnginesOwnWillSleepHold() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, watch) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        for _ in 0..<5 { watch.wouldPostReports += 2; tap.status.tapPosts += 2; liveStep(s, clock, tap, frames) }
+        tap.status.holdNeutral = true                              // postNeutral while the tap drives: the hold
+        for _ in 0..<20 { watch.wouldPostReports += 2; tap.status.framesIgnored += 3; liveStep(s, clock, tap, frames) }   // tapPosts does not move
+        XCTAssertNil(s.fallback, "controller input between willSleep and the tap's power-off is not a stall")
+        // the wake clears the hold; the driver posts again and nothing from before the hold counts against it
+        tap.status.holdNeutral = false
+        queue.sync { s.didWake() }
+        for _ in 0..<30 { watch.wouldPostReports += 2; tap.status.tapPosts += 2; liveStep(s, clock, tap, frames) }
+        XCTAssertNil(s.fallback); XCTAssertEqual(drives.events, [true])
+        // and a real stall after the hold is over is still caught
+        for _ in 0..<10 { watch.wouldPostReports += 2; liveStep(s, clock, tap, frames) }
+        XCTAssertEqual(s.fallback?.reason, .outputStall)
+    }
+
+    func testNoDeferralWithoutAnOrphanOrWhenThePadIsAlreadyOurs() {
+        let clock = Clock()
+        let tap = FakeTap(nonce: 5000); tap.hasLive = true; tap.autoApply = true
+        tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+        tap.status.padSource = 1; tap.status.padSpecCRC = 0x77; tap.status.padOrphaned = false
+        let s = shadowSupervisor(tap, path: "driver", clock: clock); s.liveWatch = LiveWatch()
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(tap.calls, [2], "no orphan: SHADOW right away as before")
+    }
+
+    /// E4: an adopted LIVE session has F6 on: the engine's own step counts what should be posted and a driver that stops posting
+    /// is caught like in any other LIVE session.
+    func testAnAdoptedLiveSessionEnablesTheWatchAndDetectsAnOutputStall() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let tap = FakeTap(nonce: 5000); tap.hasLive = true; tap.autoApply = true
+        tap.status.tapPresent = true; tap.status.padLive = true; tap.status.ownerPresent = true; tap.status.selfTest = DextProtocol.SelfTest.pass
+        tap.status.desiredState = 3; tap.status.appliedState = 3; tap.status.padSource = 2; tap.status.padSpecCRC = 0x77
+        let s = shadowSupervisor(tap, path: "driver", clock: clock)
+        let watch = LiveWatch(); s.liveWatch = watch
+        s.engineFrames = { frames.value }
+        s.onDrive = { drives.events.append($0) }; s.padAdopted = { true }
+        queue.sync { s.controllerInterface(up: true); s.connection(up: true) }
+        XCTAssertTrue(watch.enabled, "F6 is on for an adopted session")
+        tap.status.acceptedSpecCRC = 0x77; tap.status.appliedRevision = tap.status.acceptedRevision
+        // the driver posts as it should
+        for _ in 0..<30 { watch.wouldPostReports += 2; tap.status.tapPosts += 2; liveStep(s, clock, tap, frames) }
+        XCTAssertNil(s.fallback)
+        // the driver stops posting while the engine's own step keeps counting
+        for _ in 0..<10 { watch.wouldPostReports += 2; liveStep(s, clock, tap, frames) }
+        XCTAssertEqual(s.fallback?.reason, .outputStall)
+        XCTAssertEqual(drives.events.last, false); XCTAssertFalse(watch.enabled)
+    }
+
+    /// E5: whenever LIVE was in force and the wanted state is not LIVE, the posting gate opens, whatever the driver answers.
+    func testTheGateOpensWhenLiveEndsEvenIfTheDriverDoesNotAnswer() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, _) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        tap.setResult = FakeTap.transportError                      // the next state request fails at the transport
+        var n = 0
+        while s.fallback == nil, n < 20 { liveStep(s, clock, tap, frames, stalled: true); n += 1 }
+        XCTAssertEqual(s.fallback?.reason, .stall)
+        XCTAssertEqual(drives.events, [true, false], "the engine posts again although COUNT was not confirmed")
+    }
+
+    /// E6: a new driver instance seen without a connection drop ends LIVE for the gate too.
+    func testANewInstanceSeenInLiveOpensTheGate() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, watch) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        tap.relaunch(nonce: 2000)                                  // replaced under our feet; the connection did not drop
+        tap.status.tapPresent = true
+        ticks(s, 12)
+        XCTAssertTrue(s.tripped); XCTAssertEqual(drives.events, [true, false]); XCTAssertFalse(watch.enabled)
+    }
+
+    /// E7: the sink opened the gate by itself (device gone): the supervisor forgets what it armed, no fallback, no limiter entry, and
+    /// starts again from SHADOW.
+    func testAGateForcedOpenBySinkStartsTheDriverPathAgainWithoutAFallback() {
+        let clock = Clock(), frames = Counter(), drives = Drives()
+        let (s, tap, watch) = liveSupervisor(clock: clock, frames: frames, drives: drives)
+        goLive(s, clock, tap, frames)
+        let n = tap.calls.count
+        queue.sync { s.gateForcedOpen() }
+        XCTAssertNil(s.fallback); XCTAssertFalse(s.tripped); XCTAssertFalse(watch.enabled)
+        XCTAssertEqual(tap.calls.count, n, "nothing is sent for it (the driver left LIVE with the pad)")
+        tap.status.desiredState = 0; tap.status.appliedState = 0; tap.status.padSource = 1
+        runLive(s, clock, tap, frames, steps: 5)
+        XCTAssertEqual(tap.calls.dropFirst(n).first, 2, "SHADOW again")
+        XCTAssertNil(s.fallback)
+        queue.sync { s.gateForcedOpen() }; queue.sync { s.gateForcedOpen() }       // idempotent
         XCTAssertNil(s.fallback)
     }
 

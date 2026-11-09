@@ -47,6 +47,11 @@ extern "C" {
 #define GDHR_E_NO_PAD    5   /* T5: a mapping needs a pad (a LIVE slot) to target */
 #define GDHR_E_SPEC      6   /* T5: the mapping targets another spec CRC than the live pad's */
 #define GDHR_E_SIZE      7   /* T5: the mapping bytes do not fit the handoff buffer */
+#define GDHR_E_NO_TAP    8   /* T7: LIVE needs a tap that is present */
+#define GDHR_E_NOT_SHADOW 9  /* T7: LIVE only follows an applied SHADOW (the tap must be translating) */
+#define GDHR_E_NO_MAP    10  /* T7: LIVE needs an accepted mapping */
+#define GDHR_E_SELFTEST  11  /* T7: LIVE needs a passed self-test */
+#define GDHR_E_NOT_OURS  12  /* T7: a pad exists and the caller neither created nor adopted it (an orphan it has not adopted) */
 
 enum gdhr_counter {
     GDHR_CTR_UC_POSTS = 0,       /* input reports handed to the HID stack for source UC */
@@ -86,6 +91,22 @@ enum gdhr_counter {
     GDHR_CTR_MAP_ACCEPTED,       /* selector 10 blobs accepted */
     GDHR_CTR_MAP_REFUSED,        /* selector 10 blobs refused (any reason) */
     GDHR_CTR_MAP_SWAPS,          /* times the tap switched to a new mapping */
+    /* T7 (LIVE). Written on the tap's queue (tapPosts, submit errors, unchanged, silence/stop/power neutrals, pause, no-pad), on the
+       pad's queue (tapRejected, hold/switch neutrals) or on the root's queue (adopts, orphans). */
+    GDHR_CTR_TAP_POSTS,          /* reports the tap handed to the HID stack (source TAP) */
+    GDHR_CTR_TAP_REJECTED,       /* TAP submissions the pad refused: wrong source, hold set, stopping (counted on the pad's queue) */
+    GDHR_CTR_TAP_SUBMIT_ERRORS,  /* submitInput returned an error to the tap (the next frame reposts everything) */
+    GDHR_CTR_FRAMES_UNCHANGED,   /* LIVE frames after which gdx_step had nothing to post (byte dedupe) */
+    GDHR_CTR_SWITCH_NEUTRALS,    /* neutral posted by a source switch */
+    GDHR_CTR_STOP_NEUTRALS,      /* ... by tap Stop */
+    GDHR_CTR_SILENCE_NEUTRALS,   /* ... by 250 ms without a frame */
+    GDHR_CTR_POWER_NEUTRALS,     /* ... by SetPowerState(Off) */
+    GDHR_CTR_HOLD_NEUTRALS,      /* ... by the engine's neutral request while the tap drives the pad (also sets the hold) */
+    GDHR_CTR_ADOPTS,             /* a new owner adopted a live pinned pad */
+    GDHR_CTR_ORPHAN_DESTROYS,    /* an unowned pinned pad removed by the 30 s timer */
+    GDHR_CTR_PAUSE_DROPS,        /* frames ignored by the pause drill */
+    GDHR_CTR_SOURCE_SWITCHES,    /* padSource changes between UC and TAP */
+    GDHR_CTR_LIVE_NO_PAD,        /* LIVE frames not submitted: no pad / buffers, source not TAP, or the pad changed under the tap */
     GDHR_CTR_COUNT
 };
 
@@ -120,7 +141,15 @@ typedef struct gdhr {
     uint64_t        padGen;               /* owner generation that staged the pad */
     /* atomic words (any thread, no lock) */
     uint32_t        padSource;
-    uint32_t        desiredState;         /* T3: always INERT (0) */
+    uint32_t        desiredState;         /* INERT, COUNT, SHADOW or LIVE; starts INERT in every process */
+    /* T7 (atomic words; the writers hold the registry lock where noted) */
+    uint32_t        holdNeutral;          /* 1: the tap translates but the pad refuses TAP submissions (engine willSleep neutral) */
+    uint32_t        padEpoch;             /* +1 every time a pad object enters or leaves the slot (lock held to write) */
+    uint32_t        orphaned;             /* 1: a pinned pad whose owner left (lock held to write) */
+    uint32_t        pad32;
+    uint64_t        pauseUntil;           /* mach ticks; the tap ignores frames until then (the pause drill) */
+    uint64_t        tapToken;             /* identifies the REGISTERED tap; a tap submits only while its own token is current */
+    uint64_t        orphanDeadline;       /* mach ticks at which the orphan timer may destroy the pad */
     uint64_t        nonce;
     uint32_t        build, pid;
     uint64_t        counters[GDHR_CTR_COUNT];
@@ -149,6 +178,7 @@ typedef struct gdhr_snap {
     uint32_t topology, probeExt, probePad;
     uint32_t tapPresent, tapOpened, tapApplied, tapPowered, tapPid, tapLastPowerFlags, lastError;
     uint32_t selfTest, tapTranslating, hasMap, acceptedRevision, acceptedSpecCrc, appliedRevision;
+    uint32_t holdNeutral, padOrphaned;
     uint64_t counters[GDHR_CTR_COUNT];
 } gdhr_snap;
 
@@ -191,6 +221,7 @@ uint64_t gdhr_claim_owner(gdhr *r, void *uc);
 /* Drops the owner if `uc` is it. If the owner's pad is still registered it is taken as well and returned (+1): the
  * caller terminates it. Keeps "no pad outlives its owner" inside one critical section. */
 void *gdhr_release_owner(gdhr *r, void *uc);
+/* The same, but a pad driven by the tap (desiredState LIVE, padSource TAP) is PINNED instead of returned: see below. */
 void *gdhr_copy_owner(gdhr *r, uint64_t *gen);       /* +1 or NULL */
 
 /* Pad slot. `gen` is the owner generation returned by gdhr_claim_owner. */
@@ -230,10 +261,20 @@ void     gdhr_snapshot(gdhr *r, gdhr_snap *out);
 #define GDH_FWD_COUNT  1      /* opened; counts frames and the kernel-to-driver delay; no translation, nothing posted */
 #define GDH_FWD_SHADOW 2      /* T5: opened; translates with the accepted mapping, records a parity sample, posts NOTHING.
                                  Without an accepted mapping (or after a failed self-test) it behaves exactly like COUNT. */
+#define GDH_FWD_LIVE   3      /* T7: SHADOW plus: the tap submits what it translates to the pad (source TAP, padSource == TAP) */
+#define GDH_FWD_FLAG_DEV_PAUSE_TAP (1u << 8)   /* T7: the tap ignores frames for argMs (<= 10000); owner only; every build */
+#define GDH_FWD_FLAG_RELEASE_PAD   (1u << 9)   /* T7: INERT, source UC, neutral, destroy the pad even if nobody owns it; owner only */
+#define GDH_PAUSE_MAX_MS 10000
+#define GDH_SILENCE_NEUTRAL_MS 250             /* LIVE: no frame for this long -> neutral (plan 6.4) */
+#define GDH_ORPHAN_MS 30000                    /* an unowned pinned pad is removed after this long */
 
 /* Registers the tap and reads the desired state in the same critical section, so no state change can be lost between the
  * two. Returns 1 if it replaced a stale tap (two instances during a re-enumeration). Retains `tap` and `queue`. */
 int   gdhr_register_tap(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *desired);
+/* The same, and also returns the new tap's token: the tap submits to the pad only while gdhr_tap_token(r) still equals it, so
+ * of two instances during a re-enumeration only the newer one can write. */
+int   gdhr_register_tap_ex(gdhr *r, void *tap, void *queue, uint32_t pid, uint32_t *desired, uint64_t *token);
+uint64_t gdhr_tap_token(const gdhr *r);
 void  gdhr_unregister_tap(gdhr *r, void *tap);               /* only if it is the registered tap; clears opened/applied */
 void *gdhr_copy_tap(gdhr *r, void **queueOut);               /* +1 tap and +1 queue, or NULL */
 int   gdhr_tap_is(gdhr *r, void *tap);
@@ -249,7 +290,8 @@ void  gdhr_set_terminating(gdhr *r);
 void  gdhr_clear_terminating(gdhr *r);                       /* devTerminate failed: the process is not ending, taps may attach again */
 uint32_t gdhr_terminating(const gdhr *r);
 
-/* Selector 9 argument check: 0 = accepted (INERT, COUNT or SHADOW, no flags), 1 = Unsupported. */
+/* Selector 9 argument check: 0 = accepted (state INERT, COUNT, SHADOW or LIVE; flags 0, or DEV_PAUSE_TAP with any state, or
+ * RELEASE_PAD with INERT), 1 = Unsupported. */
 int   gdh_fwd_validate(uint64_t state, uint64_t flags);
 
 /* What the tap's queue does next. The only place that decides when Open is called (rule A): the owner asked for COUNT in
@@ -266,7 +308,7 @@ int   gdh_tap_fast_tick(uint32_t desired, uint32_t opened, uint32_t powered, uin
 /* The tap's report pool bookkeeping (T4 review M3). The slots only record which buffers we own and whether each is in the
  * kernel's pool; creating and releasing the buffers is the caller's job. On Close the whole pool is dropped (gdh_pool_reset)
  * and a fresh one is built at the next Open, so a late report that carries an old buffer matches nothing. */
-#define GDH_POOL_SLOTS 8
+#define GDH_POOL_SLOTS 32          /* T7: 32 x 64 B. A pool miss is a report in a kernel buffer; with 8 buffers that needs 8 reports queued (8 ms), with 32 it needs 32 ms of tap-queue stall */
 typedef struct gdh_pool {
     void    *buf[GDH_POOL_SLOTS];
     uint8_t  inPool[GDH_POOL_SLOTS];
@@ -304,6 +346,64 @@ uint32_t gdhr_selftest_get(const gdhr *r);
  * so RUNNING is never seen by a second caller; if it ever were, the caller answers NotReady, never "failed". */
 int      gdhr_is_owner(gdhr *r, void *uc);                    /* 1 if `uc` is the current owner (the check that precedes the self-test) */
 void     gdhr_tap_publish_xlate(gdhr *r, void *tap, uint32_t appliedRevision, uint32_t translating);  /* ignored for a stale tap */
+
+/* ---------------------------------------------------------------------------------------------------------------
+ * T7: LIVE. The pad is the only arbiter (plan 6.2): `padSource` is read by the pad on its own queue for every submission and
+ * decides. The functions below are the transitions of that word and of the words around it; each is one critical section or
+ * one atomic store, and none calls out except retain/release.
+ *
+ * Switch to LIVE (user-client side; the glue posts the switch neutral between the two calls):
+ *   gdhr_live_begin  checks the owner and every precondition, then stores padSource = TAP
+ *   (glue)           pad->postNeutralFrom(TAP, SWITCH)
+ *   gdhr_live_commit stores desiredState = LIVE and holdNeutral = 0 (owner only); on failure the glue calls gdhr_live_abort
+ * Switch away from LIVE:
+ *   gdhr_leave_live  stores padSource = UC (1 if it was TAP); the glue posts the neutral (UC), then stores the new desired state.
+ */
+int  gdhr_live_begin(gdhr *r, void *uc);        /* GDHR_OK, or NOT_OWNER / NO_PAD / NO_TAP / NOT_SHADOW / NO_MAP / SPEC / SELFTEST */
+int  gdhr_live_commit(gdhr *r, void *uc);
+int  gdhr_is_live(const gdhr *r);               /* desiredState == LIVE and padSource == TAP */
+void gdhr_live_abort(gdhr *r);                  /* padSource TAP -> UC (a failed switch) */
+int  gdhr_leave_live(gdhr *r);                  /* 1 if padSource was TAP and is UC now */
+uint32_t gdhr_hold(const gdhr *r);              /* the hold word (atomic load) */
+void gdhr_set_hold(gdhr *r, uint32_t v);
+void gdhr_pause_set(gdhr *r, uint64_t untilTicks);
+uint64_t gdhr_pause_until(const gdhr *r);
+uint32_t gdhr_pad_epoch(const gdhr *r);         /* changes whenever a pad object enters or leaves the slot */
+
+/* The two decisions of the tap's LIVE path that are pure, so they can be tested without DriverKit.
+ *  gdh_live_submit_ok: the tap submits a frame only if LIVE is set up, the hold is clear, this instance's token is the registered
+ *    tap's, the pad it holds is the slot's current pad (epoch) and the pad's source is the tap. (The pad re-checks the source and the
+ *    hold on its own queue; this only avoids sending what would be refused.)
+ *  gdh_silence_due: the LIVE silence neutral: opened, powered, LIVE applied, a frame has been seen, none for `silenceTicks`, not
+ *    already neutralised, and the engine's hold is not already holding the pad neutral. */
+int gdh_live_submit_ok(int liveActive, uint32_t hold, uint64_t myToken, uint64_t curToken, uint32_t myEpoch, uint32_t curEpoch,
+                       uint32_t padSource);
+int gdh_silence_due(int wantLive, int opened, int powered, int silenced, uint32_t hold, uint32_t padSource, uint64_t lastDelivery,
+                    uint64_t now, uint64_t silenceTicks);
+
+/* Pinning (plan 6.3). A pad is pinned when the owner leaves while desiredState == LIVE and padSource == TAP: the pad, the
+ * accepted mapping and the LIVE state stay, the claim is released, `orphaned` is set with a deadline. Not pinned: exactly
+ * the old behaviour (INERT, mapping dropped, the owner's pad is returned for destruction). */
+void *gdhr_release_owner_pin(gdhr *r, void *uc, uint64_t nowTicks, uint64_t orphanTicks, int *pinned);
+uint32_t gdhr_pad_orphaned(const gdhr *r);
+uint64_t gdhr_orphan_deadline(const gdhr *r);
+/* A new owner adopts the orphaned pad when `specCrc` is the pad's (the glue has compared the bytes). GDHR_OK, E_NOT_OWNER
+ * (no such owner generation), E_NO_PAD (nothing orphaned), E_SPEC. The owner now owns the pad; orphaned is cleared. */
+int  gdhr_pad_adopt(gdhr *r, uint64_t gen, uint32_t specCrc);
+/* Orphan expiry, in two critical sections so the glue can post the neutral between them. begin: if still orphaned and ownerless
+ * and past the deadline -> padSource = UC, desiredState = INERT, returns 1. finish: if still orphaned and ownerless -> the pad
+ * slot is emptied (the pad is returned +1 for termination), orphaned cleared. */
+int   gdhr_orphan_begin(gdhr *r, uint64_t nowTicks);
+void *gdhr_orphan_finish(gdhr *r);
+void *gdhr_orphan_force_finish(gdhr *r);                        /* removes an orphaned pad even while a client is connected as owner */
+int   gdhr_owns_pad(gdhr *r, void *uc);                         /* the caller is the owner and the LIVE pad is its own */
+int   gdhr_owner_present(gdhr *r);
+int   gdhr_pad_not_ours(gdhr *r, void *uc);                     /* a pad exists (any state) and the caller did not create or adopt it */
+uint64_t gdh_orphan_arm_time(uint32_t orphaned, uint32_t ownerPresent, uint64_t deadline, uint64_t now, uint64_t graceTicks,
+                             uint64_t ownerGraceTicks);
+int      gdh_orphan_owner_overstay(uint32_t orphaned, uint32_t ownerPresent, uint64_t deadline, uint64_t now, uint64_t ownerGraceTicks);
+/* A destroy of a pad nobody owns any more (old app's createDevice, RELEASE_PAD): same as finish without the deadline. */
+int   gdhr_orphan_force_begin(gdhr *r);
 
 /* The parity record: the last frame the tap translated, as the stateless gdx_eval + gdx_build output, seqlock-published by
  * its single writer (the tap's queue) for any reader. */
@@ -370,6 +470,8 @@ uint32_t gdh_crc32(const uint8_t *p, size_t len);
 /* T5 extras of status2 (all optional; zero when absent). */
 typedef struct gdh_status2_extra {
     gdh_summary xlate;                /* translate time of the SHADOW core, last 10 s window */
+    gdh_summary total, occ, addPool, submit;   /* T7: kernel timestamp -> submit return, tap-queue occupancy, AddReportToPool, submit RPC */
+    uint32_t paused;                  /* the pause drill is active now */
     gdh_parity_rec parity;            /* the last parity record, valid when haveParity */
     uint32_t haveParity;
 } gdh_status2_extra;

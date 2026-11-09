@@ -93,6 +93,7 @@ kern_return_t GDHubMapAccept(GDHubVirtualHIDUserClient * uc, const uint8_t * byt
         *reason = GDHUB_MAP_OK;
         return kIOReturnSuccess;
     case GDHR_E_NOT_OWNER: gdhr_ctr_add(reg, GDHR_CTR_MAP_REFUSED, 1); return kIOReturnNotPermitted;
+    case GDHR_E_NOT_OURS:  gdhr_ctr_add(reg, GDHR_CTR_MAP_REFUSED, 1); return kIOReturnBusy;      // an orphan it has not adopted
     case GDHR_E_NO_PAD:    *reason = GDHUB_MAP_NO_PAD; break;                 // the pad went away between the check and the publish
     case GDHR_E_SPEC:      *reason = GDX_E_SPEC_CRC; break;                   // and was replaced by one with another spec
     case GDHR_E_SIZE:      *reason = GDHUB_MAP_TOO_BIG; break;

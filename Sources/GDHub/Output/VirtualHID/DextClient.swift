@@ -49,6 +49,17 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     var hasTap: Bool { capabilities & DextProtocol.Capability.tap != 0 }
     /// T5: the dext has `setMapping` and the SHADOW state.
     var hasXlate: Bool { capabilities & DextProtocol.Capability.xlate != 0 }
+    /// T7: the dext has LIVE, selector 12, the pause / release-pad flags, pinning and adoption.
+    var hasLive: Bool { capabilities & DextProtocol.Capability.live != 0 }
+    /// The pause drill and the pad release: selector 9 with a flag (needs CAP_LIVE).
+    var supportsPauseDrill: Bool { hasLive }
+    func pauseTap(state: UInt64, ms: UInt64) -> kern_return_t {
+        setForwarding(state, flags: DextProtocol.Forwarding.flagDevPauseTap, argMs: ms).kr
+    }
+    /// `--release-pad` and the agent uninstall: INERT, source UC, neutral, destroy the pad even if it is pinned and unowned.
+    func releasePad() -> kern_return_t {
+        setForwarding(DextProtocol.Forwarding.inert, flags: DextProtocol.Forwarding.flagReleasePad, argMs: 0).kr
+    }
     /// A supervised client belongs to the engine's `TapSupervisor`, which decides the forwarding state. Every other client
     /// (the GUI in in-app mode) sends INERT after hello when the dext has a tap, so a tap can never keep counting for it.
     let supervised: Bool
@@ -276,6 +287,30 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
         return IOConnectCallScalarMethod(connect, DextProtocol.Selector.heartbeat, nil, 0, nil, nil)
     }
 
+    /// T7: `createDevice` that can adopt a live pinned pad. Needs `Capability.live`; without it this is `createDevice` (never
+    /// adopted, the pad is ours and driven by the user client). `padSource` is the dext's answer (1 user client, 2 tap).
+    func createDevice2(_ spec: DeviceSpec) -> (kr: kern_return_t, adopted: Bool, padSource: UInt64) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard hasLive else { return (createDevice(spec), false, UInt64(DextProtocol.PadSource.userClient.rawValue)) }
+        guard isLinked else { return (DextProtocol.krNotReady, false, 0) }
+        let bytes: [UInt8]
+        do { bytes = try spec.encoded() } catch {
+            Self.log.error("createDevice2: invalid spec: \(String(describing: error), privacy: .public)")
+            return (DextProtocol.krBadArgument, false, 0)
+        }
+        let r = callRaw(DextProtocol.Selector.createDevice2, scalarsIn: [], scalarOutCount: 2, structOutCapacity: 0, structIn: bytes)
+        guard r.kr == KERN_SUCCESS else { return (r.kr, false, 0) }
+        let res = DextCreate2Result(words: r.scalars)
+        // An unsupervised client (the GUI in in-app mode) that adopted a pad the driver's tap drives takes it over: its INERT after
+        // hello came before it owned anything and had no effect (the driver answers such a request with success and no effect), so it
+        // is sent again now that the pad is its own. The driver leaves LIVE properly (source UC, neutral) and the GUI's posts go out.
+        // A supervised client (the engine) leaves the state to its TapSupervisor.
+        if res.adopted, res.padSource == UInt64(DextProtocol.PadSource.tap.rawValue), !supervised, hasTap {
+            _ = setForwarding(DextProtocol.Forwarding.inert)
+        }
+        return (KERN_SUCCESS, res.adopted, res.padSource)
+    }
+
     func createDevice(_ spec: DeviceSpec) -> kern_return_t {
         dispatchPrecondition(condition: .onQueue(queue))
         guard connect != 0 else { return DextProtocol.krNotReady }
@@ -351,16 +386,22 @@ final class DextClient: @unchecked Sendable {   // confined to `queue`
     /// call is not sent and the result is `krUnsupported`: a dext that lacks the selector or the state answers BadArgument or
     /// Unsupported anyway, but the app does not rely on that.
     func setForwarding(_ state: UInt64) -> (kr: kern_return_t, result: DextForwardingResult?) {
+        setForwarding(state, flags: 0, argMs: 0)
+    }
+
+    func setForwarding(_ state: UInt64, flags: UInt64, argMs: UInt64) -> (kr: kern_return_t, result: DextForwardingResult?) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard isLinked else { return (DextProtocol.krNotReady, nil) }
-        guard DextProtocol.Forwarding.isAccepted(state: state, flags: 0) else { return (DextProtocol.krUnsupported, nil) }
+        guard DextProtocol.Forwarding.isAccepted(state: state, flags: flags) else { return (DextProtocol.krUnsupported, nil) }
         guard hasRootPad else { return (DextProtocol.krUnsupported, nil) }
+        if flags != 0 { guard hasLive else { return (DextProtocol.krUnsupported, nil) } }     // the flags arrive with CAP_LIVE
         switch state {                                 // each state needs the capability that introduced it
         case DextProtocol.Forwarding.inert: break
         case DextProtocol.Forwarding.count: guard hasTap else { return (DextProtocol.krUnsupported, nil) }
+        case DextProtocol.Forwarding.live: guard hasLive else { return (DextProtocol.krUnsupported, nil) }
         default: guard hasXlate else { return (DextProtocol.krUnsupported, nil) }
         }
-        let r = callRaw(DextProtocol.Selector.setForwarding, scalarsIn: [state, 0, 0],
+        let r = callRaw(DextProtocol.Selector.setForwarding, scalarsIn: [state, flags, argMs],
                         scalarOutCount: DextForwardingResult.scalarCount, structOutCapacity: 0)
         return (r.kr, r.kr == KERN_SUCCESS ? DextForwardingResult(words: r.scalars) : nil)
     }

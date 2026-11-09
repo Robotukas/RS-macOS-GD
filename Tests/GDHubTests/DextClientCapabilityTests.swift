@@ -11,6 +11,7 @@ final class DextClientCapabilityTests: XCTestCase {
     private final class FakeDext: @unchecked Sendable {
         var calls: [(selector: UInt32, scalarsIn: [UInt64], outCount: Int, structCap: Int, structIn: [UInt8]?)] = []
         var mapReason: UInt32 = 0
+        var adoptNext = false
         let capabilities: UInt64
         var status2Bytes: [UInt8] = []
         init(capabilities: UInt64) { self.capabilities = capabilities }
@@ -24,10 +25,13 @@ final class DextClientCapabilityTests: XCTestCase {
             case DextProtocol.Selector.setForwarding where hasRootPad:
                 let hasTap = capabilities & DextProtocol.Capability.tap != 0
                 let hasXlate = capabilities & DextProtocol.Capability.xlate != 0
-                let ok = scalarsIn[1] == 0 && (scalarsIn[0] == 0 || (scalarsIn[0] == 1 && hasTap) || (scalarsIn[0] == 2 && hasXlate))
+                let hasLive = capabilities & DextProtocol.Capability.live != 0
+                let ok = (scalarsIn[1] == 0 || hasLive) && (scalarsIn[0] == 0 || (scalarsIn[0] == 1 && hasTap) || (scalarsIn[0] == 2 && hasXlate) || (scalarsIn[0] == 3 && hasLive))
                 return ok ? DextRawResult(kr: KERN_SUCCESS, scalars: [0, hasTap ? 1 : 0, 1, 0]) : DextRawResult(kr: DextProtocol.krUnsupported)
             case DextProtocol.Selector.setMapping where capabilities & DextProtocol.Capability.xlate != 0:
                 return DextRawResult(kr: KERN_SUCCESS, scalars: [mapReason == 0 ? 7 : 0, UInt64(mapReason)])
+            case DextProtocol.Selector.createDevice2 where capabilities & DextProtocol.Capability.live != 0:
+                return DextRawResult(kr: KERN_SUCCESS, scalars: [adoptNext ? 1 : 0, adoptNext ? 2 : 1])
             case DextProtocol.Selector.getStatus2 where hasRootPad:
                 return DextRawResult(kr: KERN_SUCCESS, bytes: Array(status2Bytes.prefix(structCap)))
             default:
@@ -50,6 +54,64 @@ final class DextClientCapabilityTests: XCTestCase {
         var buf = [UInt8](repeating: 0, count: 512)
         let n = gdh_status2_pack(&buf, 512, &s, &hop, &hr, 2, nil, nil)
         return Array(buf.prefix(n))
+    }
+
+    // MARK: T7: CAP_LIVE both ways
+
+    private let build23 = DextProtocol.Capability.pad | DextProtocol.Capability.rootPad | DextProtocol.Capability.tap | DextProtocol.Capability.xlate
+    private var buildLive: UInt64 { build23 | DextProtocol.Capability.live }
+
+    func testNewAppWithBuild23DextNeverSendsLiveTheFlagsOrSelector12() {
+        let fake = FakeDext(capabilities: build23)
+        let c = client(fake)
+        queue.sync {
+            XCTAssertFalse(c.hasLive); XCTAssertFalse(c.supportsPauseDrill)
+            XCTAssertEqual(c.setForwarding(DextProtocol.Forwarding.live).kr, DextProtocol.krUnsupported)
+            XCTAssertEqual(c.pauseTap(state: 2, ms: 5000), DextProtocol.krUnsupported)
+            XCTAssertEqual(c.releasePad(), DextProtocol.krUnsupported)
+            let spec = try! PadIdentity.default.spec()
+            let r = c.createDevice2(spec)
+            XCTAssertFalse(r.adopted, "without CAP_LIVE it is createDevice and never adopts")
+            XCTAssertTrue(fake.calls.allSatisfy { $0.selector != DextProtocol.Selector.createDevice2 && $0.selector != DextProtocol.Selector.setForwarding },
+                          "selector 12 and LIVE / flags never reach a build-23 dext: \(fake.calls.map(\.selector))")
+            XCTAssertEqual(c.setForwarding(DextProtocol.Forwarding.shadow).kr, KERN_SUCCESS, "SHADOW still works")
+        }
+    }
+
+    func testNewAppWithALiveDextSendsLiveFlagsAndSelector12() throws {
+        let fake = FakeDext(capabilities: buildLive)
+        let c = client(fake)
+        queue.sync {
+            XCTAssertTrue(c.hasLive); XCTAssertTrue(c.supportsPauseDrill)
+            XCTAssertEqual(c.setForwarding(DextProtocol.Forwarding.live).kr, KERN_SUCCESS)
+            XCTAssertEqual(fake.calls.last?.scalarsIn, [3, 0, 0])
+            XCTAssertEqual(c.pauseTap(state: 3, ms: 5000), KERN_SUCCESS)
+            XCTAssertEqual(fake.calls.last?.scalarsIn, [3, 0x100, 5000], "the pause flag carries the state the tap is in")
+            XCTAssertEqual(c.releasePad(), KERN_SUCCESS)
+            XCTAssertEqual(fake.calls.last?.scalarsIn, [0, 0x200, 0])
+            XCTAssertEqual(c.setForwarding(4).kr, DextProtocol.krUnsupported)
+            fake.adoptNext = true
+            let r = c.createDevice2(try! PadIdentity.default.spec())
+            XCTAssertEqual(r.kr, KERN_SUCCESS); XCTAssertTrue(r.adopted); XCTAssertEqual(r.padSource, 2)
+            let c12 = fake.calls.last { $0.selector == 12 }
+            XCTAssertNotNil(c12); XCTAssertNotNil(c12?.structIn)
+            XCTAssertEqual(fake.calls.last?.selector, 9, "an unsupervised client that adopted a pad the tap drives asks for INERT again: the one it sent after hello had no effect (it owned nothing)")
+            XCTAssertEqual(fake.calls.last?.scalarsIn, [0, 0, 0])
+            fake.adoptNext = false
+            let r2 = c.createDevice2(try! PadIdentity.default.spec())
+            XCTAssertFalse(r2.adopted); XCTAssertEqual(r2.padSource, 1)
+        }
+    }
+
+    /// A build-23 app against the new dext: it never sets bit 11, sends none of the new selectors or flags and reads the first 480
+    /// bytes of status2; every number it relies on is where it was.
+    func testBuild23AppContractsAgainstTheLiveDext() {
+        XCTAssertEqual(DextProtocol.Capability.live, 1 << 11)
+        XCTAssertEqual(build23 & DextProtocol.Capability.live, 0)
+        XCTAssertEqual(DextProtocol.Selector.getStatus2, 11); XCTAssertEqual(DextProtocol.Selector.setMapping, 10)
+        XCTAssertEqual(DextProtocol.Forwarding.inert, 0); XCTAssertEqual(DextProtocol.Forwarding.count, 1); XCTAssertEqual(DextProtocol.Forwarding.shadow, 2)
+        XCTAssertTrue(DextProtocol.Forwarding.isAccepted(state: 2, flags: 0)); XCTAssertEqual(DextStatus2.Offset.parityOut02 + 2, 478)
+        XCTAssertEqual(DextProtocol.version, 1)
     }
 
     // MARK: new app, old dext (build 17)
@@ -172,6 +234,18 @@ final class DextClientCapabilityTests: XCTestCase {
             XCTAssertEqual(c.setForwarding(3).kr, DextProtocol.krUnsupported, "LIVE is not sent")
             XCTAssertEqual(fake.calls.count, 1)
         }
+    }
+
+    func testSupervisedClientDoesNotSendInertAfterAdoption() {
+        let fake = FakeDext(capabilities: buildLive)
+        let sup = DextClient(queue: queue, supervised: true)
+        queue.sync { sup.attachFakeDext(capabilities: fake.capabilities, call: fake.call) }
+        fake.adoptNext = true
+        queue.sync {
+            let r = sup.createDevice2(try! PadIdentity.default.spec())
+            XCTAssertTrue(r.adopted)
+        }
+        XCTAssertEqual(fake.calls.map(\.selector), [12], "the engine's TapSupervisor decides what state the adopted pad gets")
     }
 
     func testUnsupervisedClientSendsInertAfterHelloOnlyToATapDext() {

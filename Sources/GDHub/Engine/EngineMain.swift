@@ -20,6 +20,10 @@ enum EngineMain {
             EngineService.log.error("refused to run: not started by launchd (XPC_SERVICE_NAME=\(ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] ?? "-", privacy: .public))")
             exit(64)
         }
+        if options.releasePad {
+            // Only with --engine-foreground (checked above): remove a pinned pad that nobody owns, then exit. Never started by launchd.
+            exit(ReleasePadTool.run())
+        }
         let s = EngineService(options: options)
         service = s
         s.start()

@@ -62,17 +62,36 @@ void GDHubTerminateAndRelease(OSObject * service)
     service->release();
 }
 
-void GDHubReleaseOwner(GDHubVirtualHIDUserClient * uc)
+static uint64_t nsToTicksReg(uint64_t ns)
+{
+    mach_timebase_info_data_t tb = {0, 0};
+    mach_timebase_info(&tb);
+    return tb.numer == 0 ? ns : ns * tb.denom / tb.numer;
+}
+
+bool GDHubReleaseOwner(GDHubVirtualHIDUserClient * uc)
 {
     // The core hands back the owner's pad if it is still registered ("no pad outlives its owner"); terminate it here,
-    // outside the registry lock.
-    OSObject * left = static_cast<OSObject *>(gdhr_release_owner(GDHubReg(), static_cast<OSObject *>(uc)));
+    // outside the registry lock. A pad that the tap is driving (LIVE) is PINNED instead: it stays, the mapping stays, and the
+    // root's 30 s timer is armed (plan 6.3).
+    int pinned = 0;
+    OSObject * left = static_cast<OSObject *>(gdhr_release_owner_pin(GDHubReg(), static_cast<OSObject *>(uc), mach_absolute_time(),
+                                                                     nsToTicksReg((uint64_t)GDH_ORPHAN_MS * 1000000ull), &pinned));
+    if (pinned) {
+        GDLog("owner left a pinned pad: the tap keeps driving it, orphan timer %u s", (unsigned)(GDH_ORPHAN_MS / 1000));
+        GDHubOrphanArm(0);
+    } else if (gdhr_pad_orphaned(GDHubReg())) {
+        // This client never adopted the orphan and is gone: the orphan is the timer's again, with 5 s of grace (its deadline may be past).
+        GDLog("owner left without adopting the orphaned pad: orphan timer re-armed (5 s grace)");
+        GDHubOrphanArm(5ull * 1000000000ull);
+    }
     GDHubPokeTap();                       // the core reset the desired state to INERT with the owner; the tap closes the interface (rule C)
     if (left) {
         GDLog("owner released with a pad still registered: terminating it");
         gdhr_ctr_add(GDHubReg(), GDHR_CTR_PAD_DESTROYS, 1);
         GDHubTerminateAndRelease(left);
     }
+    return pinned != 0;
 }
 
 // A GDH_SYNC call whose target queue was already on this thread's queue stack: an inline nested call, counted in
@@ -195,8 +214,11 @@ size_t GDHubBuildStatus2(uint8_t * buf, size_t cap)
     if (q) static_cast<OSObject *>(q)->release();
     if (tap) {
         GDHubTapReadMeter(tap, &extra.xlate, &k2d, &tapWindows);
+        GDHubTapReadLive(tap, &extra.total, &extra.occ, &extra.addPool, &extra.submit);
         extra.haveParity = GDHubTapReadParity(tap, &extra.parity) ? 1 : 0;
         tap->release();
     }
+    uint64_t pu = gdhr_pause_until(r);
+    extra.paused = (pu != 0 && mach_absolute_time() < pu) ? 1 : 0;
     return gdh_status2_pack(buf, cap, &snap, &hop, &hr, windows, &k2d, &extra);
 }

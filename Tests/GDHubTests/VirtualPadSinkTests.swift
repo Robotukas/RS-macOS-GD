@@ -69,7 +69,17 @@ final class FakeTransport: PadTransport {
     var postDuration: UInt64 = 0
     init(env: ManualScheduler) { self.env = env }
 
+    // T7: createDevice2 (adoption). `adoptNext` makes the next successful create an adoption by a pad whose source is `padSourceNext`;
+    // `busyReplies` answers Busy that many times first (the dext removed an orphan with another spec).
+    var adoptNext = false
+    var padSourceNext: UInt64 = 1
+    var busyReplies = 0
     func createDevice(_ spec: DeviceSpec) -> kern_return_t { calls.append((env.now, .create(spec.productID))); return createResult }
+    func createDevice2(_ spec: DeviceSpec) -> (kr: kern_return_t, adopted: Bool, padSource: UInt64) {
+        calls.append((env.now, .create(spec.productID)))
+        if busyReplies > 0 { busyReplies -= 1; return (DextProtocol.krBusy, false, 0) }
+        return (createResult, adoptNext && createResult == KERN_SUCCESS, padSourceNext)
+    }
     func destroyDevice(slot: UInt8) -> kern_return_t { calls.append((env.now, .destroy)); return KERN_SUCCESS }
     func post(slot: UInt8, report: [UInt8]) -> kern_return_t {
         calls.append((env.now, .post(report)))
@@ -568,11 +578,204 @@ final class VirtualPadSinkTests: XCTestCase {
     }
 
     func testCreateFailureShowsAnError() {
-        transport.createResult = DextProtocol.krBusy
+        transport.createResult = DextProtocol.krNotPermitted
         let sink = makeSink()
         queue.sync { sink.transportConnected(); sink.publish(.default, persist: false) }
         guard case .error = sink.state else { return XCTFail("expected an error state, got \(sink.state)") }
         XCTAssertEqual(env.activeTimers, 0, "no heartbeat without a device")
+    }
+
+    // MARK: T7: the posting gate, adoption, the neutral rules
+
+    func testWhileTheDriverDrivesTheEnginePostsNothingAndOnFallbackTheVeryNextFramePostsInFull() {
+        let sink = publishedSink()
+        var f = GamepadFrame(); f.lt = 1023; f.buttons = 1                      // LT held fully
+        queue.sync { sink.handle(frame: f, mapping: .default) }
+        XCTAssertEqual(transport.posts.count, 1)
+        var changes: [Bool] = []
+        sink.onDriveChange = { changes.append($0) }
+        queue.sync { sink.setDriverDrives(true) }
+        XCTAssertTrue(sink.driverDrives); XCTAssertEqual(changes, [true])
+        transport.clear()
+        var g = f; g.buttons = 2
+        sink.submit(frame: g, mapping: .default); queue.sync {}
+        queue.sync { sink.handle(frame: g, mapping: .default) }
+        XCTAssertTrue(transport.posts.isEmpty, "the gate is closed on both entry points")
+        XCTAssertEqual(sink.framesReceived, 1, "frames that reach submit are still counted")
+        queue.sync { sink.setDriverDrives(true) }
+        XCTAssertEqual(changes, [true], "no change, no callback")
+        // the driver stalls and the supervisor falls back: the pad shows neutral (the driver posted it), the held LT must come back
+        queue.sync { sink.setDriverDrives(false) }
+        XCTAssertEqual(changes, [true, false]); XCTAssertGreaterThan(env.activeTimers, 0, "the heartbeat is running again")
+        queue.sync { sink.handle(frame: f, mapping: .default) }                  // the SAME frame as before the gate closed
+        XCTAssertTrue(transport.posts.contains(report1(PadState(buttons: .a, lt: 1.0))), "delivery state was reset: the identical frame is posted again, LT = 1.0 included")
+    }
+
+    func testIdenticalFrameReachesTheSinkAfterTheGateOpensEvenThroughTheMailbox() {
+        let sink = publishedSink()
+        var f = GamepadFrame(); f.buttons = 4
+        sink.submit(frame: f, mapping: .default); queue.sync {}
+        queue.sync { sink.setDriverDrives(true) }
+        transport.clear()
+        queue.sync { sink.setDriverDrives(false) }
+        sink.submit(frame: f, mapping: .default); queue.sync {}                    // identical to the last one the mailbox saw
+        XCTAssertTrue(transport.posts.contains(report1(PadState(buttons: PadButtons(rawValue: 0)))) == false && !transport.posts.isEmpty, "it was posted, not dropped as a duplicate")
+    }
+
+    func testAdoptingAPinnedPadSkipsTheNeutralAndRemembersWhoDrivesIt() {
+        transport.adoptNext = true; transport.padSourceNext = 2
+        let sink = makeSink()
+        queue.sync { sink.transportConnected(); sink.publish(.default, persist: false) }
+        XCTAssertEqual(transport.neutrals, 0, "no neutral: the pad already shows the controller")
+        XCTAssertTrue(sink.createdAdopted); XCTAssertEqual(sink.createdPadSource, 2)
+        XCTAssertGreaterThan(env.activeTimers, 0, "the heartbeat runs")
+        if case .published = sink.state {} else { XCTFail("\(sink.state)") }
+        // a normal create posts the neutral
+        let t2 = FakeTransport(env: env)
+        let s2 = VirtualPadSink(queue: queue, transport: t2, clock: { [env] in env!.now }, scheduler: env, config: .init(), defaults: defaults, duplicateCheck: { _ in nil })
+        queue.sync { s2.transportConnected(); s2.publish(.default, persist: false) }
+        XCTAssertEqual(t2.neutrals, 1); XCTAssertFalse(s2.createdAdopted)
+    }
+
+    /// R7: what the dext said about the device in force is forgotten with the device: `createdAdoptedTapPad` (the supervisor's
+    /// `padAdopted`) is false after a destroy, a lost connection, a lost device and a reconnect.
+    func testTheAdoptedOriginIsForgottenWithTheDevice() {
+        func adopted() -> VirtualPadSink {
+            transport.adoptNext = true; transport.padSourceNext = 2
+            let sink = makeSink()
+            queue.sync { sink.transportConnected(); sink.publish(.default, persist: false) }
+            XCTAssertTrue(sink.createdAdoptedTapPad); XCTAssertTrue(sink.createdAdopted)
+            transport.adoptNext = false; transport.padSourceNext = 1
+            return sink
+        }
+        var sink = adopted()
+        queue.sync { sink.unpublish(persist: false) }
+        XCTAssertFalse(sink.createdAdoptedTapPad, "destroyed"); XCTAssertFalse(sink.createdAdopted); XCTAssertEqual(sink.createdPadSource, 1)
+        sink = adopted()
+        queue.sync { sink.transportLost() }
+        XCTAssertFalse(sink.createdAdoptedTapPad, "connection lost"); XCTAssertFalse(sink.createdAdopted)
+        sink = adopted()
+        transport.postResult = DextProtocol.krNotReady               // the device is gone (post answers NotReady)
+        var f = GamepadFrame(); f.buttons = 1
+        queue.sync { sink.handle(frame: f, mapping: .default) }
+        XCTAssertFalse(sink.createdAdoptedTapPad, "device lost"); XCTAssertFalse(sink.createdAdopted)
+        transport.postResult = KERN_SUCCESS
+        sink = adopted()
+        queue.sync { sink.transportConnected() }
+        XCTAssertFalse(sink.createdAdoptedTapPad, "a new connection starts with no devices")
+        // and the next create (not an adoption) says so
+        queue.sync { sink.publish(.default, persist: false) }
+        XCTAssertTrue(sink.isPublished); XCTAssertFalse(sink.createdAdoptedTapPad)
+    }
+
+    func testBusyFromCreateDevice2MeansTryAgainAfterTheHIDGap() {
+        transport.busyReplies = 2
+        let sink = makeSink()
+        queue.sync { sink.transportConnected(); sink.publish(.default, persist: false) }
+        XCTAssertEqual(transport.creates.count, 1)
+        if case .publishing = sink.state {} else { XCTFail("\(sink.state)") }
+        queue.sync { env.advance(by: 399) }; XCTAssertEqual(transport.creates.count, 1)
+        queue.sync { env.advance(by: 2) }; XCTAssertEqual(transport.creates.count, 2)
+        queue.sync { env.advance(by: 401) }; XCTAssertEqual(transport.creates.count, 3)
+        if case .published = sink.state {} else { XCTFail("\(sink.state)") }
+        // and it does not retry forever
+        transport.busyReplies = 100
+        let s2 = makeSink()
+        queue.sync { s2.transportConnected(); s2.publish(.default, persist: false) }
+        for _ in 0..<8 { queue.sync { env.advance(by: 450) } }
+        guard case .error = s2.state else { return XCTFail("\(s2.state)") }
+    }
+
+    func testControllerSleepNeutralIsLeftToTheDriverWhileItDrivesButSystemSleepIsHonoured() {
+        let sink = publishedSink()
+        queue.sync { sink.setDriverDrives(true) }
+        transport.clear()
+        queue.sync { sink.neutral(force: false) }
+        XCTAssertEqual(transport.neutrals, 0, "the driver's silence and Stop neutrals cover the controller going quiet; a request here would set its hold")
+        queue.sync { sink.neutral() }
+        XCTAssertEqual(transport.neutrals, 1, "system sleep: the hold is wanted")
+        queue.sync { sink.setDriverDrives(false) }
+        transport.clear()
+        queue.sync { sink.neutral(force: false) }
+        XCTAssertEqual(transport.neutrals, 1, "engine path: as before")
+    }
+
+    func testLosingTheConnectionOpensTheGate() {
+        let sink = publishedSink()
+        var changes: [Bool] = []
+        sink.onDriveChange = { changes.append($0) }
+        queue.sync { sink.setDriverDrives(true); sink.transportLost() }
+        XCTAssertFalse(sink.driverDrives); XCTAssertEqual(changes, [true, false])
+        queue.sync { sink.setDriverDrives(true); sink.transportConnected() }
+        XCTAssertFalse(sink.driverDrives, "a new connection starts with the engine path")
+    }
+
+    /// E7: the sink opens the gate by itself (connection lost, device destroyed): the supervisor is told. Its own `setDriverDrives`
+    /// is not reported through that callback.
+    func testTheSinkReportsAGateItOpenedByItselfAndNotTheOneTheSupervisorOpened() {
+        let sink = publishedSink()
+        var forced = 0
+        sink.onGateForcedOpen = { forced += 1 }
+        queue.sync { sink.setDriverDrives(true); sink.setDriverDrives(false) }
+        XCTAssertEqual(forced, 0, "the supervisor's own call")
+        queue.sync { sink.setDriverDrives(true); sink.transportLost() }
+        XCTAssertEqual(forced, 1)
+        let s2 = publishedSink()
+        s2.onGateForcedOpen = { forced += 1 }
+        queue.sync { s2.setDriverDrives(true); s2.unpublish(persist: false) }
+        XCTAssertEqual(forced, 2, "the device is gone")
+        queue.sync { s2.unpublish(persist: false) }
+        XCTAssertEqual(forced, 2, "a gate that was already open reports nothing")
+    }
+
+    /// E8: closing the gate posts no neutral (the driver posted its own at the switch; a forced one would set its hold), also when a
+    /// test pattern was running; and the pattern is refused while the driver drives.
+    func testClosingTheGateSendsNoNeutralAndThePatternIsRefusedWhileTheDriverDrives() {
+        let sink = publishedSink()
+        queue.sync { sink.runTestPattern() }
+        XCTAssertTrue(sink.isPatternRunning)
+        transport.clear()
+        queue.sync { sink.setDriverDrives(true) }
+        XCTAssertFalse(sink.isPatternRunning, "the pattern needs source UC and ends")
+        XCTAssertEqual(transport.neutrals, 0, "and no neutral is posted for it")
+        queue.sync { sink.runTestPattern() }
+        XCTAssertFalse(sink.isPatternRunning, "refused while the driver drives")
+        queue.sync { env.advance(by: 500) }
+        XCTAssertEqual(transport.neutrals, 0); XCTAssertTrue(transport.posts.isEmpty)
+        queue.sync { sink.setDriverDrives(false) }
+        queue.sync { sink.runTestPattern() }
+        XCTAssertTrue(sink.isPatternRunning, "and allowed again once the engine drives")
+    }
+
+    /// E10: the Busy retries of a create are counted afresh for the next publish.
+    func testBusyRetriesStartAfreshAtTheNextPublish() {
+        transport.busyReplies = 100
+        let sink = makeSink()
+        queue.sync { sink.transportConnected(); sink.publish(.default, persist: false) }
+        for _ in 0..<8 { queue.sync { env.advance(by: 450) } }
+        guard case .error = sink.state else { return XCTFail("\(sink.state)") }
+        let first = transport.creates.count
+        XCTAssertEqual(first, VirtualPadSink.createRetryLimit + 1)
+        transport.busyReplies = 0
+        queue.sync { sink.publish(.default, persist: false) }
+        for _ in 0..<3 { queue.sync { env.advance(by: 450) } }
+        if case .published = sink.state {} else { XCTFail("a new publish after the tries ran out works: \(sink.state)") }
+        // and a success also resets the count: two sequences of limit-1 Busy answers in a row both succeed
+        for _ in 0..<2 {
+            transport.busyReplies = VirtualPadSink.createRetryLimit - 1
+            queue.sync { sink.unpublish(persist: false) }
+            queue.sync { sink.publish(.default, persist: false) }
+            for _ in 0..<8 { queue.sync { env.advance(by: 450) } }
+            if case .published = sink.state {} else { XCTFail("\(sink.state)") }
+        }
+    }
+
+    func testUnpublishWhileTheDriverDrivesLeavesTheGateOpenAndDestroys() {
+        let sink = publishedSink()
+        queue.sync { sink.setDriverDrives(true) }
+        transport.clear()
+        queue.sync { sink.unpublish(persist: false) }
+        XCTAssertEqual(transport.count(.destroy), 1); XCTAssertFalse(sink.driverDrives)
     }
 
     // MARK: Frames and test pattern

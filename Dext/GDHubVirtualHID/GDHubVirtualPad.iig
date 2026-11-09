@@ -17,11 +17,16 @@ public:
     virtual kern_return_t getReport(IOMemoryDescriptor * report, IOHIDReportType reportType, IOOptionBits options,
                                     uint32_t completionTimeout, OSAction * action) override;
     // RPCs (no LOCALONLY): the call is dispatched onto this device's default queue (rank 4), where they are the only
-    // callers of handleReport (Karabiner's postReport pattern). `source` is a GDHUB_PADSRC_* value, checked here against
+    // callers of handleReport (Karabiner's postReport pattern). `token` identifies the tap instance for source TAP (0 for the user
+    // client): the pad compares it with the registry's current tap token on its own queue, so one report in flight from a replaced
+    // tap instance cannot land after its successor's full repost. `source` is a GDHUB_PADSRC_* value, checked here against
     // the registry's padSource word. `tSrc` is the caller's mach_absolute_time() stamp taken just before the call (0 = none).
     // `report` is a fixed-length buffer whose length was set once; `length` is its valid length.
-    virtual kern_return_t submitInput(uint32_t source, uint64_t tSrc, IOMemoryDescriptor * report, uint32_t length);
-    // Posts every neutral report of the spec from the pad's own prefilled, fixed-length buffers.
-    virtual kern_return_t postNeutralFrom(uint32_t source, uint32_t reason);
+    virtual kern_return_t submitInput(uint32_t source, uint64_t token, uint64_t tSrc, IOMemoryDescriptor * report, uint32_t length);
+    // Posts every neutral report of the spec from the pad's own prefilled, fixed-length buffers. `source` and `token` mean what they
+    // mean for submitInput: the source is checked against the registry's padSource and, for TAP, the token against the current tap
+    // token, both on the pad's queue (a stale tap instance's Stop or silence neutral cannot land after its successor's full repost).
+    // Callers that are not a tap instance but post with source TAP (the user client's switch and hold neutrals) pass the CURRENT token.
+    virtual kern_return_t postNeutralFrom(uint32_t source, uint64_t token, uint32_t reason);
 };
 #endif

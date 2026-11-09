@@ -5,9 +5,13 @@
 #include "GDHubInternal.h"
 #include "GDHubVirtualHID.h"
 #include "GDHubVirtualHIDUserClient.h"
+#include "GDHubVirtualPad.h"
 
 struct GDHubVirtualHID_IVars {
     IODispatchQueue * queue;     // retained copy of this service's default queue (for GDH_SYNC at call sites)
+    IOTimerDispatchSource * orphanTimer;   // T7: fires GDH_ORPHAN_MS after a pinned owner left; created in Start, armed on the root's queue
+    OSAction * orphanAction;
+    bool stopped;                // atomic: set first thing in Stop
 };
 
 bool GDHubVirtualHID::init()
@@ -19,7 +23,11 @@ bool GDHubVirtualHID::init()
 
 void GDHubVirtualHID::free()
 {
-    if (ivars) OSSafeReleaseNULL(ivars->queue);
+    if (ivars) {
+        OSSafeReleaseNULL(ivars->orphanAction);
+        OSSafeReleaseNULL(ivars->orphanTimer);
+        OSSafeReleaseNULL(ivars->queue);
+    }
     IOSafeDeleteNULL(ivars, GDHubVirtualHID_IVars, 1);
     super::free();
 }
@@ -37,11 +45,27 @@ kern_return_t IMPL(GDHubVirtualHID, Start)
     if (!reg) { GDLog("root start: no registry lock"); return kIOReturnNoMemory; }
     if (CopyDispatchQueue(kIOServiceDefaultQueueName, &ivars->queue) != kIOReturnSuccess) ivars->queue = nullptr;   // GDH_SYNC just skips
     GDHubProbeStart("root start", GDHR_Q_ROOT, ivars->queue);
+    // The orphan timer exists from the start (nothing is armed until a pinned owner leaves). A failure here only loses the
+    // 30 s cleanup, never the root: the pad would then wait for RELEASE_PAD, the next owner or the process end.
+    if (ivars->queue && IOTimerDispatchSource::Create(ivars->queue, &ivars->orphanTimer) == kIOReturnSuccess &&
+        CreateActionOrphanFired(0, &ivars->orphanAction) == kIOReturnSuccess &&
+        ivars->orphanTimer->SetHandler(ivars->orphanAction) == kIOReturnSuccess) {
+        ivars->orphanTimer->SetEnable(true);
+    } else {
+        GDLog("root start: orphan timer not available");
+        OSSafeReleaseNULL(ivars->orphanAction);
+        OSSafeReleaseNULL(ivars->orphanTimer);
+    }
     gdhr_set_identity(reg, mach_absolute_time(), (uint32_t)GDHUB_DEXT_BUILD, (uint32_t)getpid());
     if (gdhr_register_root(reg, static_cast<OSObject *>(this))) GDLog("root start: replaced a stale root in the registry");
     kr = RegisterService();
     if (kr != kIOReturnSuccess) {
         gdhr_unregister_root(reg, static_cast<OSObject *>(this));      // Start fails: Stop will not run, so undo here
+        // The action retains its target (this root) until it is cancelled: without the cancel a failed Start would leak the root.
+        if (ivars->orphanTimer) ivars->orphanTimer->SetEnable(false);
+        if (ivars->orphanAction) ivars->orphanAction->Cancel(^{});
+        OSSafeReleaseNULL(ivars->orphanAction);
+        OSSafeReleaseNULL(ivars->orphanTimer);
         GDLog("root start: RegisterService 0x%x", (unsigned)kr);
         return kr;
     }
@@ -52,6 +76,7 @@ kern_return_t IMPL(GDHubVirtualHID, Start)
 kern_return_t IMPL(GDHubVirtualHID, Stop)
 {
     GDLog("root stop");
+    __atomic_store_n(&ivars->stopped, true, __ATOMIC_RELAXED);
     // Children are normally stopped before their provider; this catches a pad that is still registered (belt and braces).
     int rc = 0;
     OSObject * pad = static_cast<OSObject *>(gdhr_pad_take(GDHubReg(), 0, &rc));
@@ -64,7 +89,92 @@ kern_return_t IMPL(GDHubVirtualHID, Stop)
     gdhr_set_terminating(GDHubReg());
     GDHubTerminateTap();
     gdhr_unregister_root(GDHubReg(), static_cast<OSObject *>(this));
-    return Stop(provider, SUPERDISPATCH);
+    if (!ivars->orphanTimer) return Stop(provider, SUPERDISPATCH);
+    // The timer's cancel callout dereferences the timer's ivars: hold ourselves and finish the super Stop from the handler
+    // (the same documented pattern as the user client and the tap).
+    ivars->orphanTimer->SetEnable(false);
+    this->retain();
+    ivars->orphanTimer->Cancel(^{
+        if (ivars->orphanAction) ivars->orphanAction->Cancel(^{});
+        Stop(provider, SUPERDISPATCH);
+        this->release();
+    });
+    return kIOReturnSuccess;
+}
+
+static uint64_t nsToTicksRoot(uint64_t ns)
+{
+    mach_timebase_info_data_t tb = {0, 0};
+    mach_timebase_info(&tb);
+    return tb.numer == 0 ? ns : ns * tb.denom / tb.numer;
+}
+
+// Arms (or re-arms) the orphan timer. Root queue only. When it fires is decided by one pure function (gdh_orphan_arm_time): with a
+// client connected as owner at most every 30 s (a timer that fires at once and cannot remove the pad would loop on this queue;
+// the client has 30 s past the deadline to adopt, replace or release the pad, and then the forced removal takes it:
+// gdh_orphan_owner_overstay), otherwise the later of the registry's deadline and now + `graceTicks`. Callers: a pinned owner leaving
+// (grace 0: the 30 s deadline), an owner leaving without having adopted an orphan (grace 5 s: the pad's deadline may be long past and
+// the next owner, usually a restarting engine, gets a moment), and the timer itself when the deadline moved.
+static void armOrphan(GDHubVirtualHID * root, uint64_t graceTicks)
+{
+    auto iv = root->ivars;
+    if (!iv->orphanTimer || __atomic_load_n(&iv->stopped, __ATOMIC_RELAXED)) return;
+    gdhr * reg = GDHubReg();
+    uint64_t at = gdh_orphan_arm_time(gdhr_pad_orphaned(reg), gdhr_owner_present(reg), gdhr_orphan_deadline(reg), mach_absolute_time(), graceTicks,
+                                      nsToTicksRoot((uint64_t)GDH_ORPHAN_MS * 1000000ull));
+    if (at == 0) return;
+    iv->orphanTimer->WakeAtTime(kIOTimerClockMachAbsoluteTime, at, 1000000);                // 1 ms is plenty for a 30 s timer
+}
+
+void GDHubOrphanArm(uint64_t graceNs)
+{
+    GDHubVirtualHID * root = GDHubCopyRoot();
+    IODispatchQueue * q = root ? GDHubRootQueue(root) : nullptr;
+    if (!root || !q) { if (root) root->release(); return; }
+    uint64_t grace = nsToTicksRoot(graceNs);
+    q->DispatchAsync(^{                       // the timer is armed on its own queue; the block owns the root reference
+        armOrphan(root, grace);
+        root->release();
+    });
+}
+
+// The pad nobody drives or owns any more goes through the same steps as every destroy: source UC, neutral, INERT, destroy.
+static void orphanDestroy(const char * why, bool force)
+{
+    gdhr * reg = GDHubReg();
+    GDHubVirtualPad * pad = GDHubCopyPad();
+    if (pad) {
+        GDH_SYNC(GDHR_RANK_ROOT, GDHR_RANK_PAD, GDHubPadQueue(pad), "postNeutralFrom(orphan)");
+        pad->postNeutralFrom(GDHUB_PADSRC_UC, 0, GDHUB_NEUTRAL_ORPHAN);
+        pad->release();
+    }
+    GDHubPokeTap();                                         // INERT: the tap closes the interface
+    // `force`: the callers that remove an orphan on purpose (selector 1, selector 12 with another spec, RELEASE_PAD) run with a client
+    // connected as owner, and that client never owned this pad, so the plain finish (which needs no owner) would leave it in place.
+    OSObject * left = static_cast<OSObject *>(force ? gdhr_orphan_force_finish(reg) : gdhr_orphan_finish(reg));
+    if (left) {
+        GDLog("orphan: %{public}s: the unowned pinned pad is removed", why);
+        gdhr_ctr_add(reg, GDHR_CTR_PAD_DESTROYS, 1);
+        GDHubTerminateAndRelease(left);
+    }
+}
+
+void GDHubOrphanForceDestroy(const char * why)
+{
+    if (gdhr_orphan_force_begin(GDHubReg())) orphanDestroy(why, true);
+}
+
+void IMPL(GDHubVirtualHID, OrphanFired)
+{
+    (void)action; (void)time;
+    if (__atomic_load_n(&ivars->stopped, __ATOMIC_RELAXED)) return;
+    gdhr * reg = GDHubReg();
+    uint64_t now = mach_absolute_time();
+    if (gdhr_orphan_begin(reg, now)) orphanDestroy("30 s without an owner", false);
+    else if (gdh_orphan_owner_overstay(gdhr_pad_orphaned(reg), gdhr_owner_present(reg), gdhr_orphan_deadline(reg), now,
+                                       nsToTicksRoot((uint64_t)GDH_ORPHAN_MS * 1000000ull)))
+        GDHubOrphanForceDestroy("a client has been connected for 30 s past the deadline without adopting the pad");   // logs once, in orphanDestroy
+    else armOrphan(this, 0);        // not due yet (the deadline moved), or a client is connected: look again 30 s on
 }
 
 kern_return_t IMPL(GDHubVirtualHID, NewUserClient)

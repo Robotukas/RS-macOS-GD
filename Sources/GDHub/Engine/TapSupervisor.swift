@@ -60,6 +60,7 @@ enum TapFallbackReason: Equatable {
     case driverRestarted(String)        // F3 (instance change, counters going backwards)
     case driverRefused(String)          // F4 (SHADOW refused, self-test failed, mapping refused)
     case parityMismatch                 // F5
+    case outputStall                    // F6 (LIVE only)
 
     var text: String {
         switch self {
@@ -68,6 +69,7 @@ enum TapFallbackReason: Equatable {
         case .driverRestarted(let why): return "driver restarted (\(why))"
         case .driverRefused(let why): return "driver refused (\(why))"
         case .parityMismatch: return "parity mismatch"
+        case .outputStall: return "output stalled"
         }
     }
 }
@@ -79,6 +81,9 @@ struct TapFallback: Equatable {
     var atNs: UInt64
     var rearmAtNs: UInt64?
     var clearOnMapping = false
+    /// What the engine sends while the fallback lasts: INERT, or COUNT after a LIVE path stalled (the tap keeps counting and the
+    /// engine posts again at once).
+    var target: UInt64 = DextProtocol.Forwarding.inert
 }
 
 /// What stopped the driver path altogether (plan 6.5 #3 and #4). Persisted in defaults by the engine, cleared only by the owner.
@@ -156,6 +161,14 @@ final class TapSupervisor: @unchecked Sendable {
     static let stallConfirmations = 2
     static let graceMinNs: UInt64 = 1_000_000_000
     static let rearmHoldNs: UInt64 = 5_000_000_000
+    // T7 (LIVE): status2 every tick (100 ms; the engine posts nothing meanwhile), F1 on a 200 ms window with one confirmation
+    static let liveStallWindowNs: UInt64 = 200_000_000
+    static let liveShadowMinNs: UInt64 = 2_000_000_000         // SHADOW must have run this long ...
+    static let liveShadowMinFrames: UInt64 = 100               // ... translated this many frames ...
+    static let outputStallMinReports: UInt64 = 3               // F6: the engine's own step would have posted this many reports
+    static let appliedMismatchNs: UInt64 = 300_000_000         // F6: appliedState != desired for longer than this
+    static let liveRetryNs: UInt64 = 1_000_000_000
+    static let orphanDeferNs: UInt64 = 1_000_000_000           // an orphaned pinned pad is waited for this long after the first controller report
     static let parityMismatchLimit = 3
     static let parityWindowNs: UInt64 = 10_000_000_000
     static let limiterCount = 3
@@ -177,6 +190,15 @@ final class TapSupervisor: @unchecked Sendable {
     private let pid: Int32
     /// The engine reader's running count of valid controller frames (F1). Read on `queue`.
     var engineFrames: () -> UInt64 = { 0 }
+    /// T7: the posting gate. Called on `queue` with true right after the driver accepted LIVE and with false whenever the pad is the
+    /// engine's again (a fallback, INERT, the connection gone).
+    var onDrive: ((Bool) -> Void)?
+    /// T7: the device this process just created was ADOPTED from a pinned pad that the driver's tap is driving (startup stay-LIVE).
+    var padAdopted: () -> Bool = { false }
+    /// T7: this process has created (or adopted) a device of its own.
+    var sinkHasPad: () -> Bool = { false }
+    /// T7 (F6): the engine's shadow step; the supervisor configures it with the core of the mapping the driver holds.
+    var liveWatch: LiveWatch?
     /// Called on `queue` with the report for the Driver menu whenever it differs from the last one.
     var statusSink: ((TapStatusReport) -> Void)?
     private var lastReport: TapStatusReport?
@@ -209,6 +231,17 @@ final class TapSupervisor: @unchecked Sendable {
     private var f1Prev: (engine: UInt64, tap: UInt64, at: UInt64)?
     private var f1Suspect = 0
     private var f2First: UInt64?                // first reading of the current run of "tap absent" readings (F2 needs two)
+    // T7
+    private var f6Prev: (would: UInt64, posts: UInt64, at: UInt64)?
+    private var f6AppliedSince: UInt64?
+    private var liveRetryAt: UInt64 = 0
+    private var activeSinceNs: UInt64?          // the first controller report of this engine run (starts the orphan deferral window)
+    private var loggedDefer = false
+    private var loggedInertBySelf = false
+    private var liveUnsupported = false         // this dext answered Unsupported to LIVE: not asked again on this connection
+    private var shadowBaseTranslated: UInt64 = 0
+    private var shadowBaseMismatches = 0
+    private(set) var unsupportedHold = false    // the mapping needs more than GDHM v1: the driver path is INERT (engine posts) until it changes
     private(set) var unsupportedNote: String?
     // T5
     /// Set by the engine once its core and sink exist (it needs them); `.none` until then.
@@ -287,7 +320,9 @@ final class TapSupervisor: @unchecked Sendable {
     func shutdown() {
         dispatchPrecondition(condition: .onQueue(queue))
         timer?.cancel(); timer = nil
-        if connected, sent != DextProtocol.Forwarding.inert { _ = dext.setForwarding(DextProtocol.Forwarding.inert) }
+        if connected, sent != DextProtocol.Forwarding.inert { _ = dext.setForwarding(DextProtocol.Forwarding.inert) }   // LIVE: source UC, neutral, INERT; the pad is then destroyed, not pinned
+        liveWatch?.enabled = false
+        onDrive?(false)
         sent = nil
     }
 
@@ -295,12 +330,15 @@ final class TapSupervisor: @unchecked Sendable {
     /// instance nonce is read first: a different nonce than the one COUNT was accepted on trips the supervisor.
     func connection(up: Bool) {
         dispatchPrecondition(condition: .onQueue(queue))
+        let wasLive = sent == DextProtocol.Forwarding.live
         connected = up
         sent = nil
         sentAccepted = false
         connNonce = nil
         lastStatus = nil
+        if wasLive { liveWatch?.enabled = false; onDrive?(false) }       // the pad (and its pinning) belong to the old connection
         prevStatus = nil; f1Prev = nil; f1Suspect = 0; f2First = nil; armedAtNs = nil; lastApplyError = nil
+        f6Prev = nil; f6AppliedSince = nil; liveRetryAt = 0; liveUnsupported = false
         pushedRevision = nil; pushCore = nil; mappingDirty = true; parity.ring.enabled = false; lastPushFailedNs = 0; pushFailures = 0
         mappingGeneration += 1; settledGeneration = -1
         defer { publishIfChanged() }
@@ -310,10 +348,87 @@ final class TapSupervisor: @unchecked Sendable {
             Self.log.notice("fallback cleared: new connection after \(f.reason.text, privacy: .public)")
         }
         refreshPath()
-        if let s = readStatus() { observe(s) }
+        if let s = readStatus() { observe(s); adoptLiveIfPossible(s) }
         startTimingIfEligible()
         apply()
         pushMappingIfNeeded()                                  // right after hello (and the SHADOW request): no waiting for a tick
+    }
+
+    /// The first controller report of this engine run: the pad is about to be published, and the orphan deferral window starts.
+    func controllerActive() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        if activeSinceNs == nil { activeSinceNs = clock() }
+    }
+
+    /// A pinned pad nobody owns is waiting and this engine has no pad yet: it will ADOPT it when the sink creates its device (the
+    /// pad is published on the first controller report). Until then nothing is sent to the driver (the driver would refuse it
+    /// anyway; the engine does not rely on that), for at most `orphanDeferNs` after the first controller report. If the adoption does
+    /// not happen (another spec, Busy) the window ends and the normal path replaces the pad and arms from scratch.
+    private func deferForOrphan() -> Bool {
+        guard connected, path == .driver, dext.hasLive, !tripped, latched == nil, sent == nil, let s = lastStatus,
+              s.padOrphaned, s.padSource == DextProtocol.PadSource.tap.rawValue, !padAdopted(), !sinkHasPad() else { return false }
+        if let a = activeSinceNs, clock() &- a > Self.orphanDeferNs { return false }
+        if !loggedDefer { loggedDefer = true; Self.log.notice("startup: a pinned pad is waiting for an owner; adopting it (nothing is sent to the driver until then)") }
+        return true
+    }
+
+    /// The sink published its device (created or adopted): look at the driver once more. An adopted pad that the tap drives is the
+    /// startup stay-LIVE case; otherwise the normal arming goes on from here.
+    func padPublished() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard connected else { return }
+        loggedDefer = false
+        if let s = readStatus() { observe(s); adoptLiveIfPossible(s); takeBackAdoptedPad() }
+        apply()
+        pushMappingIfNeeded()
+        publishIfChanged()
+    }
+
+    /// The sink opened its gate by itself (identity switch, unpublish, connection events): the device and with it LIVE are gone. The
+    /// driver left LIVE together with the pad, so nothing is sent; the supervisor forgets what it had armed and starts from scratch,
+    /// without a fallback and without a limiter entry.
+    func gateForcedOpen() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard sent != nil, sent != DextProtocol.Forwarding.inert else { return }
+        if sent == DextProtocol.Forwarding.live { liveWatch?.enabled = false }
+        sent = nil; sentAccepted = false; armedAtNs = nil
+        mappingDirty = true; f1Prev = nil; f1Suspect = 0; f6Prev = nil; f6AppliedSince = nil
+        Self.log.notice("the device went away while armed: the driver path starts again with the next one")
+    }
+
+    /// This process just adopted a pad that the driver's tap was driving (`padAdopted`), and what it believes it has sent is not LIVE: the INERT
+    /// (or SHADOW) it sent after hello came while it owned nothing, and the driver answered success with no effect. Forget it, so
+    /// that `apply()` sends the wanted state again now that the pad is ours; the driver then leaves LIVE properly (source UC, neutral).
+    /// Without this the pad stays with the tap on a path that never asked for it (the runtime rollback of a crash loop, the App path).
+    private func takeBackAdoptedPad() {
+        guard padAdopted(), sent != DextProtocol.Forwarding.live else { return }
+        Self.log.notice("the adopted pad is still driven by the tap; asking for \(Self.stateName(self.wantedState()), privacy: .public) again now that it is ours")
+        sent = nil; sentAccepted = false; armedAtNs = nil
+        mappingDirty = true; f1Prev = nil; f1Suspect = 0; f6Prev = nil; f6AppliedSince = nil
+        lastApplyError = nil; lastApplyFailedNs = nil
+    }
+
+    /// Startup stay-LIVE (plan 6.6): this process just adopted a pinned pad that the driver's tap is driving, the driver is in LIVE on
+    /// a passed self-test, and `inputPath` asks for the driver path. The supervisor takes the instance as armed and LIVE without
+    /// sending anything (no SHADOW warm-up, no neutral), closes the posting gate, and pushes the engine's current mapping at once:
+    /// the swap is atomic in the driver (full repost, the same output if the mapping is unchanged). If the mapping is not
+    /// expressible the normal rules take LIVE down with INERT.
+    private func adoptLiveIfPossible(_ s: DextStatus2) {
+        guard path == .driver, dext.hasLive, padAdopted(), !tripped, latched == nil, fallback == nil, sent == nil,
+              s.desiredState == UInt8(DextProtocol.Forwarding.live), s.appliedState == UInt8(DextProtocol.Forwarding.live),
+              s.padSource == DextProtocol.PadSource.tap.rawValue, s.selfTest == DextProtocol.SelfTest.pass, s.padLive, s.ownerPresent,
+              s.tapPresent, armedNonce == nil || armedNonce == s.instanceNonce else { return }
+        armedNonce = s.instanceNonce
+        connNonce = s.instanceNonce
+        sent = DextProtocol.Forwarding.live
+        sentAccepted = true
+        armedAtNs = clock()
+        mappingDirty = true
+        parity.ring.enabled = true
+        liveWatch?.configure(core: pushCore)            // the push that follows configures the core of the mapping the driver holds
+        liveWatch?.enabled = true                       // F6 is on for an adopted session too
+        onDrive?(true)
+        Self.log.notice("startup: the driver already drives the adopted pad; staying LIVE without a neutral")
     }
 
     /// The mapping changed, or the pad was (re)created: the dext needs the blob again.
@@ -322,7 +437,10 @@ final class TapSupervisor: @unchecked Sendable {
         mappingDirty = true
         mappingGeneration += 1; pushFailures = 0; lastPushFailedNs = 0
         unsupportedNote = nil
+        let wasHold = unsupportedHold
+        unsupportedHold = false
         defer { publishIfChanged() }
+        if wasHold { apply() }                                 // the mapping may be expressible now: the driver path comes back
         if let f = fallback, f.clearOnMapping {
             fallback = nil
             Self.log.notice("fallback cleared: the mapping changed after \(f.reason.text, privacy: .public); arming again")
@@ -343,7 +461,14 @@ final class TapSupervisor: @unchecked Sendable {
         let now = clock()
         if ifaceUpSinceNs != nil { ifaceUpSinceNs = now }
         if armedAtNs != nil { armedAtNs = now }
-        f1Prev = nil; f1Suspect = 0; f2First = nil
+        prevStatus = nil                                // counters are compared only between readings of one tap instance
+        f1Prev = nil; f1Suspect = 0; f2First = nil; f6Prev = nil; f6AppliedSince = nil
+        // LIVE across a Mac sleep: the engine's willSleep neutral set the driver's hold; asking for LIVE again (idempotent) clears it
+        // (the tap's SetPowerState(On) does too). One call, only when LIVE is what the driver was in.
+        if connected, sent == DextProtocol.Forwarding.live, sentAccepted, !tripped, fallback == nil, latched == nil {
+            let kr = dext.setForwarding(DextProtocol.Forwarding.live).kr
+            Self.log.notice("resume: LIVE asked again after the wake, hold cleared (rc 0x\(String(UInt32(bitPattern: kr), radix: 16), privacy: .public))")
+        }
     }
 
     func controllerInterface(up: Bool) {
@@ -369,7 +494,7 @@ final class TapSupervisor: @unchecked Sendable {
     /// COUNT or SHADOW as accepted by the dext and not (yet) left again; nil in every other state.
     private var armedState: UInt64? {
         guard connected, sentAccepted, fallback == nil, !tripped, latched == nil, let s = sent,
-              s == DextProtocol.Forwarding.count || s == DextProtocol.Forwarding.shadow else { return nil }
+              s == DextProtocol.Forwarding.count || s == DextProtocol.Forwarding.shadow || s == DextProtocol.Forwarding.live else { return nil }
         return s
     }
 
@@ -392,13 +517,15 @@ final class TapSupervisor: @unchecked Sendable {
         let watching = armedNonce != nil && latched == nil && (sent != DextProtocol.Forwarding.inert || fallback?.rearmAtNs != nil)
         let timingWindow = timing.isWaiting
         let shadow = sent == DextProtocol.Forwarding.shadow && sentAccepted && !tripped && fallback == nil
-        // selector 11 per second: INERT settled 0, COUNT 1, SHADOW 2 (every 5th tick), 10 only in the attach timing window.
-        let shadowDue = shadow && tick % Self.shadowEveryTicks == 0
-        guard timingWindow || shadowDue || (watching && !shadow && tick % Self.statusEveryTicks == 0) else { return }
+        let live = sent == DextProtocol.Forwarding.live && sentAccepted && !tripped && fallback == nil
+        // selector 11 per second: INERT settled 0, COUNT 1, SHADOW 2 (every 5th tick), LIVE 10 (every tick: the engine posts
+        // nothing then, and F1/F6 must see a stall within ~300 ms), 10 in the attach timing window for at most 5 s.
+        let shadowDue = (shadow || deferForOrphan()) && tick % Self.shadowEveryTicks == 0
+        guard timingWindow || live || shadowDue || (watching && !shadow && !live && tick % Self.statusEveryTicks == 0) else { return }
         guard let s = readStatus() else { return }
         observe(s)
         if !tripped { detect(s) }
-        if shadow, !tripped, fallback == nil { shadowStep(s) }
+        if (shadow || live), !tripped, fallback == nil { shadowStep(s) }
         if timingWindow {
             if let ms = timing.observe(tapPresent: s.tapPresent, atNs: clock()) {
                 Self.log.notice("tap: attached \(Int(ms.rounded())) ms after the controller interface came up (n=\(self.timing.samplesMs.count) p99=\(Int(self.timing.percentileMs(99).rounded())) ms)")
@@ -431,6 +558,15 @@ final class TapSupervisor: @unchecked Sendable {
             return
         }
         guard let state = armedState else { f1Prev = nil; f1Suspect = 0; return }
+        // The driver went back to INERT by itself (its pad left the slot: stopped, replaced, removed): what we armed is gone. Forget it
+        // and arm again for the next pad; not a fault.
+        if s.desiredState == UInt8(DextProtocol.Forwarding.inert), state != DextProtocol.Forwarding.inert {
+            if !loggedInertBySelf { loggedInertBySelf = true; Self.log.notice("the driver is back in INERT by itself (its pad went away); arming again") }
+            if state == DextProtocol.Forwarding.live { liveWatch?.enabled = false; onDrive?(false) }
+            sent = nil; sentAccepted = false; armedAtNs = nil; mappingDirty = true; f1Prev = nil; f1Suspect = 0; f6Prev = nil; f6AppliedSince = nil
+            return
+        }
+        loggedInertBySelf = false
         // F4: the dext's own self-test failed in this process.
         if s.selfTest == DextProtocol.SelfTest.fail {
             enterFallback(.driverRefused("self-test failed in the driver"), retry: false)
@@ -441,24 +577,70 @@ final class TapSupervisor: @unchecked Sendable {
             // Two readings at least 300 ms apart, with no good reading between: one reading can land after the old tap stopped
             // and before the engine hears the interface go away (wake, controller off).
             guard let first = f2First else { f2First = now; return }
-            if now &- first >= Self.stallWindowNs { enterFallback(.tapAbsent, retry: true) }
+            if now &- first >= Self.stallWindowNs { enterFallback(.tapAbsent, retry: true, toCount: true) }
             return
         }
         f2First = nil
-        // F1: the engine's reader sees frames and the tap's counter does not move.
+        let isLive = state == DextProtocol.Forwarding.live
+        // F6 (LIVE only): the driver must be posting what the engine's own step says it should.
+        if isLive, detectOutputStall(s, now) { return }
+        if !isLive { f6Prev = nil; f6AppliedSince = nil }
+        // F1: the engine's reader sees frames and the tap's counter does not move. LIVE: a 200 ms window, one confirmation.
         guard s.tapPresent, s.appliedState == UInt8(truncatingIfNeeded: state),
               let up = ifaceUpSinceNs, now &- up > graceNs, let at = armedAtNs, now &- at > graceNs else { f1Prev = nil; f1Suspect = 0; return }
         let engine = engineFrames()
         guard let prev = f1Prev else { f1Prev = (engine, s.framesIn, now); return }
-        guard now &- prev.at >= Self.stallWindowNs else { return }
+        guard now &- prev.at >= (isLive ? Self.liveStallWindowNs : Self.stallWindowNs) else { return }
         if engine &- prev.engine >= Self.stallMinFrames, s.framesIn == prev.tap { f1Suspect += 1 } else { f1Suspect = 0 }
         f1Prev = (engine, s.framesIn, now)
-        if f1Suspect >= Self.stallConfirmations { enterFallback(.stall, retry: true) }
+        if f1Suspect >= (isLive ? 1 : Self.stallConfirmations) { enterFallback(.stall, retry: true, toCount: isLive) }
+    }
+
+    /// F6, evaluated on a LIVE reading. True when it fell back.
+    ///  - `padSource` is not TAP, or `framesIgnored` rose while the tap is powered: at once.
+    ///  - `appliedState` differs from LIVE for longer than 300 ms.
+    ///  - the engine's own step (same core, same frames) would have posted >= 3 reports in a window of at least 200 ms and the
+    ///    driver's `tapPosts` did not move.
+    private func detectOutputStall(_ s: DextStatus2, _ now: UInt64) -> Bool {
+        // No tap, no output stall: the tap is gone (controller off or asleep, a wake) and F2 / the new instance cover it. The driver sets
+        // appliedState to INERT when the tap unregisters while padSource stays TAP, which is correct and not a stall.
+        guard s.tapPresent else { f6Prev = nil; f6AppliedSince = nil; return false }
+        // The engine's own willSleep hold: the driver holds the tap's frames back until the tap powers off, so tapPosts stands still on
+        // purpose. Not a stall, and nothing from before the hold is compared with what comes after it.
+        if s.holdNeutral { f6Prev = nil; f6AppliedSince = nil; return false }
+        if s.padSource != DextProtocol.PadSource.tap.rawValue {
+            enterFallback(.outputStall, retry: true, toCount: true)
+            return true
+        }
+        // framesIgnored is a counter of the whole process: compare only two readings of the SAME tap instance, both powered.
+        if let prev = prevStatus, prev.tapPresent, prev.tapStarts == s.tapStarts, prev.powered, s.powered, s.framesIgnored > prev.framesIgnored {
+            enterFallback(.outputStall, retry: true, toCount: true)
+            return true
+        }
+        if prevStatus?.tapStarts != s.tapStarts { f6AppliedSince = nil; f6Prev = nil }
+        if s.appliedState != UInt8(DextProtocol.Forwarding.live) {
+            let since = f6AppliedSince ?? now
+            f6AppliedSince = since
+            if now &- since > Self.appliedMismatchNs { enterFallback(.outputStall, retry: true, toCount: true); return true }
+        } else {
+            f6AppliedSince = nil
+        }
+        guard let watch = liveWatch, watch.enabled else { f6Prev = nil; return false }
+        let would = watch.wouldPostReports
+        guard let prev = f6Prev else { f6Prev = (would, s.tapPosts, now); return false }
+        guard now &- prev.at >= Self.liveStallWindowNs else { return false }
+        f6Prev = (would, s.tapPosts, now)
+        if would &- prev.would >= Self.outputStallMinReports, s.tapPosts == prev.posts {
+            enterFallback(.outputStall, retry: true, toCount: true)
+            return true
+        }
+        return false
     }
 
     /// F3: this is not the instance the arming was accepted on. Final; the breaker counts it.
     private func instanceChanged(_ why: String) {
         guard !tripped else { return }
+        if sent == DextProtocol.Forwarding.live { liveWatch?.enabled = false; onDrive?(false) }          // the pad died with the old instance
         tripped = true
         trippedRaw = rawPath
         armedNonce = nil
@@ -471,12 +653,14 @@ final class TapSupervisor: @unchecked Sendable {
 
     /// F1, F2, F4, F5. `retry`: the engine arms again by itself after the hold-off; otherwise it stays INERT until `inputPath`
     /// changes (or, for a refused mapping, until the mapping does).
-    private func enterFallback(_ reason: TapFallbackReason, retry: Bool, clearOnMapping: Bool = false) {
+    private func enterFallback(_ reason: TapFallbackReason, retry: Bool, clearOnMapping: Bool = false, toCount: Bool = false) {
         guard fallback == nil, !tripped else { return }
         let now = clock()
-        fallback = TapFallback(reason: reason, atNs: now, rearmAtNs: retry ? now &+ Self.rearmHoldNs : nil, clearOnMapping: clearOnMapping)
+        // A LIVE path that stalls falls back to COUNT (the tap keeps counting), everything else to INERT (plan 6.6).
+        let target = (toCount && sent == DextProtocol.Forwarding.live) ? DextProtocol.Forwarding.count : DextProtocol.Forwarding.inert
+        fallback = TapFallback(reason: reason, atNs: now, rearmAtNs: retry ? now &+ Self.rearmHoldNs : nil, clearOnMapping: clearOnMapping, target: target)
         trippedRaw = rawPath
-        f1Prev = nil; f1Suspect = 0; f2First = nil
+        f1Prev = nil; f1Suspect = 0; f2First = nil; f6Prev = nil; f6AppliedSince = nil
         parity.ring.enabled = false
         let tail = retry ? "; arming again in \(Self.rearmHoldNs / 1_000_000_000) s" : (clearOnMapping ? "; waiting for the next mapping change" : "; staying on the engine path until inputPath changes")
         Self.log.notice("fallback: \(reason.text, privacy: .public)\(tail, privacy: .public)")
@@ -538,7 +722,7 @@ final class TapSupervisor: @unchecked Sendable {
 
     private func pushMappingIfNeeded() {
         guard mappingDirty, connected, dext.hasXlate, !tripped, fallback == nil, latched == nil,
-              sent == DextProtocol.Forwarding.shadow, sentAccepted else { return }
+              sent == DextProtocol.Forwarding.shadow || sent == DextProtocol.Forwarding.live, sentAccepted else { return }
         let now = clock()
         let backoffNs = min(UInt64(500_000_000) << UInt64(max(pushFailures - 1, 0)), 5_000_000_000)
         guard lastPushFailedNs == 0 || now &- lastPushFailedNs >= backoffNs else { return }
@@ -550,7 +734,10 @@ final class TapSupervisor: @unchecked Sendable {
             mappingDirty = false; settledGeneration = mappingGeneration       // not encoded again until the mapping changes
             pushedRevision = nil; pushCore = nil; parity.ring.enabled = false
             unsupportedNote = why
-            note("SHADOW: the mapping needs more than GDHM v1 (\(why)); nothing is pushed, the tap counts only")
+            unsupportedHold = true                      // the driver path goes INERT (its map is cleared there) and the engine path posts
+            liveWatch?.configure(core: nil)
+            note("the mapping needs more than GDHM v1 (\(why)); the driver path stands down and the engine posts")
+            apply()
         case .blob(let blob, let spec):
             unsupportedNote = nil
             let r = dext.setMapping(blob)
@@ -570,6 +757,7 @@ final class TapSupervisor: @unchecked Sendable {
                 lastRevision = rev
                 pushedRevision = rev
                 pushCore = try? XlateCore(blob: blob, spec: spec)
+                liveWatch?.configure(core: pushCore)
                 parity.ring.enabled = pushCore != nil
                 mappingDirty = false
                 lastPushFailedNs = 0; pushFailures = 0
@@ -635,6 +823,7 @@ final class TapSupervisor: @unchecked Sendable {
             armedNonce = nil
             if tripped || fallback != nil { tripped = false; fallback = nil }
         }
+        if raw != rawPath { unsupportedHold = false; liveRetryAt = 0 }
         path = new
         rawPath = raw
         if path == .driver, !dext.hasLive, !loggedDriverNote {
@@ -670,26 +859,59 @@ final class TapSupervisor: @unchecked Sendable {
             Self.log.notice("tapDrill pause5 ignored: this driver build has no pause flag (it arrives with the LIVE phase)")
             return
         }
-        let kr = dext.pauseTap(ms: 5000)
+        let kr = dext.pauseTap(state: sent ?? DextProtocol.Forwarding.shadow, ms: 5000)
         if kr == KERN_SUCCESS { Self.log.notice("tapDrill: tap paused for 5 s") }
         else { Self.log.error("tapDrill pause5 failed: \(DextError(kr).description, privacy: .public)") }
     }
 
     private static func stateName(_ s: UInt64) -> String {
-        switch s { case DextProtocol.Forwarding.count: return "COUNT"; case DextProtocol.Forwarding.shadow: return "SHADOW"; default: return "INERT" }
+        switch s {
+        case DextProtocol.Forwarding.count: return "COUNT"; case DextProtocol.Forwarding.shadow: return "SHADOW"
+        case DextProtocol.Forwarding.live: return "LIVE"; default: return "INERT"
+        }
+    }
+
+    /// What the engine wants the driver to be in right now. A trip or a latch means INERT; a fallback means its target (INERT, or
+    /// COUNT after a LIVE path stalled); a mapping the driver cannot express means INERT (the engine path posts); otherwise the
+    /// path decides. `driver` goes SHADOW first and LIVE only when `liveEligible()` (plan 6.6, "return to LIVE").
+    private func wantedState() -> UInt64 {
+        if tripped || latched != nil { return DextProtocol.Forwarding.inert }
+        if let f = fallback { return f.target }
+        if unsupportedHold { return DextProtocol.Forwarding.inert }
+        if path == .driver, dext.hasLive, !liveUnsupported {
+            if sent == DextProtocol.Forwarding.live && sentAccepted { return DextProtocol.Forwarding.live }
+            return liveEligible() ? DextProtocol.Forwarding.live : DextProtocol.Forwarding.shadow
+        }
+        return path.forwardingState
+    }
+
+    /// SHADOW has run long enough, translated enough frames and agreed with the engine's own core on every sampled one, the mapping
+    /// the driver translates with is the one just pushed and targets this pad, and nothing is in the way. Evaluated at every tick
+    /// from the last status reading (at most 500 ms old in SHADOW).
+    private func liveEligible() -> Bool {
+        guard path == .driver, dext.hasLive, !liveUnsupported, sent == DextProtocol.Forwarding.shadow, sentAccepted,
+              fallback == nil, !tripped, latched == nil, !unsupportedHold,
+              let s = lastStatus, let armedAt = armedAtNs else { return false }
+        let now = clock()
+        guard now >= liveRetryAt, now &- armedAt >= Self.liveShadowMinNs else { return false }
+        guard s.tapPresent, s.appliedState == UInt8(DextProtocol.Forwarding.shadow), s.selfTest == DextProtocol.SelfTest.pass,
+              s.padLive, s.padSource == DextProtocol.PadSource.userClient.rawValue, s.hasMap, s.padSpecCRC != 0,
+              s.acceptedSpecCRC == s.padSpecCRC, let pushed = pushedRevision, s.appliedRevision == pushed else { return false }
+        return s.framesTranslated &- shadowBaseTranslated >= Self.liveShadowMinFrames && parity.stats.mismatched == shadowBaseMismatches
     }
 
     private func apply() {
         guard connected else { return }
-        let off = tripped || fallback != nil || latched != nil
-        let want = off ? DextProtocol.Forwarding.inert : path.forwardingState
+        if deferForOrphan() { return }
+        let want = wantedState()
+        let off = tripped || fallback != nil || latched != nil || unsupportedHold
         guard sent != want else { return }
         // A call that failed is not repeated faster than once a second (this is selector 9 on the vhid queue).
         if lastApplyError != nil, let at = lastApplyFailedNs, clock() &- at < 1_000_000_000 { return }
         if want != DextProtocol.Forwarding.inert {
-            // COUNT and SHADOW are sent only on an instance whose nonce we know, and that nonce is remembered with the acceptance.
+            // COUNT, SHADOW and LIVE are sent only on an instance whose nonce we know, and that nonce is remembered with the acceptance.
             if connNonce == nil, let s = readStatus() { observe(s) }
-            if tripped || fallback != nil || latched != nil { return }     // observe() may have tripped it
+            if tripped || latched != nil { return }                    // observe() may have tripped it
             guard let nonce = connNonce else { return }
             if let armed = armedNonce, armed != nonce { return }       // never arm across instances
         }
@@ -699,7 +921,11 @@ final class TapSupervisor: @unchecked Sendable {
         // Only a definite refusal (Unsupported, NotPermitted) takes the mark back; any other failure leaves it.
         let previouslyArmed = armedNonce
         if want != DextProtocol.Forwarding.inert { armedNonce = connNonce }
+        let wasLive = sent == DextProtocol.Forwarding.live
         let r = dext.setForwarding(want)
+        // Leaving LIVE opens the posting gate whatever the driver answered: the supervisor has decided that the engine posts again, and
+        // a driver that did not confirm is retried while its (TAP) source simply refuses the engine's posts.
+        if wasLive && want != DextProtocol.Forwarding.live { liveWatch?.enabled = false; onDrive?(false) }
         if r.kr == KERN_SUCCESS {
             sent = want
             sentAccepted = true
@@ -709,18 +935,35 @@ final class TapSupervisor: @unchecked Sendable {
                 armedAtNs = nil
             } else {
                 armedAtNs = clock()
-                f1Prev = nil; f1Suspect = 0
+                f1Prev = nil; f1Suspect = 0; f6Prev = nil; f6AppliedSince = nil
             }
-            parity.ring.enabled = (want == DextProtocol.Forwarding.shadow)
-            if want == DextProtocol.Forwarding.shadow { mappingDirty = true }
+            let translating = want == DextProtocol.Forwarding.shadow || want == DextProtocol.Forwarding.live
+            parity.ring.enabled = translating
+            if want == DextProtocol.Forwarding.shadow {
+                mappingDirty = true
+                shadowBaseTranslated = lastStatus?.framesTranslated ?? 0
+                shadowBaseMismatches = parity.stats.mismatched
+            }
+            if want == DextProtocol.Forwarding.live { liveWatch?.configure(core: pushCore) }
+            liveWatch?.enabled = (want == DextProtocol.Forwarding.live)
+            if want == DextProtocol.Forwarding.live { onDrive?(true) }
             Self.log.notice("tap: setForwarding(\(Self.stateName(want), privacy: .public)) applied=\(r.result?.appliedState ?? 99) tapPresent=\(r.result?.tapPresent ?? 99)")
-        } else if r.kr == DextProtocol.krNotPermitted, want == DextProtocol.Forwarding.shadow {
+        } else if r.kr == DextProtocol.krNotPermitted, want >= DextProtocol.Forwarding.shadow {
             armedNonce = previouslyArmed            // a definite answer: the driver did not arm
-            enterFallback(.driverRefused("SHADOW refused: the driver's self-test failed"), retry: false)
+            enterFallback(.driverRefused(want == DextProtocol.Forwarding.live ? "LIVE refused by the driver" : "SHADOW refused: the driver's self-test failed"), retry: false)
         } else if r.kr == DextProtocol.krUnsupported {
             armedNonce = previouslyArmed
-            sent = want                 // this dext cannot do it (no tap, or no SHADOW): do not ask again until the next connection
-            if want != DextProtocol.Forwarding.inert { Self.log.notice("tap: this driver cannot do \(Self.stateName(want), privacy: .public)") }
+            if want == DextProtocol.Forwarding.live { liveUnsupported = true; Self.log.notice("tap: this driver cannot do LIVE; staying in SHADOW") }
+            else {
+                sent = want                 // this dext cannot do it (no tap, or no SHADOW): do not ask again until the next connection
+                if want != DextProtocol.Forwarding.inert { Self.log.notice("tap: this driver cannot do \(Self.stateName(want), privacy: .public)") }
+            }
+        } else if want == DextProtocol.Forwarding.live && (r.kr == DextProtocol.krNotReady || r.kr == DextProtocol.krBadArgument) {
+            // Not yet (no pad / tap / SHADOW applied / mapping) or the accepted mapping targets another pad: SHADOW goes on, and LIVE is
+            // asked again later; a mapping that targets another pad is pushed again first.
+            liveRetryAt = clock() &+ (r.kr == DextProtocol.krBadArgument ? 2 * Self.liveRetryNs : Self.liveRetryNs)
+            if r.kr == DextProtocol.krBadArgument { mappingDirty = true; mappingGeneration += 1; settledGeneration = -1 }
+            note("LIVE not accepted yet: \(DextError(r.kr).description); SHADOW goes on")
         } else {
             lastApplyFailedNs = clock()
             guard lastApplyError != r.kr else { return }
@@ -738,7 +981,10 @@ final class TapSupervisor: @unchecked Sendable {
         r.connected = connected
         r.capTap = connected && dext.hasTap
         r.capXlate = connected && dext.hasXlate
-        if let a = armedState { r.armed = a == DextProtocol.Forwarding.shadow ? "shadow" : "count" }
+        r.capLive = connected && dext.hasLive
+        if let a = armedState {
+            r.armed = a == DextProtocol.Forwarding.live ? "live" : (a == DextProtocol.Forwarding.shadow ? "shadow" : "count")
+        }
         r.liveUnavailable = path == .driver && !dext.hasLive
         r.parityChecked = parity.stats.isChecked
         r.parityOkBucket = parity.stats.matched / 100 * 100

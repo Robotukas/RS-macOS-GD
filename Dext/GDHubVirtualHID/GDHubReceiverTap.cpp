@@ -15,6 +15,7 @@
 // one meter line per 10 s window.
 #include "GDHubInternal.h"
 #include "GDHubReceiverTap.h"
+#include "GDHubVirtualPad.h"     // T7: the tap submits to the pad (rank 3 -> rank 4, the only synchronous call the tap makes)
 #include "GDHubXlate.h"          // Shared/GDHubXlate.h: the one C translator, compiled into this dext with -ffp-contract=off
 
 static_assert(sizeof(gdx_map) <= GDH_MAP_MAX, "a validated mapping must fit the registry's handoff buffer");
@@ -46,6 +47,25 @@ struct GDHubReceiverTap_IVars {
     alignas(8) uint8_t mapRaw[GDH_MAP_MAX];                 // staging for the seqlock read
     gdh_parity parity;
     uint32_t parityCount;
+    // T7 (tap queue only; nothing here is read by another queue). LIVE = SHADOW + submit what the translator produced to the pad.
+    uint64_t myToken;                                       // this instance's registry token: it may submit only while it is current
+    bool wantLive;                                          // the applied mode is LIVE (desired LIVE and SHADOW is active)
+    bool liveActive;                                        // pad reference, spec and input buffers are in place and the report map is valid
+    bool needReset;                                         // the next submitted frame must repost the full state (gdx_reset first)
+    bool silenced;                                          // the silence neutral was posted; cleared by the next frame
+    bool pauseLogged;
+    bool liveNoteLogged;
+    uint32_t padEpoch;                                      // registry epoch of the pad `pad` was copied at
+    uint32_t mapSpecCrc;                                    // spec CRC the loaded mapping targets
+    GDHubVirtualPad * pad;                                  // +1, held across frames (see liveSetup); dropped when the epoch moves
+    OSData * padSpec;                                       // +1, the spec the buffers were built from
+    IOBufferMemoryDescriptor * inBuf[GDHUB_MAX_INPUT_REPORTS];     // one fixed-length buffer per input-table entry (SetLength once)
+    uint8_t * inAddr[GDHUB_MAX_INPUT_REPORTS];
+    uint32_t inLen[GDHUB_MAX_INPUT_REPORTS];
+    int8_t repBuf[GDX_MAX_REPORTS];                         // mapping report index -> input-table entry, -1 = not submittable
+    uint64_t lastDeliverTicks, silenceTicks, nextLiveTry;     // lastDeliverTicks: the last frame translated AND submitted (or found unchanged) in LIVE
+    gdh_meter meter2;                                       // total (hop slot) and occupancy (hr slot)
+    gdh_meter meter3;                                       // AddReportToPool (hop slot) and the submit round trip (hr slot)
 };
 
 bool GDHubReceiverTap::init()
@@ -61,6 +81,10 @@ bool GDHubReceiverTap::init()
     ivars->slowTicks = (uint64_t)GDHUB_TAP_SLOW_TICK_MS * 1000000ull * tb.denom / tb.numer;
     ivars->retryTicks = (uint64_t)GDHUB_TAP_OPEN_RETRY_MS * 1000000ull * tb.denom / tb.numer;
     gdh_meter_init(&ivars->meter, tb.numer, tb.denom, GDHUB_METER_WINDOW_MS);
+    gdh_meter_init(&ivars->meter2, tb.numer, tb.denom, GDHUB_METER_WINDOW_MS);
+    gdh_meter_init(&ivars->meter3, tb.numer, tb.denom, GDHUB_METER_WINDOW_MS);
+    ivars->silenceTicks = (uint64_t)GDH_SILENCE_NEUTRAL_MS * 1000000ull * tb.denom / tb.numer;
+    memset(ivars->repBuf, -1, sizeof(ivars->repBuf));
     return true;
 }
 
@@ -78,6 +102,9 @@ void GDHubReceiverTap::free()
         OSSafeReleaseNULL(ivars->queue);
         for (uint32_t i = 0; i < GDH_POOL_SLOTS; i++) OSSafeReleaseNULL(ivars->poolObj[i]);
         OSSafeReleaseNULL(ivars->hid);
+        OSSafeReleaseNULL(ivars->pad);
+        OSSafeReleaseNULL(ivars->padSpec);
+        for (uint32_t i = 0; i < GDHUB_MAX_INPUT_REPORTS; i++) OSSafeReleaseNULL(ivars->inBuf[i]);
     }
     IOSafeDeleteNULL(ivars, GDHubReceiverTap_IVars, 1);
     super::free();
@@ -93,6 +120,15 @@ bool GDHubTapReadParity(GDHubReceiverTap * tap, gdh_parity_rec * rec)
 {
     if (!tap || !tap->ivars) return false;
     return gdh_parity_read(&tap->ivars->parity, rec) != 0;
+}
+
+bool GDHubTapReadLive(GDHubReceiverTap * tap, gdh_summary * total, gdh_summary * occ, gdh_summary * addPool, gdh_summary * submit)
+{
+    if (!tap || !tap->ivars) return false;
+    uint32_t w = 0;
+    bool a = gdh_meter_read(&tap->ivars->meter2, total, occ, &w) != 0;
+    bool b = gdh_meter_read(&tap->ivars->meter3, addPool, submit, &w) != 0;
+    return a && b;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -132,7 +168,8 @@ kern_return_t IMPL(GDHubReceiverTap, Start)
     // Register and read the desired state in one critical section. Normally INERT: after a relaunch nothing is armed. In the
     // same process, a re-enumeration (controller off/on, Mac wake) starts a new instance that finds COUNT still asked for.
     uint32_t desired = 0;
-    int replaced = gdhr_register_tap(reg, static_cast<OSObject *>(this), ivars->queue, (uint32_t)getpid(), &desired);
+    int replaced = gdhr_register_tap_ex(reg, static_cast<OSObject *>(this), ivars->queue, (uint32_t)getpid(), &desired, &ivars->myToken);
+    gdhr_set_hold(reg, 0);                                             // a new tap starts with no hold (plan 6.2); its xstate is fresh, so its first frame posts everything
     gdhr_ctr_add(reg, GDHR_CTR_TAP_STARTS, 1);
     ivars->startNo = (uint32_t)gdhr_ctr_get(reg, GDHR_CTR_TAP_STARTS);
     ivars->timer->SetEnable(true);
@@ -145,6 +182,114 @@ kern_return_t IMPL(GDHubReceiverTap, Start)
     GDLog("tap start #%u pid=%d desired=%u replaced=%d tapq=%u", ivars->startNo, (int)getpid(), (unsigned)desired, replaced,
           gdhr_queue_idx(reg, GDHR_Q_TAP));
     return kIOReturnSuccess;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// T7: LIVE helpers (tap queue only). The tap holds one +1 on the pad and one on its spec across frames; nothing on the frame
+// path takes the registry lock or allocates. The reference is dropped when the registry's pad epoch moves (a pad entered or left
+// the slot): the frame path notices with one acquire load and simply stops submitting; the 50 ms tick rebuilds or releases.
+
+static void liveRelease(GDHubReceiverTap_IVars * iv)
+{
+    iv->liveActive = false;
+    OSSafeReleaseNULL(iv->pad);
+    OSSafeReleaseNULL(iv->padSpec);
+    for (uint32_t i = 0; i < GDHUB_MAX_INPUT_REPORTS; i++) { OSSafeReleaseNULL(iv->inBuf[i]); iv->inAddr[i] = nullptr; iv->inLen[i] = 0; }
+    memset(iv->repBuf, -1, sizeof(iv->repBuf));
+}
+
+// Loads the accepted mapping into this tap's private copy when the registry's sequence moved. Lock-free; a torn read keeps the old
+// copy. Returns true when a NEW mapping was loaded (xstate is reset, the caller re-derives anything that depends on the map).
+static bool loadMap(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdhr * reg)
+{
+    uint32_t seq = gdhr_map_seq(reg);
+    if (seq == iv->haveSeq) return false;
+    uint32_t n = 0, rev = 0, crc = 0, got = 0;
+    if (!gdhr_map_read(reg, iv->mapRaw, sizeof(iv->mapRaw), &n, &got, &rev, &crc)) return false;     // never blocks
+    iv->haveSeq = got;
+    iv->haveMap = false;
+    gdx_reset(&iv->xstate);                                    // hysteresis and dedupe restart with every mapping
+    if (n == sizeof(gdx_map)) {
+        memcpy(&iv->map, iv->mapRaw, sizeof(gdx_map));         // the bytes were written from a validated gdx_map by this same build
+        iv->haveMap = (iv->map.nReports <= GDX_MAX_REPORTS && iv->map.nButtons <= GDX_MAX_BUTTONS &&
+                       iv->map.nAxes <= GDX_MAX_AXES && iv->map.nTriggers <= GDX_MAX_TRIGGERS &&
+                       iv->map.nPlacements <= GDX_MAX_PLACEMENTS && iv->map.nReports >= 1);
+    }
+    iv->mapRevision = iv->haveMap ? iv->map.revision : 0;
+    iv->mapSpecCrc = iv->haveMap ? crc : 0;
+    gdhr_ctr_add(reg, GDHR_CTR_MAP_SWAPS, 1);
+    gdhr_tap_publish_xlate(reg, static_cast<OSObject *>(tap), iv->mapRevision, iv->haveMap ? 1 : 0);
+    return true;
+}
+
+// Which input-table entry each report of the mapping goes to, found once per mapping by building the neutral state through it
+// (the report ID is the first byte). No allocation. False if a report matches no entry or its length differs from the buffer's.
+static bool remapReports(GDHubReceiverTap_IVars * iv)
+{
+    memset(iv->repBuf, -1, sizeof(iv->repBuf));
+    if (!iv->haveMap || !iv->padSpec) return false;
+    gdx_pad zero;
+    memset(&zero, 0, sizeof(zero));
+    gdx_out o;
+    gdx_build(&iv->map, &zero, &o);
+    if (o.count == 0 || o.count > GDX_MAX_REPORTS) return false;
+    for (uint32_t i = 0; i < o.count; i++) {
+        int idx = GDHubSpecFindInput(iv->padSpec, o.r[i].bytes, o.r[i].len);
+        if (idx < 0 || (uint32_t)idx >= GDHUB_MAX_INPUT_REPORTS || !iv->inBuf[idx] || iv->inLen[idx] != o.r[i].len) return false;
+        iv->repBuf[i] = (int8_t)idx;
+    }
+    return true;
+}
+
+// Allocates (the only place that does): pad reference, spec reference and the fixed-length input buffers (SetLength once, like the
+// user client's), then derives the report map. Tap queue, from syncMode and the tick only, never from the frame path.
+static bool liveSetup(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdhr * reg)
+{
+    liveRelease(iv);
+    loadMap(tap, iv, reg);
+    if (!iv->haveMap) return false;
+    iv->padEpoch = gdhr_pad_epoch(reg);
+    GDHubVirtualPad * pad = GDHubCopyPad();
+    OSData * spec = GDHubCopyPadSpec();
+    if (!pad || !spec || GDHubSpecCRC32(spec) != iv->mapSpecCrc) {
+        if (pad) pad->release();
+        if (spec) spec->release();
+        return false;
+    }
+    uint32_t count = GDHubSpecInputCount(spec);
+    bool ok = count >= 1 && count <= GDHUB_MAX_INPUT_REPORTS;
+    for (uint32_t i = 0; ok && i < count; i++) {
+        uint32_t len = GDHubSpecSendLength(spec, i);
+        IOBufferMemoryDescriptor * b = nullptr;
+        IOAddressSegment seg = {};
+        ok = len != 0 && len <= GDHUB_MAX_REPORT &&
+             IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, len, 0, &b) == kIOReturnSuccess && b &&
+             b->SetLength(len) == kIOReturnSuccess && b->GetAddressRange(&seg) == kIOReturnSuccess && seg.address != 0 && seg.length >= len;
+        if (b) { if (ok) { iv->inBuf[i] = b; iv->inAddr[i] = (uint8_t *)seg.address; iv->inLen[i] = len; } else b->release(); }
+    }
+    iv->pad = pad;
+    iv->padSpec = spec;
+    if (ok) ok = remapReports(iv);
+    if (!ok) { liveRelease(iv); return false; }
+    iv->liveActive = true;
+    iv->needReset = true;                                       // the first frame after setup posts the full state
+    return true;
+}
+
+// Posts the pad's neutral reports with source TAP, only if this instance is the registered tap and the tap is the pad's source.
+// Tap queue; may use a temporary pad reference when LIVE was never set up (the source can already be TAP: the user client stores
+// it before the tap has applied LIVE). The pad's own queue serialises it with any submission; the post order is therefore total.
+static void tapNeutral(GDHubVirtualPad * held, GDHubReceiverTap_IVars * iv, gdhr * reg, uint32_t reason)
+{
+    if (gdhr_pad_source(reg) != GDHUB_PADSRC_TAP || iv->myToken != gdhr_tap_token(reg)) return;
+    bool temp = !(held && iv->padEpoch == gdhr_pad_epoch(reg));      // a held reference is used only while it is the slot's pad
+    GDHubVirtualPad * pad = temp ? GDHubCopyPad() : held;
+    if (!pad) return;
+    GDH_SYNC(GDHR_RANK_TAP, GDHR_RANK_PAD, GDHubPadQueue(pad), "postNeutralFrom(tap)");
+    pad->postNeutralFrom(GDHUB_PADSRC_TAP, iv->myToken, reason);
+    if (temp) pad->release();
+    gdx_reset(&iv->xstate);                                     // whatever comes next reposts the whole state
+    iv->needReset = true;
 }
 
 // Drops the whole pool: after a Close nobody knows whether the kernel keeps its pool, so a fresh one is built at the next
@@ -174,6 +319,9 @@ static void closeInterface(GDHubReceiverTap * self, GDHubReceiverTap_IVars * iv,
     }
     iv->haveMap = false;                                               // a map is never kept across an Open: the next Open reloads it
     iv->haveSeq = ~gdhr_map_seq(reg);
+    iv->wantLive = false;
+    liveRelease(iv);                                                   // the pad reference does not outlive the open interface
+    iv->lastDeliverTicks = 0; iv->silenced = false;
     poolRelease(iv);
     GDLog("tap close (%{public}s) rc=0x%x", why, (unsigned)kr);
 }
@@ -182,6 +330,9 @@ kern_return_t IMPL(GDHubReceiverTap, Stop)
 {
     GDLog("tap stop #%u opened=%d", ivars->startNo, (int)ivars->opened);
     __atomic_store_n(&ivars->stopping, true, __ATOMIC_RELAXED);        // reports, ticks and pokes that are still queued return at once
+    // The controller went away (or the dext is ending): if this tap was driving the pad, the pad goes neutral NOW (plan 6.4). Only
+    // the registered tap does it, so an older instance stopping after its successor started cannot blank the successor's pad.
+    tapNeutral(ivars->pad, ivars, GDHubReg(), GDHUB_NEUTRAL_STOP);
     closeInterface(this, ivars, "stop");                               // Close comes before the actions are cancelled
     gdhr_unregister_tap(GDHubReg(), static_cast<OSObject *>(this));    // no more pokes; ignored if a newer tap replaced us
     if (ivars->superStopped) return kIOReturnSuccess;                  // Start already ran the super Stop
@@ -211,7 +362,16 @@ kern_return_t IMPL(GDHubReceiverTap, SetPowerState)
 {
     bool off = (powerFlags == kIOServicePowerCapabilityOff);
     bool on = (powerFlags & kIOServicePowerCapabilityOn) != 0;
-    if (off) ivars->powered = false; else if (on) ivars->powered = true;
+    gdhr * reg = GDHubReg();
+    if (off) {
+        ivars->powered = false;
+        tapNeutral(ivars->pad, ivars, reg, GDHUB_NEUTRAL_POWER);       // Mac sleep: neutral first, then frames are ignored
+    } else if (on) {
+        ivars->powered = true;
+        if (ivars->myToken == gdhr_tap_token(reg)) gdhr_set_hold(reg, 0);       // the hold ends at power on (plan 6.2)
+        gdx_reset(&ivars->xstate);
+        ivars->needReset = true;
+    }
     gdhr_tap_set_power(GDHubReg(), static_cast<OSObject *>(this), ivars->powered ? 1 : 0, powerFlags);
     GDLog("tap SetPowerState flags=0x%x powered=%d opened=%d", (unsigned)powerFlags, (int)ivars->powered, (int)ivars->opened);
     return SetPowerState(powerFlags, SUPERDISPATCH);
@@ -250,8 +410,10 @@ static void poolFill(GDHubReceiverTap_IVars * iv)
 static void syncMode(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdhr * reg)
 {
     if (!iv->opened) return;
-    uint32_t want = (gdhr_desired_state(reg) == GDH_FWD_SHADOW) ? GDH_FWD_SHADOW : GDH_FWD_COUNT;
-    bool shadow = (want == GDH_FWD_SHADOW) && gdhr_selftest_get(reg) == GDHR_SELFTEST_PASS;
+    uint32_t d = gdhr_desired_state(reg);
+    uint32_t want = (d == GDH_FWD_LIVE) ? GDH_FWD_LIVE : ((d == GDH_FWD_SHADOW) ? GDH_FWD_SHADOW : GDH_FWD_COUNT);
+    bool shadow = (want >= GDH_FWD_SHADOW) && gdhr_selftest_get(reg) == GDHR_SELFTEST_PASS;
+    bool live = (want == GDH_FWD_LIVE) && shadow;
     if (want != iv->mode) {
         iv->mode = want;
         gdhr_tap_publish(reg, static_cast<OSObject *>(tap), 1, want);
@@ -263,6 +425,31 @@ static void syncMode(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdhr *
         iv->haveSeq = ~gdhr_map_seq(reg);
         gdx_reset(&iv->xstate);
         gdhr_tap_publish_xlate(reg, static_cast<OSObject *>(tap), 0, 0);
+    }
+    if (live != iv->wantLive) {
+        iv->wantLive = live;
+        iv->nextLiveTry = 0;
+        iv->liveNoteLogged = false;
+        if (live) {
+            gdx_reset(&iv->xstate);
+            iv->needReset = true;                                      // the first LIVE frame reposts everything
+            iv->silenced = false;
+            iv->lastDeliverTicks = mach_absolute_time();               // the silence clock starts now, not at the last frame of SHADOW
+        } else {
+            liveRelease(iv);
+        }
+    }
+    if (iv->wantLive && !iv->liveActive) {
+        // (Re)build the pad reference and buffers: at most every 500 ms, and quietly (one log line per run of failures).
+        uint64_t now = mach_absolute_time();
+        if (now >= iv->nextLiveTry) {
+            if (!liveSetup(tap, iv, reg)) {
+                iv->nextLiveTry = now + iv->retryTicks;
+                if (!iv->liveNoteLogged) { iv->liveNoteLogged = true; GDLog("tap live: not ready (no pad, mapping or buffers yet); frames are not submitted"); }
+            } else {
+                GDLog("tap live: ready (pad epoch %u, mapping rev %u)", (unsigned)iv->padEpoch, (unsigned)iv->mapRevision);
+            }
+        }
     }
 }
 
@@ -333,41 +520,53 @@ void IMPL(GDHubReceiverTap, TapTick)
     }
     if (ivars->selfTerminated) return;
     tapApply(this, 1);
+    // LIVE silence neutral (plan 6.4): the stream stopped without the receiver re-enumerating (controller asleep, link lost).
+    // No frame for 250 ms -> neutral and a full repost with the next frame. The tick is 50 ms in LIVE (gdh_tap_fast_tick), so the
+    // neutral is on the pad within 250-300 ms of the last frame.
+    if (gdh_silence_due(ivars->wantLive, ivars->opened, ivars->powered, ivars->silenced, gdhr_hold(reg), gdhr_pad_source(reg),
+                        ivars->lastDeliverTicks, mach_absolute_time(), ivars->silenceTicks)) {
+        ivars->silenced = true;
+        tapNeutral(ivars->liveActive ? ivars->pad : nullptr, ivars, reg, GDHUB_NEUTRAL_SILENCE);
+    }
     bool fast = gdh_tap_fast_tick(gdhr_desired_state(reg), ivars->opened, ivars->powered, 0, terminating) != 0;
     uint64_t next = fast ? ivars->fastTicks : ivars->slowTicks;
     ivars->timer->WakeAtTime(kIOTimerClockMachAbsoluteTime, mach_absolute_time() + next, next / 10);
 }
 
-// SHADOW, one frame (tap queue, per report). Takes no lock and allocates nothing: the only shared reads are one acquire load of
-// the registry's mapSeq and, when it moved, a lock-free seqlock read of the mapping into this tap's private copy. Everything
-// the translator touches is in `iv` (map, state) or on the stack (gdx_out twice, gdx_pad: about 600 bytes).
+// SHADOW and LIVE, one frame (tap queue, per report). Takes no lock and allocates nothing: the shared reads are acquire loads of
+// the registry's mapSeq, padEpoch, padSource, tapToken and holdNeutral (and, when mapSeq moved, a lock-free seqlock read of the
+// mapping into this tap's private copy). Everything the translator touches is in `iv` (map, state) or on the stack (gdx_out twice,
+// gdx_pad: about 600 bytes). In LIVE the only call out is pad->submitInput, one synchronous RPC per changed report onto the pad's
+// own queue (rank 3 -> rank 4; the pad calls nothing, so the tap can wait only for the pad's queue to get to it, never for the
+// root's or the user client's). `submitTicks` is the time spent in those calls.
 static void shadowFrame(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdhr * reg, const uint8_t * bytes, uint32_t len,
-                        uint64_t timestamp, uint64_t * xlateTicks)
+                        uint64_t timestamp, uint64_t * xlateTicks, uint64_t * submitTicks)
 {
-    uint32_t seq = gdhr_map_seq(reg);
-    if (seq != iv->haveSeq) {
-        uint32_t n = 0, rev = 0, crc = 0, got = 0;
-        if (gdhr_map_read(reg, iv->mapRaw, sizeof(iv->mapRaw), &n, &got, &rev, &crc)) {         // never blocks; a torn read keeps the old map
-            iv->haveSeq = got;
-            iv->haveMap = false;
-            gdx_reset(&iv->xstate);                                    // hysteresis and dedupe restart with every mapping
-            if (n == sizeof(gdx_map)) {
-                memcpy(&iv->map, iv->mapRaw, sizeof(gdx_map));         // the bytes were written from a validated gdx_map by this same build
-                iv->haveMap = (iv->map.nReports <= GDX_MAX_REPORTS && iv->map.nButtons <= GDX_MAX_BUTTONS &&
-                               iv->map.nAxes <= GDX_MAX_AXES && iv->map.nTriggers <= GDX_MAX_TRIGGERS &&
-                               iv->map.nPlacements <= GDX_MAX_PLACEMENTS && iv->map.nReports >= 1);
-            }
-            iv->mapRevision = iv->haveMap ? iv->map.revision : 0;
-            gdhr_ctr_add(reg, GDHR_CTR_MAP_SWAPS, 1);
-            gdhr_tap_publish_xlate(reg, static_cast<OSObject *>(tap), iv->mapRevision, iv->haveMap ? 1 : 0);
-        }
+    if (loadMap(tap, iv, reg) && iv->wantLive) {
+        // A new mapping may have another report layout. The buffers stay (they belong to the pad's spec); only the report map is
+        // re-derived, without allocation. If it no longer fits, nothing is submitted until the tick sets LIVE up again.
+        if (!iv->haveMap || !remapReports(iv)) iv->liveActive = false;
+        iv->needReset = true;
     }
     if (!iv->haveMap) { gdhr_ctr_add(reg, GDHR_CTR_FRAMES_NOMAP, 1); return; }
     if (len != GDX_SOURCE_REPORT_LEN || bytes[0] != GDX_SOURCE_REPORT_ID) { gdhr_ctr_add(reg, GDHR_CTR_FRAMES_SKIPPED, 1); return; }
 
+    // LIVE gate: every condition is a cheap atomic load, and each is re-checked by the pad on its own queue anyway (it is the
+    // arbiter); checking here only avoids sending what would be refused. Not submitting never loses state: the next frame after
+    // the gate opens reposts everything (needReset), and the stream is full-state at ~955 reports/s.
+    bool submit = false;
+    if (iv->wantLive) {
+        if (iv->liveActive && iv->padEpoch != gdhr_pad_epoch(reg)) iv->liveActive = false;      // the pad changed under us: the tick rebuilds
+        bool held = gdhr_hold(reg) != 0;
+        submit = gdh_live_submit_ok(iv->liveActive, held ? 1 : 0, iv->myToken, gdhr_tap_token(reg), iv->padEpoch, gdhr_pad_epoch(reg),
+                                    gdhr_pad_source(reg)) != 0;
+        if (!submit) { iv->needReset = true; if (!held) gdhr_ctr_add(reg, GDHR_CTR_LIVE_NO_PAD, 1); }
+        else if (iv->needReset) { gdx_reset(&iv->xstate); iv->needReset = false; }
+    }
+
     uint64_t t0 = mach_absolute_time();
     gdx_out out;
-    uint32_t mask = gdx_step(&iv->xstate, &iv->map, bytes, len, &out);       // what a LIVE tap would post
+    uint32_t mask = gdx_step(&iv->xstate, &iv->map, bytes, len, &out);       // what a LIVE tap posts
     gdx_pad pad;
     gdx_out stateless;
     gdh_parity_rec rec;
@@ -384,16 +583,39 @@ static void shadowFrame(GDHubReceiverTap * tap, GDHubReceiverTap_IVars * iv, gdh
         rec.count = ++iv->parityCount;
         gdh_parity_write(&iv->parity, &rec);
     }
-    *xlateTicks = mach_absolute_time() - t0;
+    uint64_t t2 = mach_absolute_time();
+    *xlateTicks = t2 - t0;
     gdhr_ctr_add(reg, GDHR_CTR_FRAMES_TRANSLATED, 1);
     if (mask != 0) {
         gdhr_ctr_add(reg, GDHR_CTR_STATES_CHANGED, 1);
         gdhr_ctr_add(reg, GDHR_CTR_REPORTS_WOULD_POST, (uint64_t)__builtin_popcount(mask));
     }
+    // The LIVE silence clock (plan 6.4, review D9) counts DELIVERY, not arrival: a frame that was translated and either submitted or
+    // found unchanged (an idle controller streams identical frames) moves it; a frame that could not be submitted (set-up failed, no
+    // map, the pad changed, a refused submit) does not, so whatever stops the tap from delivering ends in the same 250-300 ms neutral.
+    if (!submit) return;
+    if (mask == 0) { gdhr_ctr_add(reg, GDHR_CTR_FRAMES_UNCHANGED, 1); iv->lastDeliverTicks = t2; iv->silenced = false; return; }
+    bool failed = false;
+    for (uint32_t i = 0; i < out.count && i < GDX_MAX_REPORTS; i++) {
+        if (!((mask >> i) & 1u)) continue;
+        int idx = iv->repBuf[i];
+        if (idx < 0 || out.r[i].len != iv->inLen[idx]) { iv->needReset = true; failed = true; gdhr_ctr_add(reg, GDHR_CTR_LIVE_NO_PAD, 1); continue; }
+        memcpy(iv->inAddr[idx], out.r[i].bytes, out.r[i].len);          // the buffer's length was set once, at setup
+        GDH_SYNC(GDHR_RANK_TAP, GDHR_RANK_PAD, GDHubPadQueue(iv->pad), "submitInput(tap)");
+        kern_return_t kr = iv->pad->submitInput(GDHUB_PADSRC_TAP, iv->myToken, t2, iv->inBuf[idx], out.r[i].len);
+        if (kr != kIOReturnSuccess) {
+            gdhr_ctr_add(reg, GDHR_CTR_TAP_SUBMIT_ERRORS, 1);           // the pad refused or failed: whatever it has is stale, repost all
+            iv->needReset = true;
+            failed = true;
+        }
+    }
+    uint64_t t3s = mach_absolute_time();
+    *submitTicks = t3s - t2;
+    if (!failed) { iv->lastDeliverTicks = t3s; iv->silenced = false; }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The report path. Runs only while the interface is open, which only an owner's COUNT or SHADOW request causes.
+// The report path. Runs only while the interface is open, which only an owner's COUNT, SHADOW or LIVE request causes.
 
 void IMPL(GDHubReceiverTap, ReportAvailable)
 {
@@ -401,7 +623,7 @@ void IMPL(GDHubReceiverTap, ReportAvailable)
     auto iv = ivars;
     if (__atomic_load_n(&iv->stopping, __ATOMIC_RELAXED)) return;      // after Stop the pool is gone: nothing is touched
     gdhr * reg = GDHubReg();
-    uint64_t now = mach_absolute_time();
+    uint64_t now = mach_absolute_time();                               // t1: tap entry
 
     // Ownership bookkeeping first, whatever the state: a buffer of ours that the kernel delivered is out of its pool.
     int slot = gdh_pool_find(&iv->pool, static_cast<const void *>(report));
@@ -409,23 +631,41 @@ void IMPL(GDHubReceiverTap, ReportAvailable)
     else gdhr_ctr_add(reg, GDHR_CTR_POOL_MISS, 1);                     // a kernel buffer, or a late one from a dropped pool
     if (!iv->opened) return;                                           // late delivery after Close: never counted, never re-added
 
-    if (!iv->powered) {
+    // The pause drill (every build with CAP_LIVE, owner only): frames are ignored, as if the tap stalled. They do not count as
+    // framesIn (the engine's F1 watches that counter), do not reset the silence clock, and the buffer still goes back to the pool.
+    uint64_t pauseUntil = gdhr_pause_until(reg);
+    bool paused = pauseUntil != 0 && now < pauseUntil;
+    if (paused) {
+        gdhr_ctr_add(reg, GDHR_CTR_PAUSE_DROPS, 1);
+        if (!iv->pauseLogged) { iv->pauseLogged = true; GDLog("tap pause start"); }
+    } else if (iv->pauseLogged) {
+        iv->pauseLogged = false;
+        iv->needReset = true;                                          // the pad may have gone neutral by silence meanwhile
+        gdx_reset(&iv->xstate);
+        GDLog("tap pause end");
+    }
+
+    uint64_t t3 = now, xlateTicks = 0, submitTicks = 0;
+    if (paused) {
+        // nothing
+    } else if (!iv->powered) {
         gdhr_ctr_add(reg, GDHR_CTR_FRAMES_IGNORED, 1);
     } else if (reportLength == 0 || reportLength > GDHUB_TAP_POOL_BUF) {
         gdhr_ctr_add(reg, GDHR_CTR_FRAMES_BAD, 1);
     } else {
         gdhr_ctr_add(reg, GDHR_CTR_FRAMES_IN, 1);
         gdhr_ctr_add(reg, reportID == 6 ? GDHR_CTR_FRAMES_R06 : GDHR_CTR_FRAMES_OTHER, 1);
-        uint64_t xlateTicks = 0;
         if (iv->shadowActive) {
             // The bytes: our own pool buffer (mapped once at pool setup) and nothing else. A report that arrived in a buffer we do
-            // not own (a pool miss) is never read in T5: it counts framesUnmapped and is not translated. The next frame
-            // translates normally; gdx_state only compares each frame with the last translated one, so a skipped frame costs
-            // nothing but that frame.
+            // not own (a pool miss) is never read: it counts framesUnmapped and is not translated, in LIVE too. The pool is 32
+            // buffers (32 ms of tap-queue stall before a miss is even possible) and every frame carries the full controller state,
+            // so a frame that cannot be read delays the pad by one frame interval (~1 ms) and loses nothing; the silence neutral
+            // fires only if NO frame is read for 250 ms. Mapping a kernel buffer would be a blocking kernel call on this queue.
             const uint8_t * bytes = (slot >= 0 && iv->poolAddr[slot]) ? iv->poolAddr[slot] : nullptr;
-            if (bytes) shadowFrame(this, iv, reg, bytes, reportLength, timestamp, &xlateTicks);
-            else gdhr_ctr_add(reg, GDHR_CTR_FRAMES_UNMAPPED, 1);
+            if (bytes) shadowFrame(this, iv, reg, bytes, reportLength, timestamp, &xlateTicks, &submitTicks);
+            else { gdhr_ctr_add(reg, GDHR_CTR_FRAMES_UNMAPPED, 1); if (iv->wantLive) iv->needReset = true; }
         }
+        t3 = mach_absolute_time();
         if (timestamp <= now &&
             gdh_meter_sample(&iv->meter, now, xlateTicks != 0, xlateTicks, now - timestamp)) {   // hop slot = translate time, hr slot = k2d
             gdh_summary xl, k2d;
@@ -444,5 +684,22 @@ void IMPL(GDHubReceiverTap, ReportAvailable)
     if (slot >= 0 && iv->poolObj[slot]) {
         if (iv->hid->AddReportToPool(iv->poolObj[slot]) == kIOReturnSuccess) gdh_pool_added(&iv->pool, slot);
         else gdhr_ctr_add(reg, GDHR_CTR_READD_FAIL, 1);
+    }
+    if (paused) return;
+    uint64_t t4 = mach_absolute_time();
+    // T7 stage histograms (plan 9.1), one sample per frame each: total = kernel timestamp -> submit returned (t3 - t0), occ = this
+    // queue's occupancy for the frame (t4 - t1), addPool = t4 - t3, submit = the submitInput round trip. Windows of 10 s.
+    bool have = iv->shadowActive && xlateTicks != 0;
+    if (have) (void)gdh_meter_sample(&iv->meter3, t4, 1, t4 - t3, submitTicks);
+    if (have && timestamp <= t3 && gdh_meter_sample(&iv->meter2, t4, 1, t3 - timestamp, t4 - now)) {
+        gdh_summary total, occ, addPool, submit;
+        uint32_t w = 0;
+        if (gdh_meter_read(&iv->meter2, &total, &occ, &w) && gdh_meter_read(&iv->meter3, &addPool, &submit, &w) && iv->wantLive) {
+            // Once per window, only while LIVE is applied. Estimator worst case (u32 = 10 digits, u64 = 20): 214 characters.
+            GDLog("tap live b=%u n=%u total p50/p99/max %u/%u/%u us occ p99 %u submit p50/p99 %u/%u addpool p99 %u us posts=%llu rej=%llu",
+                  (unsigned)GDHUB_DEXT_BUILD, total.count, total.p50Ns / 1000, total.p99Ns / 1000, total.maxNs / 1000, occ.p99Ns / 1000,
+                  submit.p50Ns / 1000, submit.p99Ns / 1000, addPool.p99Ns / 1000, gdhr_ctr_get(reg, GDHR_CTR_TAP_POSTS),
+                  gdhr_ctr_get(reg, GDHR_CTR_TAP_REJECTED));
+        }
     }
 }

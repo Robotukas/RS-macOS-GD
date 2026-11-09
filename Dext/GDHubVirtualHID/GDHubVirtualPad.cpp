@@ -121,18 +121,32 @@ kern_return_t IMPL(GDHubVirtualPad, submitInput)
     gdhr * reg = GDHubReg();
     GDHubProbeFirst(GDHR_PROBE_SUBMIT, "first submit", GDHR_Q_PAD, ivars->queue);
     bool stopping = __atomic_load_n(&ivars->stopping, __ATOMIC_RELAXED);
+    int rejectCtr = (source == GDHUB_PADSRC_TAP) ? GDHR_CTR_TAP_REJECTED : GDHR_CTR_UC_REJECTED;
     if (stopping || !report || length == 0 || length > GDHUB_MAX_REPORT) {
-        gdhr_ctr_add(reg, GDHR_CTR_UC_REJECTED, 1);
+        gdhr_ctr_add(reg, rejectCtr, 1);
         return stopping ? kIOReturnNotReady : kIOReturnBadArgument;
     }
-    uint32_t padSource = gdhr_pad_source(reg);                 // authoritative: checked here, on the pad's own queue
+    // The ONE arbitration point (plan 6.2): the word is read here, on the pad's own queue, for every submission. Whoever is not
+    // the current source is refused, and no report of the old source can get past a switch that was stored before this load.
+    uint32_t padSource = gdhr_pad_source(reg);
     if (source != padSource) {
-        gdhr_ctr_add(reg, GDHR_CTR_UC_REJECTED, 1);
+        gdhr_ctr_add(reg, rejectCtr, 1);
         return padSource == GDHUB_PADSRC_NONE ? kIOReturnNotReady : kIOReturnBusy;
+    }
+    // A report from a tap instance that has been replaced in the meantime (a re-enumeration): its token is stale.
+    if (source == GDHUB_PADSRC_TAP && token != gdhr_tap_token(reg)) {
+        gdhr_ctr_add(reg, GDHR_CTR_TAP_REJECTED, 1);
+        return kIOReturnBusy;
+    }
+    // The hold (the engine's willSleep neutral) is read on this queue too: the neutral request stores it BEFORE its RPC reaches
+    // this queue, so a TAP report that runs after the neutral sees it, and one that ran before it was followed by the neutral.
+    if (source == GDHUB_PADSRC_TAP && gdhr_hold(reg)) {
+        gdhr_ctr_add(reg, GDHR_CTR_TAP_REJECTED, 1);
+        return kIOReturnBusy;
     }
     kern_return_t kr = handleReport(tPin, report, length, kIOHIDReportTypeInput, 0);
     uint64_t tPout = mach_absolute_time();
-    gdhr_ctr_add(reg, kr == kIOReturnSuccess ? GDHR_CTR_UC_POSTS : GDHR_CTR_POST_ERRORS, 1);
+    gdhr_ctr_add(reg, kr == kIOReturnSuccess ? (source == GDHUB_PADSRC_TAP ? GDHR_CTR_TAP_POSTS : GDHR_CTR_UC_POSTS) : GDHR_CTR_POST_ERRORS, 1);
     bool hasHop = (tSrc != 0 && tPin >= tSrc);
     if (gdh_meter_sample(&ivars->meter, tPout, hasHop ? 1 : 0, hasHop ? tPin - tSrc : 0, tPout - tPin)) {
         // One notice per completed 10 s window, never per report. Live-only and cut near 256 characters: stay short.
@@ -158,6 +172,10 @@ kern_return_t IMPL(GDHubVirtualPad, postNeutralFrom)
     if (__atomic_load_n(&ivars->stopping, __ATOMIC_RELAXED)) return kIOReturnNotReady;
     uint32_t padSource = gdhr_pad_source(reg);
     if (source != padSource) return padSource == GDHUB_PADSRC_NONE ? kIOReturnNotReady : kIOReturnBusy;
+    if (source == GDHUB_PADSRC_TAP && token != gdhr_tap_token(reg)) {                // a replaced tap instance: its neutral is stale
+        gdhr_ctr_add(reg, GDHR_CTR_TAP_REJECTED, 1);
+        return kIOReturnBusy;
+    }
     kern_return_t result = kIOReturnSuccess;
     uint64_t now = mach_absolute_time();
     for (uint32_t i = 0; i < ivars->neutralCount; i++) {
@@ -165,7 +183,14 @@ kern_return_t IMPL(GDHubVirtualPad, postNeutralFrom)
         if (kr != kIOReturnSuccess) { result = kr; gdhr_ctr_add(reg, GDHR_CTR_POST_ERRORS, 1); }
     }
     gdhr_ctr_add(reg, GDHR_CTR_NEUTRAL_POSTS, 1);
-    (void)reason;
+    switch (reason) {                                          // by reason, for the live checks (every neutral is explained)
+    case GDHUB_NEUTRAL_SWITCH:  gdhr_ctr_add(reg, GDHR_CTR_SWITCH_NEUTRALS, 1); break;
+    case GDHUB_NEUTRAL_STOP:    gdhr_ctr_add(reg, GDHR_CTR_STOP_NEUTRALS, 1); break;
+    case GDHUB_NEUTRAL_SILENCE: gdhr_ctr_add(reg, GDHR_CTR_SILENCE_NEUTRALS, 1); break;
+    case GDHUB_NEUTRAL_POWER:   gdhr_ctr_add(reg, GDHR_CTR_POWER_NEUTRALS, 1); break;
+    case GDHUB_NEUTRAL_HOLD:    gdhr_ctr_add(reg, GDHR_CTR_HOLD_NEUTRALS, 1); break;
+    default: break;
+    }
     return result;
 }
 

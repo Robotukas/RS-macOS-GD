@@ -21,8 +21,9 @@
                                                   kIOReturnBadArgument only for a size outside 64...1024; every other refusal is kIOReturnSuccess with reason != 0
                                                   (kernel does not copy scalar outputs of a failed call), kIOReturnNotPermitted for a non-owner */
 #define GDHUB_SEL_GET_STATUS2           11     /* T3. struct out: GDHubStatus2 (<= 512 bytes, layout below). CAP_ROOT_PAD */
-/* 12 is reserved (create device 2, T7). Selectors 9-11 are owner-only, behind hello, the team check and the claim. */
-#define GDHUB_SEL_COUNT                 12
+#define GDHUB_SEL_CREATE_DEVICE2        12     /* T7. struct in: spec (as selector 1). scalars out: adopted (1 = a live pinned pad with the same spec became ours), padSource. CAP_LIVE */
+/* Selectors 9-12 are owner-only, behind hello, the team check and the claim. */
+#define GDHUB_SEL_COUNT                 13
 #define GDHUB_SLOT_PAD                  0
 #define GDHUB_SLOT_KEYBOARD             1
 #define GDHUB_SLOT_POINTER              2
@@ -30,6 +31,7 @@
 #define GDHUB_CAP_PAD                   1      // hello out[2] bits: 1 << slot
 #define GDHUB_CAP_KEYBOARD              2
 #define GDHUB_CAP_POINTER               4
+#define GDHUB_CAP_LIVE                  (1u << 11)  /* T7: the LIVE state, selector 12, the pause and release-pad flags of selector 9, pinning and adoption. Absent in a GDHUB_TAP_DECLINE build */
 #define GDHUB_CAP_XLATE                 (1u << 10)  /* T5: selector 10 (setMapping) and the SHADOW state exist. Absent in a GDHUB_TAP_DECLINE build */
 #define GDHUB_CAP_TAP                   (1u << 9)   /* T4: the receiver tap exists in this dext; selector 9 also accepts COUNT. Absent in a GDHUB_TAP_DECLINE build */
 #define GDHUB_CAP_ROOT_PAD              (1u << 8)   /* T3: the root service owns the pad; selectors 9 and 11 exist. Bits 0-2 stay the slot bits */
@@ -37,6 +39,10 @@
    LIVE and any flag answer kIOReturnUnsupported. */
 #define GDHUB_FWD_INERT                 0      /* tap attached, interface NOT opened: no per-frame code. Every dext launch starts here */
 #define GDHUB_FWD_SHADOW                2      /* T5: opened; translates with the accepted mapping and records a parity sample; posts nothing. Without a mapping it is COUNT */
+#define GDHUB_FWD_LIVE                  3      /* T7: SHADOW, and the tap submits what it translates to the pad (padSource TAP). Only from SHADOW with the pad's mapping accepted and the self-test passed */
+#define GDHUB_FWD_FLAG_DEV_PAUSE_TAP    (1u << 8)   /* T7, owner only, every build with CAP_LIVE: the tap ignores frames for argMs (<= 10000); state is applied as well */
+#define GDHUB_FWD_FLAG_RELEASE_PAD      (1u << 9)   /* T7, owner only, with state INERT: padSource UC, neutral, destroy the pad even if it is pinned and ownerless */
+/* bit 0 (STAMP_SOURCE_TIME of the plan) is not implemented: any other flag answers kIOReturnUnsupported */
 #define GDHUB_FWD_COUNT                 1      /* T4: opened; counts frames and the kernel-to-driver delay; translates and posts nothing */
 /* setMapping reasons (scalar output 1): 0 accepted; 1...21 are GDX_E_* of Shared/GDHubXlate.h (gdx_validate); then: */
 #define GDHUB_MAP_OK                    0
@@ -46,7 +52,7 @@
 /* Pad source (GDHubStatus2 padSource, selector 9 output): who may post to the pad. */
 #define GDHUB_PADSRC_NONE               0      /* no pad */
 #define GDHUB_PADSRC_UC                 1      /* user client posts (the engine or the app) */
-#define GDHUB_PADSRC_TAP                2      /* reserved for the receiver tap (T4+) */
+#define GDHUB_PADSRC_TAP                2      /* the receiver tap drives the pad (LIVE) */
 #define GDHUB_MAX_DESCRIPTOR            1024
 #define GDHUB_MAX_REPORT                64
 #define GDHUB_MAX_INPUT_REPORTS         4
@@ -92,7 +98,7 @@
    maximum, the smallest bucket edge is 1 us; the mean is exact). */
 #define GDHUB_ST2_VERSION               1
 #define GDHUB_ST2_MAX_SIZE              1024   /* was 512 until T5: the parity record needed room. A caller that offers less gets the first bytes */
-#define GDHUB_ST2_SIZE                  480
+#define GDHUB_ST2_SIZE                  676
 #define GDHUB_ST2_OFF_VERSION           0      /* u16 */
 #define GDHUB_ST2_OFF_SIZE              2      /* u16 */
 #define GDHUB_ST2_OFF_BUILD             4      /* u32 */
@@ -187,6 +193,46 @@
 #define GDHUB_ST2_OFF_PARITY_OUT01      460    /* u8[16], report 0 of the mapping as gdx_eval + gdx_build give it (xbox-bt16: 0x01) */
 #define GDHUB_ST2_OFF_PARITY_OUT02      476    /* u8[2], report 1 of the mapping (xbox-bt16: 0x02) */
 /* 478-479 reserved. */
+/* T7: LIVE, appended after the parity record. */
+#define GDHUB_ST2_OFF_HOLD_NEUTRAL      480    /* u8, the engine's neutral request is holding the tap back while it drives the pad */
+#define GDHUB_ST2_OFF_PAD_ORPHANED      481    /* u8, a pinned pad whose owner left; removed 30 s after it left unless adopted */
+#define GDHUB_ST2_OFF_PAUSED            482    /* u8, the pause drill is active */
+/* 483 reserved */
+#define GDHUB_ST2_OFF_TAP_POSTS         484    /* u64 counters from here */
+#define GDHUB_ST2_OFF_TAP_REJECTED      492
+#define GDHUB_ST2_OFF_TAP_SUBMIT_ERRORS 500
+#define GDHUB_ST2_OFF_FRAMES_UNCHANGED  508
+#define GDHUB_ST2_OFF_SWITCH_NEUTRALS   516
+#define GDHUB_ST2_OFF_STOP_NEUTRALS     524
+#define GDHUB_ST2_OFF_SILENCE_NEUTRALS  532
+#define GDHUB_ST2_OFF_POWER_NEUTRALS    540
+#define GDHUB_ST2_OFF_HOLD_NEUTRALS     548
+#define GDHUB_ST2_OFF_ADOPTS            556
+#define GDHUB_ST2_OFF_ORPHAN_DESTROYS   564
+#define GDHUB_ST2_OFF_PAUSE_DROPS       572
+#define GDHUB_ST2_OFF_SOURCE_SWITCHES   580
+#define GDHUB_ST2_OFF_LIVE_NO_PAD       588
+#define GDHUB_ST2_OFF_TOTAL_COUNT       596    /* u32 each: count, p50, p99, max, mean (ns), last 10 s window: kernel timestamp -> submitInput returned */
+#define GDHUB_ST2_OFF_TOTAL_P50_NS      600
+#define GDHUB_ST2_OFF_TOTAL_P99_NS      604
+#define GDHUB_ST2_OFF_TOTAL_MAX_NS      608
+#define GDHUB_ST2_OFF_TOTAL_MEAN_NS     612
+#define GDHUB_ST2_OFF_OCC_COUNT         616    /* tap-queue occupancy per frame (entry -> AddReportToPool returned) */
+#define GDHUB_ST2_OFF_OCC_P50_NS        620
+#define GDHUB_ST2_OFF_OCC_P99_NS        624
+#define GDHUB_ST2_OFF_OCC_MAX_NS        628
+#define GDHUB_ST2_OFF_OCC_MEAN_NS       632
+#define GDHUB_ST2_OFF_ADDPOOL_COUNT     636    /* AddReportToPool */
+#define GDHUB_ST2_OFF_ADDPOOL_P50_NS    640
+#define GDHUB_ST2_OFF_ADDPOOL_P99_NS    644
+#define GDHUB_ST2_OFF_ADDPOOL_MAX_NS    648
+#define GDHUB_ST2_OFF_ADDPOOL_MEAN_NS   652
+#define GDHUB_ST2_OFF_SUBMIT_COUNT      656    /* the submitInput round trip, as the tap sees it (translate done -> returned) */
+#define GDHUB_ST2_OFF_SUBMIT_P50_NS     660
+#define GDHUB_ST2_OFF_SUBMIT_P99_NS     664
+#define GDHUB_ST2_OFF_SUBMIT_MAX_NS     668
+#define GDHUB_ST2_OFF_SUBMIT_MEAN_NS    672
+/* 676 = end. */
 #define GDHUB_SELFTEST_NOT_RUN          0
 #define GDHUB_SELFTEST_PASS             1
 #define GDHUB_SELFTEST_FAIL             2

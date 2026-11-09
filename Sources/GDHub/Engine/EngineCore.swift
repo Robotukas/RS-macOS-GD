@@ -183,7 +183,7 @@ final class EngineCore: @unchecked Sendable {
     func controllerStatus(_ status: ControllerStatus) {
         dispatchPrecondition(condition: .onQueue(queue))
         controllerActive = (status == .active)
-        if status != .active { sink.neutral() }
+        if status != .active { sink.neutral(force: false) }       // LIVE: the driver's silence / Stop neutrals cover it
         evaluateAutoPublish(retryBlocked: true)
     }
 

@@ -33,7 +33,7 @@ final class DextSourceRulesTests: XCTestCase {
                 XCTAssertTrue(window.contains("GDH_SYNC("), "\(name):\(i + 1) calls across objects without GDH_SYNC in the 3 lines before")
             }
         }
-        XCTAssertEqual(found, 4, "UC->root CreatePad and DestroyPad, UC->pad submitInput and postNeutralFrom: exactly these four")
+        XCTAssertEqual(found, 8, "UC->root CreatePad and DestroyPad, UC->pad submitInput and postNeutralFrom (two sites: the UC's own pad and the registry's pad), root->pad postNeutralFrom (orphan timer), tap->pad submitInput and postNeutralFrom (T7): exactly these eight")
     }
 
     /// GDH_SYNC only compiles for calls toward a higher rank.
@@ -49,7 +49,7 @@ final class DextSourceRulesTests: XCTestCase {
                 XCTAssertLessThan(try XCTUnwrap(rank[a]), try XCTUnwrap(rank[b]), "\(name):\(i + 1) \(a) -> \(b)")
             }
         }
-        XCTAssertEqual(n, 4)
+        XCTAssertEqual(n, 8)
     }
 
     /// The registry core and its lock know nothing about DriverKit or the GDHub classes, so no RPC can run under its lock;
@@ -135,12 +135,12 @@ final class DextSourceRulesTests: XCTestCase {
         let text = try XCTUnwrap(sources(ext: ["cpp"]).first { $0.name == "GDHubVirtualHIDUserClient.cpp" }).lines.joined(separator: "\n")
         let s = try XCTUnwrap(text.range(of: "static void destroyPad(GDHubVirtualHIDUserClient * uc)"))
         let body = String(text[s.lowerBound...].prefix(1400))
-        let neutral = try XCTUnwrap(body.range(of: "(void)postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST)"))
+        let neutral = try XCTUnwrap(body.range(of: "postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST)"))
         let destroy = try XCTUnwrap(body.range(of: "->DestroyPad("))
         XCTAssertLessThan(neutral.lowerBound, destroy.lowerBound)
         XCTAssertFalse(body[..<destroy.lowerBound].contains("IOSleep"), "no wait between neutral and destroy")
         // and a failed createDevice always empties the slot
-        let create = try XCTUnwrap(text.range(of: "static kern_return_t sCreateDevice"))
+        let create = try XCTUnwrap(text.range(of: "static kern_return_t createCommon"))
         let cbody = String(text[create.lowerBound...].prefix(6000))
         XCTAssertTrue(cbody.contains("gdhr_pad_take(reg, iv->ownerGen, &rc)"))
     }

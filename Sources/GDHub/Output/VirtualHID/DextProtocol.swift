@@ -22,11 +22,13 @@ enum DextProtocol {
         static let devTerminate: UInt32 = 8
         /// T3, behind `Capability.rootPad`. Scalars in: state, flags, argMs. Scalars out: appliedState, tapPresent, padSource, lastError.
         static let setForwarding: UInt32 = 9
-        /// 10 is reserved (set mapping, T5) and 12 too (create device 2, T7).
         /// T5, behind `Capability.xlate`: struct in = a GDHM blob (<= 1024 bytes); scalars out = [acceptedRevision, reason].
         static let setMapping: UInt32 = 10
         static let getStatus2: UInt32 = 11
-        static let count: UInt32 = 12
+        /// T7, behind `Capability.live`: struct in = a DeviceSpec; scalars out = [adopted, padSource]. A live pinned pad with a
+        /// byte-identical spec and no owner becomes the caller's (adopted = 1) without a neutral and without a new device.
+        static let createDevice2: UInt32 = 12
+        static let count: UInt32 = 13
     }
 
     enum Slot: UInt8 {
@@ -48,6 +50,8 @@ enum DextProtocol {
         /// T5: selector 10 (`setMapping`) and the SHADOW state exist (the in-driver translator passed no self-test yet; that is
         /// reported separately in status2).
         static let xlate: UInt64 = 1 << 10
+        /// T7: LIVE (the tap drives the pad), selector 12, the pause and release-pad flags of selector 9, pinning and adoption.
+        static let live: UInt64 = 1 << 11
     }
 
     /// Forwarding state of `setForwarding`. INERT: the tap is attached but the interface is not opened. COUNT (T4): opened,
@@ -58,8 +62,19 @@ enum DextProtocol {
         /// T5: COUNT, plus the in-driver translator runs on every report with the accepted mapping and records a parity sample.
         /// Nothing is posted. Without a mapping it is COUNT.
         static let shadow: UInt64 = 2
-        /// Argument check of selector 9 in this protocol version: INERT, COUNT or SHADOW, no flags.
-        static func isAccepted(state: UInt64, flags: UInt64) -> Bool { flags == 0 && (state == inert || state == count || state == shadow) }
+        /// T7: SHADOW, and the tap hands what it translates to the pad (padSource TAP).
+        static let live: UInt64 = 3
+        /// Flags of selector 9 (owner only, with `Capability.live`). The pause flag leaves the state as it is (pass the current one);
+        /// release-pad goes with INERT.
+        static let flagDevPauseTap: UInt64 = 1 << 8
+        static let flagReleasePad: UInt64 = 1 << 9
+        static let pauseMaxMs: UInt64 = 10_000
+        /// Argument check of selector 9 in this protocol version (mirror of gdh_fwd_validate).
+        static func isAccepted(state: UInt64, flags: UInt64) -> Bool {
+            guard state <= live, flags & ~(flagDevPauseTap | flagReleasePad) == 0 else { return false }
+            if flags & flagReleasePad != 0 { return state == inert && flags & flagDevPauseTap == 0 }
+            return true
+        }
     }
 
     /// Who may post to the pad (`padSource` in status2 and in `setForwarding`'s output).
@@ -191,9 +206,18 @@ struct DextStatus2: Equatable {
         static let xlateCount = 408, xlateP50 = 412, xlateP99 = 416, xlateMax = 420, xlateMean = 424
         static let parityCount = 428, parityRevision = 432, parityTimestamp = 436
         static let parityFrame = 444, parityOut01 = 460, parityOut02 = 476
+        // T7
+        static let holdNeutral = 480, padOrphaned = 481, paused = 482
+        static let tapPosts = 484, tapRejected = 492, tapSubmitErrors = 500, framesUnchanged = 508
+        static let switchNeutrals = 516, stopNeutrals = 524, silenceNeutrals = 532, powerNeutrals = 540, holdNeutrals = 548
+        static let adopts = 556, orphanDestroys = 564, pauseDrops = 572, sourceSwitches = 580, liveNoPad = 588
+        static let totalCount = 596, totalP50 = 600, totalP99 = 604, totalMax = 608, totalMean = 612
+        static let occCount = 616, occP50 = 620, occP99 = 624, occMax = 628, occMean = 632
+        static let addPoolCount = 636, addPoolP50 = 640, addPoolP99 = 644, addPoolMax = 648, addPoolMean = 652
+        static let submitCount = 656, submitP50 = 660, submitP99 = 664, submitMax = 668, submitMean = 672
     }
     static let version = 1
-    static let size = 480
+    static let size = 676
     static let maxSize = 1024
     /// version, size and build: the least a reader needs.
     static let minimumBytes = 8
@@ -229,6 +253,12 @@ struct DextStatus2: Equatable {
     var framesTranslated: UInt64 = 0, framesSkipped: UInt64 = 0, framesNoMap: UInt64 = 0, framesUnmapped: UInt64 = 0
     var statesChanged: UInt64 = 0, reportsWouldPost: UInt64 = 0, mapAccepted: UInt64 = 0, mapRefused: UInt64 = 0, mapSwaps: UInt64 = 0
     var xlate = DextMeterSummary()
+    // T7 LIVE
+    var holdNeutral = false, padOrphaned = false, paused = false
+    var tapPosts: UInt64 = 0, tapRejected: UInt64 = 0, tapSubmitErrors: UInt64 = 0, framesUnchanged: UInt64 = 0
+    var switchNeutrals: UInt64 = 0, stopNeutrals: UInt64 = 0, silenceNeutrals: UInt64 = 0, powerNeutrals: UInt64 = 0, holdNeutrals: UInt64 = 0
+    var adopts: UInt64 = 0, orphanDestroys: UInt64 = 0, pauseDrops: UInt64 = 0, sourceSwitches: UInt64 = 0, liveNoPad: UInt64 = 0
+    var total = DextMeterSummary(), occ = DextMeterSummary(), addPool = DextMeterSummary(), submit = DextMeterSummary()
     var parity: DextParityRecord?
     var hop = DextMeterSummary()
     var hr = DextMeterSummary()
@@ -287,6 +317,20 @@ struct DextStatus2: Equatable {
         s.xlate = DextMeterSummary(count: UInt32(u(Offset.xlateCount, 4)), p50Ns: UInt32(u(Offset.xlateP50, 4)),
                                    p99Ns: UInt32(u(Offset.xlateP99, 4)), maxNs: UInt32(u(Offset.xlateMax, 4)),
                                    meanNs: UInt32(u(Offset.xlateMean, 4)))
+        s.holdNeutral = u(Offset.holdNeutral, 1) != 0; s.padOrphaned = u(Offset.padOrphaned, 1) != 0; s.paused = u(Offset.paused, 1) != 0
+        s.tapPosts = u(Offset.tapPosts, 8); s.tapRejected = u(Offset.tapRejected, 8); s.tapSubmitErrors = u(Offset.tapSubmitErrors, 8)
+        s.framesUnchanged = u(Offset.framesUnchanged, 8); s.switchNeutrals = u(Offset.switchNeutrals, 8)
+        s.stopNeutrals = u(Offset.stopNeutrals, 8); s.silenceNeutrals = u(Offset.silenceNeutrals, 8)
+        s.powerNeutrals = u(Offset.powerNeutrals, 8); s.holdNeutrals = u(Offset.holdNeutrals, 8)
+        s.adopts = u(Offset.adopts, 8); s.orphanDestroys = u(Offset.orphanDestroys, 8); s.pauseDrops = u(Offset.pauseDrops, 8)
+        s.sourceSwitches = u(Offset.sourceSwitches, 8); s.liveNoPad = u(Offset.liveNoPad, 8)
+        func summary(_ c: Int, _ a: Int, _ b: Int, _ m: Int, _ e: Int) -> DextMeterSummary {
+            DextMeterSummary(count: UInt32(u(c, 4)), p50Ns: UInt32(u(a, 4)), p99Ns: UInt32(u(b, 4)), maxNs: UInt32(u(m, 4)), meanNs: UInt32(u(e, 4)))
+        }
+        s.total = summary(Offset.totalCount, Offset.totalP50, Offset.totalP99, Offset.totalMax, Offset.totalMean)
+        s.occ = summary(Offset.occCount, Offset.occP50, Offset.occP99, Offset.occMax, Offset.occMean)
+        s.addPool = summary(Offset.addPoolCount, Offset.addPoolP50, Offset.addPoolP99, Offset.addPoolMax, Offset.addPoolMean)
+        s.submit = summary(Offset.submitCount, Offset.submitP50, Offset.submitP99, Offset.submitMax, Offset.submitMean)
         // the parity record exists only if the dext wrote that far and recorded a frame
         if Offset.parityOut02 + 2 <= valid, u(Offset.parityTimestamp, 8) != 0 {
             func bytes(_ off: Int, _ n: Int) -> [UInt8] { (0..<n).map { UInt8(u(off + $0, 1)) } }
@@ -315,6 +359,10 @@ struct DextStatus2: Equatable {
             if framesSkipped > 0 { t += " skipped=\(framesSkipped)" }
             if framesUnmapped > 0 { t += " unmapped=\(framesUnmapped)" }
             if xlate.count > 0 { t += " xl p50/p99/max \(xlate.p50Ns)/\(xlate.p99Ns)/\(xlate.maxNs) ns" }
+        }
+        if appliedState == 3 || tapPosts > 0 {
+            t += " live: posts=\(tapPosts) rej=\(tapRejected) err=\(tapSubmitErrors) unch=\(framesUnchanged) src=\(padSource)"
+            if total.count > 0 { t += " total p50/p99/max \(total.microsecondsText) us" }
         }
         if selfTest == DextProtocol.SelfTest.fail { t += " selftest=FAIL" }
         if tapPid != 0 && tapPid != rootPid { t += " tapPid=\(tapPid)!=rootPid" }
@@ -361,6 +409,16 @@ struct DextParityRecord: Equatable {
     var frame: [UInt8]
     var out01: [UInt8]
     var out02: [UInt8]
+}
+
+/// Outputs of `createDevice2`.
+struct DextCreate2Result: Equatable {
+    var adopted: Bool
+    var padSource: UInt64
+    init(words: [UInt64]) {
+        let w = words + [UInt64](repeating: 0, count: 2)
+        adopted = w[0] != 0; padSource = w[1]
+    }
 }
 
 /// Outputs of `setMapping`.

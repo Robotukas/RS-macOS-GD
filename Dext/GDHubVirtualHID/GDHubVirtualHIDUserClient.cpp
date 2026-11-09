@@ -119,7 +119,7 @@ static kern_return_t sHello(OSObject * target, void * reference, IOUserClientMet
 #if GDHUB_TAP_DECLINE
     a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD;                       // a decline build has no tap: no CAP_TAP
 #else
-    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD | GDHUB_CAP_TAP | GDHUB_CAP_XLATE;       // capabilities: keyboard and pointer arrive in D8
+    a->scalarOutput[2] = GDHUB_CAP_PAD | GDHUB_CAP_ROOT_PAD | GDHUB_CAP_TAP | GDHUB_CAP_XLATE | GDHUB_CAP_LIVE;       // capabilities: keyboard and pointer arrive in D8
 #endif
     a->scalarOutputCount = 3;
     GDLog("hello: app protocol %llu build %llu, dext protocol %u build %u, protocolOK=%d",
@@ -187,13 +187,43 @@ static kern_return_t buildInputBuffers(GDHubVirtualHIDUserClient_IVars * iv, OSD
 
 // Forgets the pad this client created: asks the root to destroy it (rank 1 -> 2), then drops the client's own state.
 // If the root call fails, the registry slot is emptied directly (a stale generation still empties nothing).
-static kern_return_t postNeutralToPad(GDHubVirtualHIDUserClient * uc, uint32_t reason);
+static kern_return_t postNeutralToPad(GDHubVirtualHIDUserClient * uc, uint32_t reason, uint32_t source = GDHUB_PADSRC_UC);
+
+// The neutral of a source switch is posted from the REGISTRY's pad, whoever the caller is: the switch changed the pad's source, so the
+// pad must get its neutral even if this client never created or adopted it (review D4). Nothing waits on the tap.
+// The token a user-client neutral carries: none for source UC; for source TAP (the switch and hold neutrals, posted on the tap's
+// behalf) the CURRENT tap token, so only a replaced tap instance's own neutral can be stale.
+static uint64_t neutralToken(uint32_t source) { return source == GDHUB_PADSRC_TAP ? gdhr_tap_token(GDHubReg()) : 0; }
+
+static kern_return_t postNeutralFromRegistry(uint32_t reason, uint32_t source)
+{
+    GDHubVirtualPad * pad = GDHubCopyPad();                    // +1 for the duration of the call
+    if (!pad) return kIOReturnNotReady;
+    GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_PAD, GDHubPadQueue(pad), "postNeutralFrom");
+    kern_return_t kr = pad->postNeutralFrom(source, neutralToken(source), reason);
+    pad->release();
+    return kr;
+}
+
+// Leaves LIVE if the tap is driving the pad (plan 6.2, "switch from LIVE"): padSource = UC first (a TAP report still queued on the
+// pad's queue is refused from here), then the switch neutral from the UC side. Returns true if the source was TAP.
+static bool leaveLive(GDHubVirtualHIDUserClient * uc)
+{
+    (void)uc;
+    if (!gdhr_leave_live(GDHubReg())) return false;
+    (void)postNeutralFromRegistry(GDHUB_NEUTRAL_SWITCH, GDHUB_PADSRC_UC);
+    return true;
+}
 
 static void destroyPad(GDHubVirtualHIDUserClient * uc)
 {
     auto iv = uc->ivars;
-    // Plan 6.3: neutral before destroy. The result is ignored (there may be no live pad), and nothing waits.
-    (void)postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST);
+    // Plan 6.3: padSource = UC, neutral, INERT, then destroy. The result is ignored (there may be no live pad), and nothing waits.
+    // INERT is stored only when the pad was LIVE (leaving LIVE is the one case that must not leave the tap running); for COUNT and
+    // SHADOW the destroy leaves the armed state alone, as before (the registry returns LIVE to INERT when the pad leaves the slot).
+    if (leaveLive(uc)) (void)gdhr_set_desired_if_owner(GDHubReg(), static_cast<OSObject *>(uc), GDH_FWD_INERT);
+    else (void)postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST);
+    GDHubPokeTap();
     if (iv->root && iv->ownerGen) {
         GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_ROOT, GDHubRootQueue(iv->root), "DestroyPad");
         kern_return_t kr = iv->root->DestroyPad(iv->ownerGen);
@@ -205,27 +235,32 @@ static void destroyPad(GDHubVirtualHIDUserClient * uc)
             GDHubTerminateAndRelease(left);
         }
     }
+    GDHubPokeTap();                                     // the slot is empty now: a tap that was LIVE finds INERT
     ASTORE(iv->padCreated, false);
     dropInputBuffers(iv);
     OSSafeReleaseNULL(iv->spec[GDHUB_SLOT_PAD]);
 }
 
 // Posts the pad's neutral reports. Used by the postNeutral selector and the watchdog.
-static kern_return_t postNeutralToPad(GDHubVirtualHIDUserClient * uc, uint32_t reason)
+static kern_return_t postNeutralToPad(GDHubVirtualHIDUserClient * uc, uint32_t reason, uint32_t source)
 {
     if (!ALOAD(uc->ivars->padCreated)) return kIOReturnNotReady;
     GDHubVirtualPad * pad = GDHubCopyPad();                    // +1 for the duration of the call
     if (!pad) return kIOReturnNotReady;
     GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_PAD, GDHubPadQueue(pad), "postNeutralFrom");
-    kern_return_t kr = pad->postNeutralFrom(GDHUB_PADSRC_UC, reason);
+    kern_return_t kr = pad->postNeutralFrom(source, neutralToken(source), reason);
     pad->release();
     return kr;
 }
 
-static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserClientMethodArguments * a)
+// Selectors 1 (createDevice) and 12 (createDevice2, T7). `wantAdopt` is selector 12: a live pinned pad with a byte-identical spec
+// becomes this client's (no neutral, no new device, *adopted = 1). Selector 1 knows nothing of adoption: an orphaned pad is
+// destroyed and the create goes ahead. A selector-12 caller whose spec differs gets the orphan destroyed and kIOReturnBusy, and
+// asks again after the HID gap (the engine waits 400 ms, like the sink's identity switch).
+static kern_return_t createCommon(OSObject * target, IOUserClientMethodArguments * a, bool wantAdopt, uint32_t * adopted)
 {
-    (void)reference;
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
+    if (adopted) *adopted = 0;
     auto iv = uc->ivars;
     const uint8_t * bytes = nullptr; size_t len = 0; IOMemoryMap * map = nullptr;
     kern_return_t kr = structureBytes(a, &bytes, &len, &map);
@@ -254,13 +289,43 @@ static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserCl
     if (map) map->release();
     if (!spec) return kIOReturnNoMemory;
 
+    gdhr * reg = GDHubReg();
+    if (gdhr_pad_orphaned(reg)) {
+        if (wantAdopt) {
+            OSData * live = GDHubCopyPadSpec();
+            bool same = live && live->getLength() == spec->getLength() &&
+                        memcmp(live->getBytesNoCopy(), spec->getBytesNoCopy(), spec->getLength()) == 0;
+            if (live) live->release();
+            if (same) {
+                // The spec is the pad's own, so the pad is never removed for it. If the adoption does not happen (this client stopped
+                // during its own call: E_NOT_OWNER; the orphan went away meanwhile) the caller is told to ask again.
+                if (buildInputBuffers(iv, spec) == kIOReturnSuccess) {
+                    if (gdhr_pad_adopt(reg, iv->ownerGen, GDHubSpecCRC32(spec)) == GDHR_OK) {
+                        iv->spec[slot] = spec;                  // keeps the +1 from withBytes
+                        ASTORE(iv->padCreated, true);
+                        if (adopted) *adopted = 1;
+                        GDLog("createDevice2: slot %u %04x:%04x adopted (source %u)", slot, vid, pid, (unsigned)gdhr_pad_source(reg));
+                        return kIOReturnSuccess;
+                    }
+                    dropInputBuffers(iv);
+                }
+                spec->release();
+                GDLog("createDevice2: adoption of an identical spec did not happen; the pad stays");
+                return kIOReturnNotReady;
+            }
+            spec->release();
+            GDHubOrphanForceDestroy("the new owner's spec differs");
+            return kIOReturnBusy;
+        }
+        GDHubOrphanForceDestroy("an old app's createDevice");
+    }
+
     // Fixed-length input buffers first, so a failure here leaves the registry untouched.
     kr = buildInputBuffers(iv, spec);
     if (kr != kIOReturnSuccess) { GDLog("createDevice: input buffers 0x%x", (unsigned)kr); spec->release(); return kr; }
 
     // Stage the spec in the registry (the pad reads it in handleStart), then ask the root to create the pad. No lock is
     // held across CreatePad: the registry lock is private to the core and released before this call.
-    gdhr * reg = GDHubReg();
     int rc = gdhr_pad_stage(reg, iv->ownerGen, static_cast<OSObject *>(spec), GDHubSpecCRC32(spec));
     if (rc != GDHR_OK) {
         GDLog("createDevice: slot not available (registry %d)", rc);
@@ -292,6 +357,25 @@ static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserCl
     iv->spec[slot] = spec;                              // keeps the +1 from withBytes
     ASTORE(iv->padCreated, true);
     GDLog("createDevice: slot %u %04x:%04x created", slot, vid, pid);
+    return kIOReturnSuccess;
+}
+
+static kern_return_t sCreateDevice(OSObject * target, void * reference, IOUserClientMethodArguments * a)
+{
+    (void)reference;
+    return createCommon(target, a, false, nullptr);
+}
+
+// Selector 12 (T7, CAP_LIVE). Scalar outputs: adopted, padSource.
+static kern_return_t sCreateDevice2(OSObject * target, void * reference, IOUserClientMethodArguments * a)
+{
+    (void)reference;
+    uint32_t adopted = 0;
+    kern_return_t kr = createCommon(target, a, true, &adopted);
+    if (kr != kIOReturnSuccess) return kr;
+    a->scalarOutput[0] = adopted;
+    a->scalarOutput[1] = gdhr_pad_source(GDHubReg());
+    a->scalarOutputCount = 2;
     return kIOReturnSuccess;
 }
 
@@ -332,7 +416,7 @@ static kern_return_t sPostReport(OSObject * target, void * reference, IOUserClie
     if (!pad) return kIOReturnNotReady;
     GDH_SYNC(GDHR_RANK_UC, GDHR_RANK_PAD, GDHubPadQueue(pad), "submitInput");
     uint64_t tCall = mach_absolute_time();                        // `hop` starts here
-    kr = pad->submitInput(GDHUB_PADSRC_UC, tCall, iv->inBuf[idx], (uint32_t)len);
+    kr = pad->submitInput(GDHUB_PADSRC_UC, 0, tCall, iv->inBuf[idx], (uint32_t)len);
     pad->release();
     if (kr == kIOReturnSuccess) {
         ASTORE(iv->postCount, ALOAD(iv->postCount) + 1);          // single writer: the ExternalMethod queue
@@ -349,7 +433,19 @@ static kern_return_t sPostNeutral(OSObject * target, void * reference, IOUserCli
     uint64_t slot = a->scalarInput[0];
     if (slot >= GDHUB_SLOT_COUNT) return kIOReturnBadArgument;
     if (slot != GDHUB_SLOT_PAD) return kIOReturnNotReady;
-    kern_return_t kr = postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST);
+    gdhr * reg = GDHubReg();
+    kern_return_t kr;
+    if (gdhr_pad_source(reg) == GDHUB_PADSRC_TAP) {
+        // A client that does not own the pad (an orphan it has not adopted) neither holds the tap back nor posts anything: NotReady.
+        if (!gdhr_owns_pad(reg, static_cast<OSObject *>(uc))) return kIOReturnNotReady;
+        // The tap is driving the pad (plan 6.2). The engine's neutral request (its willSleep, Mac sleep) is honoured as a real guard:
+        // the hold is stored FIRST, so the pad refuses any TAP report that reaches its queue after this request, then the neutral is
+        // posted with the current source. The hold ends at tap SetPowerState(On), a new tap Start or the next setForwarding(LIVE).
+        gdhr_set_hold(reg, 1);
+        kr = postNeutralToPad(uc, GDHUB_NEUTRAL_HOLD, GDHUB_PADSRC_TAP);
+    } else {
+        kr = postNeutralToPad(uc, GDHUB_NEUTRAL_UC_REQUEST);
+    }
     if (kr == kIOReturnSuccess) ASTORE(uc->ivars->lastActivity, mach_absolute_time());
     return kr;
 }
@@ -434,23 +530,84 @@ static kern_return_t sSetForwarding(OSObject * target, void * reference, IOUserC
     auto uc = OSRequiredCast(GDHubVirtualHIDUserClient, target);
     if (gdh_fwd_validate(a->scalarInput[0], a->scalarInput[1]) != 0) return kIOReturnUnsupported;
     gdhr * reg = GDHubReg();
+    OSObject * self = static_cast<OSObject *>(uc);
+    const uint32_t state = (uint32_t)a->scalarInput[0], flags = (uint32_t)a->scalarInput[1];
+    bool noEffect = false;                          // INERT from a client that does not own the pad (see below)
+    uint64_t pauseUntil = 0;
 #if GDHUB_TAP_DECLINE
-    if (a->scalarInput[0] != GDHUB_FWD_INERT) return kIOReturnUnsupported;      // no tap in this build: only INERT exists
+    if (state != GDHUB_FWD_INERT || flags != 0) return kIOReturnUnsupported;      // no tap in this build: only INERT exists
 #endif
+    // The flags are owner-only like everything else here.
+    if (flags != 0 && !gdhr_is_owner(reg, self)) return kIOReturnNotPermitted;
+    if (flags & GDHUB_FWD_FLAG_RELEASE_PAD) {
+        // RELEASE_PAD (with INERT): source UC, neutral, INERT, destroy the pad even if it is pinned and ownerless. A connected owner
+        // that never owned the orphan is exactly who asks (the forced finish needs no owner of the pad).
+        if (ALOAD(uc->ivars->padCreated)) destroyPad(uc);
+        else GDHubOrphanForceDestroy("RELEASE_PAD");
+        (void)gdhr_set_desired_if_owner(reg, self, GDH_FWD_INERT);
+        GDHubPokeTap();
+        goto reply;
+    }
+    if (flags & GDHUB_FWD_FLAG_DEV_PAUSE_TAP) {
+        uint64_t ms = a->scalarInput[2];
+        if (ms == 0 || ms > GDH_PAUSE_MAX_MS) return kIOReturnBadArgument;
+        if (gdhr_pad_not_ours(reg, self)) return kIOReturnBusy;                    // only the owner of the pad pauses its tap
+        pauseUntil = mach_absolute_time() + nsToTicks(ms * 1000000ull);            // stored only after the state request succeeded
+    }
     // SHADOW needs a passed self-test (the golden vectors through this build of the core, run once per process). A failed one
     // keeps the tap out of SHADOW for the life of the process.
     // It runs here and nowhere else, for the owner only, on the root's queue; a process that is never asked for SHADOW never
     // executes translator code. A pass or a failure is final for the process; RUNNING (not expected) is "ask again".
     if (a->scalarInput[0] == GDHUB_FWD_SHADOW) {
-        if (!gdhr_is_owner(reg, static_cast<OSObject *>(uc))) return kIOReturnNotPermitted;
+        if (!gdhr_is_owner(reg, self)) return kIOReturnNotPermitted;
+        if (gdhr_pad_not_ours(reg, self)) return kIOReturnBusy;                    // an orphan it has not adopted: not its pad to arm for (Busy, not a refusal: the engine adopts or replaces it)
         uint32_t st = GDHubSelfTestEnsure();
         if (st == GDHR_SELFTEST_RUNNING) return kIOReturnNotReady;
         if (st != GDHR_SELFTEST_PASS) return kIOReturnNotPermitted;
     }
-    // Only the CURRENT owner may set the state, decided under the registry lock: a late request from a client that is going
-    // away must not land after release_owner reset the state to INERT (the tap would count for nobody).
-    if (gdhr_set_desired_if_owner(reg, static_cast<OSObject *>(uc), (uint32_t)a->scalarInput[0]) != GDHR_OK) return kIOReturnNotPermitted;
-    GDHubPokeTap();
+    if (state == GDHUB_FWD_LIVE) {
+        // Plan 6.2, "switch to LIVE" (this is the UC side; the tap is reached by the poke only):
+        //   1. owner of THIS pad + every precondition + padSource = TAP     (gdhr_live_begin, one critical section)
+        //   2. the switch neutral, posted with source TAP        (the pad checks the source on its own queue)
+        //   3. desiredState = LIVE, hold cleared                 (gdhr_live_commit)  -> the tap starts submitting
+        //   4. poke the tap
+        if (!gdhr_is_live(reg)) {
+            int rc = gdhr_live_begin(reg, self);
+            if (rc != GDHR_OK) {
+                switch (rc) {
+                case GDHR_E_NOT_OURS:  return kIOReturnBusy;                           // a pad it has not adopted: Busy, never a final refusal
+                case GDHR_E_NOT_OWNER: case GDHR_E_SELFTEST: return kIOReturnNotPermitted;
+                case GDHR_E_SPEC:      return kIOReturnBadArgument;            // the accepted mapping targets another pad
+                default:               return kIOReturnNotReady;               // no pad / tap / SHADOW applied yet / mapping: ask again
+                }
+            }
+            (void)postNeutralFromRegistry(GDHUB_NEUTRAL_SWITCH, GDHUB_PADSRC_TAP);
+            if (gdhr_live_commit(reg, self) != GDHR_OK) { gdhr_live_abort(reg); return kIOReturnNotPermitted; }
+        } else if (gdhr_live_commit(reg, self) != GDHR_OK) {
+            return kIOReturnNotPermitted;           // already LIVE and the pad is not ours (an unadopted pinned pad)
+        }
+    } else {
+        // Anything else: leave LIVE first (padSource = UC, then the neutral), then store the new state. Only the CURRENT owner of THE
+        // PAD may set it, decided under the registry lock: a late request from a client that is going away must not land after
+        // release_owner reset the state to INERT, and a client that merely said hello while a pinned pad waits for an owner may not
+        // touch it. For such a client INERT is answered with SUCCESS and no effect: an unsupervised GUI client (and a build-22/23
+        // app) sends INERT right after hello, before it has created or adopted anything, and must not see an error for it; the pad
+        // is the tap's until the client adopts it (the engine's createDevice2 does, and then asks again if it wants a state).
+        if (!gdhr_is_owner(reg, self)) return kIOReturnNotPermitted;
+        if (gdhr_pad_not_ours(reg, self)) {
+            if (state != GDHUB_FWD_INERT) return kIOReturnBusy;
+            noEffect = true;
+        } else {
+            leaveLive(uc);
+            if (gdhr_set_desired_if_owner(reg, self, state) != GDHR_OK) return kIOReturnNotPermitted;
+            // INERT drops the accepted mapping too (T7 open item: a mapping the engine can no longer express must not stay in the
+            // driver for a later arming); the next SHADOW is armed with a fresh push. COUNT and SHADOW keep it.
+            if (state == GDHUB_FWD_INERT) gdhr_map_clear(reg);
+        }
+    }
+    if (pauseUntil) gdhr_pause_set(reg, pauseUntil);
+    if (!noEffect) GDHubPokeTap();
+reply:
     gdhr_snap s;
     gdhr_snapshot(reg, &s);
     a->scalarOutput[0] = s.tapApplied;
@@ -521,6 +678,7 @@ static const IOUserClientMethodDispatch sMethods[GDHUB_SEL_COUNT] = {
     /* 9 setForwarding  */ { sSetForwarding,  0, 3, 0,                                 4, 0 },   // T3, CAP_ROOT_PAD
     /* 10 setMapping   */ { sSetMapping,     0, 0, kIOUserClientVariableStructureSize,                 2, 0 },   // T5, CAP_XLATE
     /* 11 getStatus2    */ { sGetStatus2,     0, 0, 0,                                 0, kIOUserClientVariableStructureSize },  // T3, CAP_ROOT_PAD
+    /* 12 createDevice2 */ { sCreateDevice2,  0, 0, kIOUserClientVariableStructureSize,                 2, 0 },   // T7, CAP_LIVE
 };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -589,8 +747,12 @@ kern_return_t IMPL(GDHubVirtualHIDUserClient, Stop)
     // Terminate is asynchronous; the pad's Stop releases its own references. The owner is released last, and the core
     // hands back any pad that is still registered for this owner so none can outlive it.
     if (ivars->ownsRoot) {
-        if (ALOAD(ivars->padCreated)) destroyPad(this);
+        // A pad the tap is driving (LIVE) is PINNED: it is not destroyed with its owner (plan 6.3). The core decides atomically in
+        // gdhr_release_owner_pin; the check here only avoids the destroy path. Anything else is G5 exactly as before.
+        bool pinnedLive = ALOAD(ivars->padCreated) && gdhr_is_live(GDHubReg());
+        if (ALOAD(ivars->padCreated) && !pinnedLive) destroyPad(this);
         GDHubReleaseOwner(this);
+        if (pinnedLive) ASTORE(ivars->padCreated, false);       // the client no longer has a pad of its own
         ivars->ownsRoot = false;
     }
     for (uint32_t s = 0; s < GDHUB_SLOT_COUNT; s++) OSSafeReleaseNULL(ivars->spec[s]);
@@ -636,7 +798,10 @@ void IMPL(GDHubVirtualHIDUserClient, WatchdogFired)
     if (ALOAD(ivars->stopped)) return;            // Stop is cancelling the timer: do nothing and do not re-arm
     uint64_t now = mach_absolute_time();
     uint64_t last = ALOAD(ivars->lastActivity);
-    if (ALOAD(ivars->padCreated) && !ALOAD(ivars->neutralised) && last != 0 && now - last > ivars->timeoutTicks) {
+    // The heartbeat watchdog guards the engine path (padSource UC). While the tap drives the pad the engine is allowed to be
+    // silent or stopped: it has no effect on a TAP pad (plan 6.4), and the tap has its own silence neutral.
+    if (ALOAD(ivars->padCreated) && !ALOAD(ivars->neutralised) && last != 0 && now - last > ivars->timeoutTicks &&
+        gdhr_pad_source(GDHubReg()) != GDHUB_PADSRC_TAP) {
         postNeutralToPad(this, GDHUB_NEUTRAL_WATCHDOG);
         ASTORE(ivars->neutralised, true);
         ASTORE(ivars->watchdogFires, ALOAD(ivars->watchdogFires) + 1);   // single writer: the watchdog

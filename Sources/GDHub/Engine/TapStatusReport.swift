@@ -21,7 +21,8 @@ struct TapStatusReport: Codable, Equatable {
     /// What the connected dext offers (`CAP_TAP`, `CAP_XLATE`).
     var capTap = false
     var capXlate = false
-    /// What the engine has asked of the dext and the dext accepted: `inert`, `count` or `shadow`.
+    var capLive = false
+    /// What the engine has asked of the dext and the dext accepted: `inert`, `count`, `shadow` or `live`.
     var armed = "inert"
     /// `path == driver` runs as shadow until the dext reports CAP_LIVE.
     var liveUnavailable = false
@@ -36,6 +37,30 @@ struct TapStatusReport: Codable, Equatable {
     var latched: String?
     /// The mapping needs more than GDHM v1 (the reason). The engine path keeps posting.
     var mappingNote: String?
+
+    init() {}
+
+    /// Missing keys decode to their defaults: a file written by an older engine (build 23 has no `capLive`) must not make the menu say
+    /// "waiting for the engine". Unknown keys are ignored. The schema number still decides whether the file is understood at all.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try c.decodeIfPresent(Int.self, forKey: .schema) ?? TapStatusReport.schema
+        pid = try c.decodeIfPresent(Int32.self, forKey: .pid) ?? 0
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? "engine"
+        connected = try c.decodeIfPresent(Bool.self, forKey: .connected) ?? false
+        capTap = try c.decodeIfPresent(Bool.self, forKey: .capTap) ?? false
+        capXlate = try c.decodeIfPresent(Bool.self, forKey: .capXlate) ?? false
+        capLive = try c.decodeIfPresent(Bool.self, forKey: .capLive) ?? false
+        armed = try c.decodeIfPresent(String.self, forKey: .armed) ?? "inert"
+        liveUnavailable = try c.decodeIfPresent(Bool.self, forKey: .liveUnavailable) ?? false
+        parityChecked = try c.decodeIfPresent(Bool.self, forKey: .parityChecked) ?? false
+        parityOkBucket = try c.decodeIfPresent(Int.self, forKey: .parityOkBucket) ?? 0
+        parityMismatches = try c.decodeIfPresent(Int.self, forKey: .parityMismatches) ?? 0
+        fallback = try c.decodeIfPresent(String.self, forKey: .fallback)
+        fallbackRetrying = try c.decodeIfPresent(Bool.self, forKey: .fallbackRetrying) ?? false
+        latched = try c.decodeIfPresent(String.self, forKey: .latched)
+        mappingNote = try c.decodeIfPresent(String.self, forKey: .mappingNote)
+    }
 
     func encoded() -> Data? {
         let e = JSONEncoder()
@@ -154,8 +179,10 @@ enum InputPathMenu {
             return "Input path: App (mapping needs GDHM v2: \(note))"
         }
         switch r.armed {
+        case "live":
+            return "Input path: Driver"
         case "shadow":
-            let live = r.liveUnavailable ? "; live mode not available in this driver" : ""
+            let live = r.liveUnavailable ? "; live mode not available in this driver" : (r.path == "driver" ? "; going live" : "")
             let parity: String
             if r.parityMismatches > 0 { parity = "\(r.parityMismatches) parity mismatches" }
             else if r.parityChecked { parity = "parity checked" }
@@ -173,7 +200,8 @@ enum InputPathMenu {
     static func selection(report: TapStatusReport?, engineRunningPid: Int32?, stored: String?) -> String {
         let raw = (report != nil && report?.pid == engineRunningPid) ? report?.path : stored
         switch InputPath(defaultsValue: raw) {
-        case .shadow, .driver: return "shadow"
+        case .shadow: return "shadow"
+        case .driver: return "driver"
         case .engine: return "engine"
         case .count: return "count"
         }

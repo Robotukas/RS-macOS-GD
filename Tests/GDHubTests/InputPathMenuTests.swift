@@ -14,6 +14,30 @@ final class InputPathMenuTests: XCTestCase {
         InputPathMenu.status(mode: mode, engineRunningPid: pid, report: r)
     }
 
+    /// E9: a file written by build 23 (no `capLive`), by a newer build (extra keys) or with keys missing decodes; a different
+    /// schema number or garbage does not.
+    func testTheReportDecodesAFileFromBuild23AndANewerOne() throws {
+        let build23 = #"{"armed":"shadow","capTap":true,"capXlate":true,"connected":true,"fallbackRetrying":false,"liveUnavailable":true,"mappingNote":null,"parityChecked":true,"parityMismatches":0,"parityOkBucket":300,"path":"shadow","pid":777,"schema":1}"#
+        let r = try XCTUnwrap(TapStatusReport.decode(Data(build23.utf8)))
+        XCTAssertFalse(r.capLive, "the key an older engine never wrote"); XCTAssertEqual(r.armed, "shadow"); XCTAssertEqual(r.pid, 777)
+        XCTAssertTrue(r.capTap && r.capXlate && r.connected && r.liveUnavailable && r.parityChecked); XCTAssertEqual(r.parityOkBucket, 300)
+        XCTAssertEqual(InputPathMenu.status(mode: .engine, engineRunningPid: 777, report: r), InputPathMenu.status(mode: .engine, engineRunningPid: 777, report: {
+            var x = TapStatusReport(); x.pid = 777; x.path = "shadow"; x.connected = true; x.capTap = true; x.capXlate = true; x.armed = "shadow"
+            x.liveUnavailable = true; x.parityChecked = true; x.parityOkBucket = 300; return x }()))
+        XCTAssertNotEqual(text(r), "Input path: unknown (waiting for the engine)", "build 23's file is understood, not 'waiting'")
+        let newer = #"{"schema":1,"pid":5,"path":"driver","connected":true,"capTap":true,"capXlate":true,"capLive":true,"armed":"live","somethingNew":{"a":[1,2]},"futureFlag":true}"#
+        let n = try XCTUnwrap(TapStatusReport.decode(Data(newer.utf8)))
+        XCTAssertEqual(n.armed, "live"); XCTAssertTrue(n.capLive)
+        XCTAssertNotNil(TapStatusReport.decode(Data(#"{"schema":1}"#.utf8)), "every key is optional")
+        XCTAssertNil(TapStatusReport.decode(Data(#"{"schema":2,"pid":5}"#.utf8)), "another schema is not understood")
+        XCTAssertNil(TapStatusReport.decode(Data("not json".utf8)))
+        XCTAssertNil(TapStatusReport.decode(Data(#"{"schema":1,"pid":"x"}"#.utf8)), "a key of the wrong type is a broken file")
+        // and what this build writes reads back identically
+        var full = report { $0.capLive = true; $0.armed = "live"; $0.fallback = "tap stalled"; $0.fallbackRetrying = true; $0.latched = "breaker"; $0.mappingNote = "n" }
+        full.parityChecked = true; full.parityOkBucket = 500; full.parityMismatches = 2; full.liveUnavailable = true
+        XCTAssertEqual(TapStatusReport.decode(try XCTUnwrap(full.encoded())), full)
+    }
+
     // MARK: every state of the menu
 
     func testGuiModesWithoutAnEngineToAsk() {
@@ -83,7 +107,7 @@ final class InputPathMenuTests: XCTestCase {
 
     func testSelectionFollowsTheEnginesPathWhenKnownElseTheStoredValue() {
         XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "shadow" }, engineRunningPid: 777, stored: "engine"), "shadow")
-        XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "driver" }, engineRunningPid: 777, stored: "engine"), "shadow")
+        XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "driver" }, engineRunningPid: 777, stored: "engine"), "driver")
         XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: 777, stored: "shadow"), "shadow")
         XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "shadow" }, engineRunningPid: 999, stored: "engine"), "engine", "a stale report is not trusted")
         XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: nil), "engine")
@@ -122,12 +146,12 @@ final class InputPathMenuTests: XCTestCase {
         let w = TapStatusWatcher(store: store, debounce: 0.02) { r in lock.lock(); got.append(r); lock.unlock() }
         XCTAssertTrue(w.start()); defer { w.stop() }
         func count() -> Int { lock.lock(); defer { lock.unlock() }; return got.count }
-        let first = expectation(description: "initial nil"); DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { first.fulfill() }
-        wait(for: [first], timeout: 2)
+        let t00 = Date(); while count() < 1, Date().timeIntervalSince(t00) < 5 { Thread.sleep(forTimeInterval: 0.01) }   // however loaded the machine is
+        Thread.sleep(forTimeInterval: 0.1)
         XCTAssertEqual(count(), 1, "the first read delivers 'no report'")
         store.write(report { $0.path = "shadow" })
         let t0 = Date()
-        while count() < 2, Date().timeIntervalSince(t0) < 2 { Thread.sleep(forTimeInterval: 0.01) }
+        while count() < 2, Date().timeIntervalSince(t0) < 5 { Thread.sleep(forTimeInterval: 0.01) }
         XCTAssertEqual(count(), 2); XCTAssertLessThan(Date().timeIntervalSince(t0), 1.0, "event driven: well inside the 1.2 s of the live check")
         lock.lock(); XCTAssertEqual(got.last??.path, "shadow"); lock.unlock()
         store.write(report { $0.path = "shadow" })                      // identical content
@@ -136,7 +160,7 @@ final class InputPathMenuTests: XCTestCase {
         XCTAssertEqual(count(), 2, "an identical rewrite delivers nothing")
         store.write(report { $0.path = "engine" })
         let t1 = Date()
-        while count() < 3, Date().timeIntervalSince(t1) < 2 { Thread.sleep(forTimeInterval: 0.01) }
+        while count() < 3, Date().timeIntervalSince(t1) < 5 { Thread.sleep(forTimeInterval: 0.01) }
         XCTAssertEqual(count(), 3)
     }
 
@@ -189,8 +213,9 @@ final class InputPathMenuTests: XCTestCase {
         failNext = 1
         p.update(b); q.sync {}
         XCTAssertEqual(writes.count, 2)
-        let t0 = Date(); while writes.count < 3, Date().timeIntervalSince(t0) < 2 { Thread.sleep(forTimeInterval: 0.01); q.sync {} }
-        XCTAssertEqual(writes.last, b)
+        // the retry runs on q: every read of `writes` while it can still run goes through q too (no unsynchronised access)
+        let t0 = Date(); while q.sync(execute: { writes.count }) < 3, Date().timeIntervalSince(t0) < 5 { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertEqual(q.sync { writes.last }, b)
     }
 
     func testPublisherRecreatesADeletedFile() throws {

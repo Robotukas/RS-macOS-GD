@@ -52,6 +52,9 @@ final class EngineService: @unchecked Sendable {
         reader.ring = ring
         let readerRef = reader
         tapSupervisor.engineFrames = { readerRef.framesSeen }
+        let watch = LiveWatch()                                  // T7: the engine's shadow of the driver's output (F6)
+        reader.liveWatch = watch
+        tapSupervisor.liveWatch = watch
         // The Driver menu (a separate process) reads this file; the write is off vhidQueue, and only when the report changed.
         let publisher = TapStatusPublisher(queue: controlQueue)
         statusPublisher = publisher
@@ -71,6 +74,14 @@ final class EngineService: @unchecked Sendable {
             if case .connected = state { self.tapSupervisor.connection(up: true) } else { self.tapSupervisor.connection(up: false) }
         }
         presence.onInterface = { [weak self] up in self?.tapSupervisor.controllerInterface(up: up) }
+        // T7: the posting gate follows the supervisor (LIVE accepted / left), and an adopted pad that the tap drives is the supervisor's
+        // cue to stay LIVE at startup.
+        tapSupervisor.onDrive = { [weak self] on in self?.sink.setDriverDrives(on) }
+        sink.onGateForcedOpen = { [weak self] in self?.tapSupervisor.gateForcedOpen() }
+        tapSupervisor.sinkHasPad = { [weak self] in self?.sink.isPublished ?? false }
+        tapSupervisor.padAdopted = { [weak self] in
+            self?.sink.createdAdoptedTapPad ?? false
+        }
         // T5: what the engine can offer the driver as a mapping (encoded for the pad that exists now), and when it changed.
         tapSupervisor.mappingOffer = { [weak self] revision in
             guard let self, let pad = self.sink.createdPad else { return .none }
@@ -81,10 +92,14 @@ final class EngineService: @unchecked Sendable {
             }
         }
         core.onPadState = { [weak self] state in
-            if case .published = state { self?.tapSupervisor.invalidateMapping() }       // a new pad: the driver has no mapping for it
+            if case .published = state {
+                self?.tapSupervisor.invalidateMapping()                                   // a new pad: the driver has no mapping for it
+                self?.tapSupervisor.padPublished()                                        // adopted a pad the tap drives? stay LIVE
+            }
         }
         presence.onChange = { [weak self] status in
             Self.log.notice("controller: \(status.rawValue, privacy: .public)")
+            if status == .active { self?.tapSupervisor.controllerActive() }
             self?.core.controllerStatus(status)
         }
         poller.onLatency = { [weak self] snapshot in

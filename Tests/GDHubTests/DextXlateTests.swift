@@ -125,10 +125,14 @@ final class DextMapHandoffTests: XCTestCase {
     /// different lengths whose every byte equals the revision's low byte.
     func testConcurrentSwapVersusReadNeverTears() {
         let (uc, gen) = owner(); livePad(gen: gen)
-        XCTAssertEqual(publish(uc, [UInt8](repeating: 1, count: 100), rev: 1), GDHR_OK)
+        // the first mapping obeys the same rule as every later one (length 8 + rev % 1000, every byte the revision's low byte), so a reader that
+        // runs before the writer's first swap is not mistaken for a torn read (this was the one flaky failure in ~1 of 8 runs)
+        XCTAssertEqual(publish(uc, [UInt8](repeating: 1, count: 9), rev: 1), GDHR_OK)
         let stop = ManagedAtomicFlag(), torn = AtomicCount(), reads = AtomicCount(), publishes = AtomicCount()
         let regPtr = UnsafeRawPointer(reg)!
+        let group = DispatchGroup()
         let writer = Thread { [self] in
+            defer { group.leave() }
             var rev: UInt32 = 2
             while !stop.isSet {
                 let len = 8 + Int(rev % 1000)
@@ -137,6 +141,7 @@ final class DextMapHandoffTests: XCTestCase {
             }
         }
         let readers = (0..<3).map { _ in Thread {
+            defer { group.leave() }
             var buf = [UInt8](repeating: 0, count: Int(GDH_MAP_MAX))
             let r = regPtr.assumingMemoryBound(to: gdhr.self)
             while !stop.isSet {
@@ -148,10 +153,13 @@ final class DextMapHandoffTests: XCTestCase {
                 for i in 0..<Int(len) where buf[i] != want { torn.add(); break }
             }
         } }
+        group.enter(); readers.forEach { _ in group.enter() }
         writer.start(); readers.forEach { $0.start() }
-        Thread.sleep(forTimeInterval: 0.6)
+        // run for at least 0.6 s and until there is enough traffic (a loaded machine takes longer, never fails for being slow)
+        let t0 = Date()
+        while Date().timeIntervalSince(t0) < 0.6 || ((reads.value <= 100 || publishes.value <= 100) && Date().timeIntervalSince(t0) < 10) { Thread.sleep(forTimeInterval: 0.01) }
         stop.set()
-        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(group.wait(timeout: .now() + 30), .success, "all threads ended before the registry goes away")
         XCTAssertEqual(torn.value, 0, "torn reads out of \(reads.value)")
         XCTAssertGreaterThan(reads.value, 100); XCTAssertGreaterThan(publishes.value, 100)
         XCTAssertEqual(world.releasesUnderLock, 0)
@@ -185,7 +193,7 @@ final class DextMapHandoffTests: XCTestCase {
 
     func testShadowIsAnAcceptedForwardingStateAndTheTapDecisionTreatsItLikeCount() {
         XCTAssertEqual(gdh_fwd_validate(0, 0), 0); XCTAssertEqual(gdh_fwd_validate(1, 0), 0); XCTAssertEqual(gdh_fwd_validate(2, 0), 0)
-        XCTAssertNotEqual(gdh_fwd_validate(3, 0), 0, "LIVE is not accepted yet")
+        XCTAssertEqual(gdh_fwd_validate(3, 0), 0, "LIVE (T7)"); XCTAssertNotEqual(gdh_fwd_validate(4, 0), 0)
         XCTAssertNotEqual(gdh_fwd_validate(2, 1), 0, "no flags")
         XCTAssertEqual(gdh_tap_decide(2, 0, 1, 0, 1), gdh_tap_decide(1, 0, 1, 0, 1))
         XCTAssertEqual(gdh_tap_decide(2, 1, 1, 0, 1), gdh_tap_decide(1, 1, 1, 0, 1))
@@ -233,12 +241,15 @@ final class DextParityRecordTests: XCTestCase {
         let p = UnsafeMutablePointer<gdh_parity>.allocate(capacity: 1); p.initialize(to: gdh_parity()); defer { p.deallocate() }
         let ptr = UnsafeRawPointer(p)!
         let stop = ManagedAtomicFlag(), torn = AtomicCount(), reads = AtomicCount()
+        let group = DispatchGroup()
         let writer = Thread {
+            defer { group.leave() }
             let q = UnsafeMutableRawPointer(mutating: ptr).assumingMemoryBound(to: gdh_parity.self)
             var n: UInt32 = 1
             while !stop.isSet { var r = self.rec(n); gdh_parity_write(q, &r); n &+= 1 }
         }
         let readers = (0..<3).map { _ in Thread {
+            defer { group.leave() }
             let q = ptr.assumingMemoryBound(to: gdh_parity.self)
             var out = gdh_parity_rec()
             while !stop.isSet {
@@ -252,9 +263,12 @@ final class DextParityRecordTests: XCTestCase {
                 if bad { torn.add() }
             }
         } }
+        group.enter(); readers.forEach { _ in group.enter() }
         writer.start(); readers.forEach { $0.start() }
-        Thread.sleep(forTimeInterval: 0.6)
-        stop.set(); Thread.sleep(forTimeInterval: 0.2)
+        let t0 = Date()
+        while Date().timeIntervalSince(t0) < 0.6 || (reads.value <= 100 && Date().timeIntervalSince(t0) < 10) { Thread.sleep(forTimeInterval: 0.01) }
+        stop.set()
+        XCTAssertEqual(group.wait(timeout: .now() + 30), .success, "all threads ended before the record goes away")
         XCTAssertEqual(torn.value, 0, "torn out of \(reads.value)")
         XCTAssertGreaterThan(reads.value, 100)
     }
@@ -282,9 +296,9 @@ final class DextStatus2T5Tests: XCTestCase {
         var buf = [UInt8](repeating: 0xEE, count: 1024)
         let n = gdh_status2_pack(&buf, 1024, &s, nil, nil, 0, nil, &extra)
         XCTAssertEqual(n, DextStatus2.size)
-        XCTAssertEqual(n, 480)
+        XCTAssertEqual(n, 676)
         let d = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(n))))
-        XCTAssertEqual(d.declaredSize, 480)
+        XCTAssertEqual(d.declaredSize, 676)
         XCTAssertEqual(d.selfTest, DextProtocol.SelfTest.pass); XCTAssertTrue(d.translating); XCTAssertTrue(d.hasMap)
         XCTAssertEqual(d.acceptedRevision, 9); XCTAssertEqual(d.appliedRevision, 8); XCTAssertEqual(d.acceptedSpecCRC, 0xCAFEBABE)
         XCTAssertEqual(d.framesTranslated, 1_000_000_000_001); XCTAssertEqual(d.framesSkipped, 2); XCTAssertEqual(d.framesNoMap, 3)
@@ -314,9 +328,9 @@ final class DextStatus2T5Tests: XCTestCase {
         typealias O = DextStatus2.Offset
         XCTAssertEqual(O.tapFrees, 308); XCTAssertEqual(O.k2dMean, 272); XCTAssertEqual(O.openFailures, 248)
         XCTAssertEqual(O.selfTest, 316, "right after tapFrees (308) + 8")
-        XCTAssertEqual(O.parityOut02 + 2, 478)
+        XCTAssertEqual(O.parityOut02 + 2, 478, "the T5 block still ends at 478; T7 appends from 480")
         XCTAssertLessThanOrEqual(DextStatus2.size, DextStatus2.maxSize)
-        XCTAssertEqual(DextStatus2.size, 480); XCTAssertEqual(DextStatus2.maxSize, 1024)
+        XCTAssertEqual(DextStatus2.size, 676); XCTAssertEqual(DextStatus2.maxSize, 1024)
     }
 
     func testOldAppReadsOnlyItsPrefixOfTheNewStructure() throws {
@@ -328,7 +342,7 @@ final class DextStatus2T5Tests: XCTestCase {
         let old = try XCTUnwrap(DextStatus2.decode(Array(buf.prefix(316))))
         XCTAssertTrue(old.tapPresent); XCTAssertTrue(old.tapOpened); XCTAssertEqual(old.appliedState, 1)
         XCTAssertEqual(old.framesTranslated, 0)
-        XCTAssertEqual(n, 480)
+        XCTAssertEqual(n, 676)
     }
 }
 
@@ -453,9 +467,9 @@ final class DextXlateSourceTests: XCTestCase {
         XCTAssertFalse(tap.contains("GDHubSelfTestEnsure"), "the tap's Start does not run it")
         let sel9 = try body(try text("Dext/GDHubVirtualHID/GDHubVirtualHIDUserClient.cpp"), from: "static kern_return_t sSetForwarding", to: "static kern_return_t sSetMapping")
         let shadow = try XCTUnwrap(sel9.range(of: "== GDHUB_FWD_SHADOW")).lowerBound
-        let owner = try XCTUnwrap(sel9.range(of: "gdhr_is_owner(")).lowerBound
+        let owner = try XCTUnwrap(sel9.range(of: "gdhr_is_owner(", range: shadow..<sel9.endIndex)).lowerBound
         let run = try XCTUnwrap(sel9.range(of: "GDHubSelfTestEnsure()")).lowerBound
-        let set = try XCTUnwrap(sel9.range(of: "gdhr_set_desired_if_owner(")).lowerBound
+        let set = try XCTUnwrap(sel9.range(of: "gdhr_set_desired_if_owner(", range: shadow..<sel9.endIndex)).lowerBound
         XCTAssertTrue(shadow < owner && owner < run && run < set, "SHADOW request, owner check, self-test, then the state")
         XCTAssertTrue(sel9.contains("kIOReturnNotReady"), "RUNNING is 'ask again', never 'failed'")
         // no other caller anywhere in the dext sources
@@ -482,13 +496,18 @@ final class DextXlateSourceTests: XCTestCase {
     /// Rule D: what `shadowFrame` does not contain.
     func testShadowFrameHasNoLockAllocationOrLog() throws {
         let t = try text("Dext/GDHubVirtualHID/GDHubReceiverTap.cpp")
-        let f = try body(t, from: "static void shadowFrame", to: "\n}\n")
+        let raw = try body(t, from: "static void shadowFrame", to: "\n}\n")
+        let f = raw.replacingOccurrences(of: #"//[^\n]*"#, with: "", options: .regularExpression)     // comments may use any word
+        let loader = try body(t, from: "static bool loadMap", to: "\n}\n")
         for banned in ["IOLock", "IONew", "OSData::", "GDLog", "os_log", "IOMalloc", "new ", "malloc", "->retain", "->release",
                        "gdhr_copy_", "gdhr_map_publish", "IOLockLock", "libm", "fma", "sqrt", "round("] {
             XCTAssertFalse(f.contains(banned), "shadowFrame must not use \(banned)")
         }
-        XCTAssertTrue(f.contains("gdhr_map_seq"), "one acquire load per frame")
-        XCTAssertTrue(f.contains("gdx_reset"), "the translator state is reset on a map change")
+        XCTAssertTrue(f.contains("loadMap("), "the per-frame map check")
+        XCTAssertTrue(loader.contains("gdhr_map_seq"), "one acquire load per frame")
+        XCTAssertTrue(loader.contains("gdx_reset"), "the translator state is reset on a map change")
+        for lived in ["gdhr_hold(", "gdhr_pad_epoch(", "gdhr_tap_token(", "gdhr_pad_source("] { XCTAssertTrue(f.contains(lived), "LIVE gate: \(lived)") }
+        XCTAssertFalse(f.contains("GDHubCopyPad"), "no registry lock on the frame path: the pad reference is held across frames")
         XCTAssertTrue(f.contains("GDHR_CTR_FRAMES_SKIPPED"))
         XCTAssertTrue(f.contains("GDHR_CTR_FRAMES_NOMAP"))
         XCTAssertTrue(f.contains("gdh_parity_write"))

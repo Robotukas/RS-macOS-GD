@@ -30,6 +30,12 @@ class GDHubVirtualHID; class GDHubVirtualHIDUserClient; class GDHubVirtualPad; c
 // Pad submission sources (GDHUB_PADSRC_*) and neutral reasons (log text only; not part of the wire protocol).
 #define GDHUB_NEUTRAL_UC_REQUEST    1
 #define GDHUB_NEUTRAL_WATCHDOG      2
+#define GDHUB_NEUTRAL_SWITCH        3      // padSource changed (UC <-> TAP)
+#define GDHUB_NEUTRAL_STOP          4      // tap Stop (the controller went away)
+#define GDHUB_NEUTRAL_SILENCE       5      // LIVE: no frame for 250 ms
+#define GDHUB_NEUTRAL_POWER         6      // tap SetPowerState(Off)
+#define GDHUB_NEUTRAL_HOLD          7      // the engine's neutral request while the tap drives the pad
+#define GDHUB_NEUTRAL_ORPHAN        8      // the 30 s timer or RELEASE_PAD removing an unowned pad
 
 // ---------------------------------------------------------------------------------------------------------------
 // Call-order invariant (receiver-takeover plan 4.2). Ranks: user client 1, root 2, tap 3 (T4), pad 4. The only
@@ -70,6 +76,14 @@ void     GDHubTerminateTap(void);                                     // devTerm
 void     GDHubTapApply(GDHubReceiverTap * tap);                       // tap queue only: Open or Close as GDH_TAP decides
 bool     GDHubTapReadMeter(GDHubReceiverTap * tap, gdh_summary * xlate, gdh_summary * k2d, uint32_t * windows);
 bool     GDHubTapReadParity(GDHubReceiverTap * tap, gdh_parity_rec * rec);
+bool     GDHubTapReadLive(GDHubReceiverTap * tap, gdh_summary * total, gdh_summary * occ, gdh_summary * addPool, gdh_summary * submit);
+
+// T7 (GDHubRegistry.cpp, GDHubVirtualHID.cpp). Pinning and the orphan timer: the user client's Stop hands the owner back with
+// GDHubReleaseOwner; when the pad is pinned (LIVE) it stays and the root's 30 s timer is armed (DispatchAsync onto the root's queue).
+void     GDHubOrphanArm(uint64_t graceNs);                               // any queue; arms for max(deadline, now + grace) unless an owner is connected
+void     GDHubOrphanExpire(GDHubVirtualHID * root);                      // root queue only (the timer's handler)
+// Destroys a pad nobody owns (an old app's createDevice, RELEASE_PAD): UC source, neutral, INERT, destroy. Any queue except the pad's.
+void     GDHubOrphanForceDestroy(const char * why);
 
 // T5 (GDHubXlateGlue.cpp)
 uint32_t GDHubSelfTestEnsure(void);                                   // runs the golden vectors once per process; returns GDHR_SELFTEST_*
@@ -84,7 +98,7 @@ GDHubVirtualHID *            GDHubCopyRoot(void);
 GDHubVirtualHIDUserClient *  GDHubCopyOwner(uint64_t * gen);
 OSData *                     GDHubCopyPadSpec(void);                  // the spec the pad being created must use
 uint64_t                     GDHubClaimOwner(GDHubVirtualHIDUserClient * uc);   // generation (> 0), or 0 if owned by another client
-void                         GDHubReleaseOwner(GDHubVirtualHIDUserClient * uc); // also terminates the owner's pad if one is left
+bool                         GDHubReleaseOwner(GDHubVirtualHIDUserClient * uc); // also terminates the owner's pad if one is left; true = the pad was PINNED (stays, orphan timer armed)
 void                         GDHubTerminateAndRelease(OSObject * service);      // Terminate(0), then release; nullptr is fine
 IODispatchQueue *            GDHubRootQueue(GDHubVirtualHID * root);   // valid while `root` is retained
 IODispatchQueue *            GDHubPadQueue(GDHubVirtualPad * pad);     // valid while `pad` is retained
