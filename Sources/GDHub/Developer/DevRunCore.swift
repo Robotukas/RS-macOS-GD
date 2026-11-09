@@ -368,7 +368,7 @@ struct DevRunCore {
         switch event {
         case .start(let s): start(s, a: &a)
         case .tick(let t): tick(t, a: &a)
-        case .frame(let f, let t): onFrame(f, t: t, a: &a)
+        case .frame(let f, let t): onFrame(f, tIn: t, a: &a)
         case .reports(let r): onReports(r, a: &a)
         case .status(let s): onStatus(s, a: &a)
         case .enginePid(let p): onPid(p, a: &a)
@@ -636,7 +636,8 @@ struct DevRunCore {
         }
         if stillSince.map({ now < $0 || now - $0 < Timing.still }) ?? true { return (false, "Let go of everything; waiting for the controller to be still") }
         let need = UInt64(r.step.effectiveReadySeconds * 1e9)
-        if now - c.startedNs < need { return (false, "Keep still for a moment") }
+        // `now` may be a receiver frame's kernel timestamp, taken before the step started on the runner's clock.
+        if now < c.startedNs || now - c.startedNs < need { return (false, "Keep still for a moment") }
         return (true, "")
     }
 
@@ -859,7 +860,10 @@ struct DevRunCore {
         }
     }
 
-    private mutating func onFrame(_ f: GamepadFrame, t: UInt64, a: inout [Action]) {
+    private mutating func onFrame(_ f: GamepadFrame, tIn: UInt64, a: inout [Action]) {
+        // Kernel timestamps are monotonic per device; a frame that still arrives older than the last one (a replay, a
+        // second reader) keeps its data but takes the last time, so no interval below ever runs backwards.
+        let t = max(tIn, lastFrameNs ?? tIn)
         clock = max(clock, t)
         lastFrameNs = t
         guard isRunning, setup != nil else { return }
@@ -981,7 +985,7 @@ struct DevRunCore {
         guard kind != .rest, c.wantedActiveSeen, !c.wantedNowActive, let lastAct = c.lastWantedActiveNs,
               now >= lastAct, now - lastAct >= Timing.restForEarlyEnd,
               kind != .digital || c.wantedRises >= rules(for: r).digitalTimes,
-              now - c.lastEvalNs >= Timing.evalEvery, c.evalVersion != c.lastEvalVersion else { return }
+              now >= c.lastEvalNs, now - c.lastEvalNs >= Timing.evalEvery, c.evalVersion != c.lastEvalVersion else { return }
         cur!.lastEvalNs = now
         cur!.lastEvalVersion = c.evalVersion
         let input = judgeInput(c, r, ws: ws, we: now, end: now)

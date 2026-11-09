@@ -383,6 +383,21 @@ final class DevRunCoreTests: XCTestCase {
         XCTAssertTrue(why.contains("outside the dead zone"), why)
     }
 
+    /// Crash seen on 2026-11-09: a receiver frame stamped by the kernel a little before the step started on the runner's
+    /// clock reached readyGate, and `now - startedNs` overflowed. Frames older than the step must simply be tolerated.
+    func testFrameStampedBeforeTheStepStartedDoesNotTrap() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.leftStick, Rig.aStep])
+        // Right after the step began: frames whose kernel time is 50 ms in the past, then normal flow.
+        for _ in 0..<20 { r.send(.frame(r.frame, tNs: r.now - 50_000_000)); r.send(.tick(r.now)) }
+        r.untilGo()
+        let before = r.core.state
+        r.send(.frame(r.frame, tNs: r.now - 2_000_000_000))      // an out-of-order frame changes nothing
+        XCTAssertEqual(r.core.state, before)
+        XCTAssertTrue(r.core.isGo)
+    }
+
     func testRestStepJudgesTheFullWindow() {
         let r = Rig()
         r.prepare()
