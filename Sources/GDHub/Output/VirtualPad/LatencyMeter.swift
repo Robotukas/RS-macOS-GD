@@ -234,10 +234,23 @@ final class LatencyMeter: @unchecked Sendable {
     /// True when the calling thread's base priority is 4 (App Nap / darwinbg), which is what `napwatch` reports.
     /// Call it from a thread that normally runs at user-interactive QoS (the sink's queue).
     static func currentThreadIsNapped() -> Bool {
-        var tid: UInt64 = 0
-        pthread_threadid_np(nil, &tid)
-        var info = proc_threadinfo()
-        let r = proc_pidinfo(getpid(), PROC_PIDTHREADINFO, tid, &info, Int32(MemoryLayout<proc_threadinfo>.size))
-        return r > 0 && info.pth_priority <= 4
+        guard let p = currentThreadBasePriority() else { return false }
+        return p <= 4
+    }
+
+    /// Base priority of the calling thread (what `napwatch` prints as `base`); nil if the kernel does not answer.
+    /// Uses `thread_info(THREAD_EXTENDED_INFO)` on the thread's own port: `proc_pidinfo(PROC_PIDTHREADINFO)` takes a
+    /// thread *handle*, not the id `pthread_threadid_np` returns, and answers ESRCH for the latter.
+    static func currentThreadBasePriority() -> Int32? {
+        var info = thread_extended_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<thread_extended_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let port = mach_thread_self()
+        defer { mach_port_deallocate(mach_task_self_, port) }
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                thread_info(port, thread_flavor_t(THREAD_EXTENDED_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? info.pth_priority : nil
     }
 }

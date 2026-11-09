@@ -9,8 +9,10 @@ final class AppModel: ObservableObject {
     let envision: EnvisionProDevice
     let modules: [DeviceModule]
     let monitor: HIDMonitor
-    /// Driver install state, dext connection and the virtual pad sink (design §5.6).
-    let driver = DriverManager()
+    /// Driver install state, dext connection and the virtual pad sink (design §5.6). In engine and display-only mode it
+    /// never touches the dext: the headless engine (engine-agent-plan) owns the pad.
+    let driver: DriverManager
+    let guiMode: GUIMode
     /// Corsair "Bragi" control channel: battery readout and sleep timer.
     let control = EnvisionProControl()
     private var controlStatusSub: AnyCancellable?
@@ -18,6 +20,11 @@ final class AppModel: ObservableObject {
     private var routes: [ObjectIdentifier: (module: DeviceModule, usagePage: Int)] = [:]
 
     init() {
+        // Decided once, before DriverManager exists: engine (agent installed, /Applications copy), display-only
+        // (agent installed, any other copy) or in-app (no agent: today's code path).
+        let mode = EngineAgent.guiMode(bundlePath: Bundle.main.bundlePath, installed: EngineAgent().isInstalled)
+        guiMode = mode
+        driver = DriverManager(mode: mode)
         let layout = ControlLayout.load()
         envision = EnvisionProDevice(layout: layout)
         modules = [envision]
@@ -57,7 +64,9 @@ final class AppModel: ObservableObject {
         }
         monitor.start()
         envision.recoverInterruptedEditIfNeeded()
-        wireVirtualPad()
+        if mode == .inApp { wireVirtualPad() }
+        // The engine could not start: this session owns the pad itself (E1 fallback).
+        driver.onFallbackToInApp = { [weak self] in self?.wireVirtualPad() }
     }
 
     /// Feeds the virtual pad from the controller and ties it to the app and system lifecycle (design §5.6).
@@ -84,7 +93,6 @@ final class AppModel: ObservableObject {
     }
 }
 
-@main
 struct GDHubApp: App {
     @StateObject private var model = AppModel()
 

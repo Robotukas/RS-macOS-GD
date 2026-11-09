@@ -7,7 +7,11 @@ targets:
     type: application
     platform: macOS
     scheme: {}
-    sources: [Sources/GDHub, Xcode/App/BundleModule+Xcode.swift]
+    sources:
+      - Sources/GDHub
+      - Xcode/App/BundleModule+Xcode.swift
+      - path: Xcode/Engine/com.interlinked.gdhub.engine.plist
+        buildPhase: resources            # -> Contents/Resources/com.interlinked.gdhub.engine.plist
     dependencies: [{target: GDHubVirtualHID}]          # embedded in Contents/Library/SystemExtensions
     info:
       path: Xcode/App/Info.plist

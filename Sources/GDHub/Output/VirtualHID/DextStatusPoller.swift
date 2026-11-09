@@ -15,7 +15,7 @@ final class DextStatusPoller: @unchecked Sendable {
     private static let log = Logger(subsystem: "com.interlinked.gdhub", category: "vhid")
     private static let latencyLog = Logger(subsystem: "com.interlinked.gdhub", category: "latency")
     private let queue: DispatchQueue
-    private let dext: DextClient
+    private let dext: DextStatusSource
     private let sink: VirtualPadSink
     private var timer: DispatchSourceTimer?
     private var last: (posts: UInt64, frames: Int, at: UInt64)?
@@ -28,7 +28,7 @@ final class DextStatusPoller: @unchecked Sendable {
     private let latencyLogEvery: Int        // polls (seconds) between `latency` log lines
     private var polls = 0
 
-    init(queue: DispatchQueue, dext: DextClient, sink: VirtualPadSink, latencyLogEvery: Int = 10) {
+    init(queue: DispatchQueue, dext: DextStatusSource, sink: VirtualPadSink, latencyLogEvery: Int = 10) {
         self.queue = queue
         self.dext = dext
         self.sink = sink

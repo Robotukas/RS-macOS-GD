@@ -9,18 +9,7 @@ struct LoggedEvent: Identifiable, Equatable {
 
 @MainActor
 final class EnvisionProDevice: ObservableObject, DeviceModule {
-    enum Status: String {
-        case disconnected, receiverIdle, asleep, active
-
-        var label: String {
-            switch self {
-            case .disconnected: return "Disconnected"
-            case .receiverIdle: return "Receiver idle (controller off)"
-            case .asleep: return "Asleep"
-            case .active: return "Connected"
-            }
-        }
-    }
+    typealias Status = ControllerStatus
 
     // DeviceModule
     let id = "envision-pro"

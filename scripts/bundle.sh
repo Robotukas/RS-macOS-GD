@@ -37,5 +37,5 @@ codesign --force --timestamp=none --sign "$IDENTITY" "$APP"
 echo "signed as: $(codesign -dvv "$APP" 2>&1 | awk -F= '/^Authority=/{print $2; exit}')"
 echo "bundled $APP"
 [[ "$2" == "--no-open" ]] && exit 0
-pkill -f "GDHub.app/Contents/MacOS/GDHub" 2>/dev/null && sleep 0.5
+pkill -f '\.build/GDHub\.app/Contents/MacOS/GDHub$' 2>/dev/null && sleep 0.5
 open "$APP"

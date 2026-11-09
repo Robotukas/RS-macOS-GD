@@ -73,6 +73,62 @@ struct DriverCommands: View {
     }
 
     var body: some View {
+        switch driver.mode {
+        case .displayOnly:
+            Text("Display-only: the background engine owns the pad")
+        case .engine:
+            engineBody
+        case .inApp:
+            inAppBody
+        }
+    }
+
+    // MARK: Engine mode (E1: read-only status, restart, uninstall; the driver items keep working)
+
+    @ViewBuilder private var engineBody: some View {
+        Text(driver.engineStatus.menuText)
+        Text("Pad is controlled by the background engine")
+        Button("Restart engine") { driver.restartEngine() }
+            .disabled(driver.engineUninstalled)
+        Button("Uninstall background engine (relaunch to apply)") { driver.uninstallEngine() }
+            .disabled(driver.engineUninstalled)
+        if driver.engineUninstalled { Text("Quit and reopen GDHub to use the in-app engine") }
+        Divider()
+        Text(statusText)
+        Divider()
+        Toggle("Publish virtual pad when the controller is connected", isOn: .constant(true)).disabled(true)
+        Menu("Publish virtual pad") { EmptyView() }.disabled(true)
+        Button("Unpublish virtual pad") {}.disabled(true)
+        Button("Test pattern") {}.disabled(true)
+        Button("Restart driver (dev)") {}.disabled(true)
+        Divider()
+        driverButtons
+    }
+
+    @ViewBuilder private var driverButtons: some View {
+        switch driver.state {
+        case .wrongLocation:
+            Button("Reveal in Finder") { driver.revealInFinder() }
+        case .notInstalled:
+            Button("Install Driver") { driver.installOrUpdate() }
+        case .needsApproval:
+            Button("Open System Settings") { driver.openSystemSettings() }
+        case .active:
+            Button("Uninstall Driver") { driver.uninstall() }
+        case .failed:
+            Button("Retry") { driver.retry() }
+        default:
+            EmptyView()
+        }
+    }
+
+    // MARK: In-app mode (today's menu; with a header after the engine fallback)
+
+    @ViewBuilder private var inAppBody: some View {
+        if driver.engineUnavailable {
+            Text("Engine unavailable: using in-app (relaunch GDHub to retry the engine)")
+            Divider()
+        }
         Text(statusText)
         if let connectionText { Text(connectionText) }
         Text(padText)
@@ -97,19 +153,6 @@ struct DriverCommands: View {
         Button("Restart driver (dev)") { driver.devTerminateDriver() }       // DEBUG-only experiment
             .disabled(!isConnected)
         Divider()
-        switch driver.state {
-        case .wrongLocation:
-            Button("Reveal in Finder") { driver.revealInFinder() }
-        case .notInstalled:
-            Button("Install Driver") { driver.installOrUpdate() }
-        case .needsApproval:
-            Button("Open System Settings") { driver.openSystemSettings() }
-        case .active:
-            Button("Uninstall Driver") { driver.uninstall() }
-        case .failed:
-            Button("Retry") { driver.retry() }
-        default:
-            EmptyView()
-        }
+        driverButtons
     }
 }
