@@ -33,3 +33,24 @@ Also checked: identity switch `xbox-bt16` to `xbox-bt16-02e0` (destroy, 300 ms, 
 | `x360-usb` | not built (D6) | | | | | | |
 
 ## Notes
+
+## D4 hands-on check, 2026-11-09 00:17 (identity `xbox-bt16-02e0`, GameController via `gcprobe --watch`)
+
+The user pressed every control once on the physical SCUF; the recorder saw the virtual pad report:
+
+| Physical control | Virtual pad (GameController name) | Result |
+|---|---|---|
+| A, B, X, Y | Button A, B, X, Y | ok |
+| LB, RB | Left / Right Shoulder | ok |
+| View, Menu | Button Options, Button Menu | ok |
+| Centre Start | (nothing) | Guide is not delivered to GameController with this identity, as the design predicted |
+| L3, R3 | Left / Right Thumbstick Button | ok |
+| D-pad up, right, down, left | Direction Pad y=+1, x=+1, y=−1, x=−1 | ok |
+| LT, RT | Left / Right Trigger to 1.00 and back | ok |
+| Left stick, right stick circle | x and y each reach −1.00…+1.00, return to 0 | ok |
+| Paddles outer-left, inner-left, inner-right, outer-right | Button X, A, Y, B | the controller's onboard profile echo (see note) |
+| SAX left, SAX right | Left / Right Shoulder | onboard profile echo |
+| G1–G5, Profile | (nothing) | ok |
+| 18 s hard left-stick circling | 3649 value changes, 199/s average | under the 250/s cap |
+
+Note: during the mapping session on 2026-11-08 the paddles echoed as D-pad directions and SAX as A/B. Tonight they echo as X/A/Y/B and LB/RB, so the controller was on a different onboard profile. The passthrough forwards whatever the onboard profile emits; pressing the Profile button changes it. GDHub's own remapping (using the paddle/SAX identity bits, independent of the onboard profile) arrives with the mapping engine.
