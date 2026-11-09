@@ -80,6 +80,24 @@ struct DevOverlay: Equatable {
     }
 }
 
+/// Which views the drawing shows while a step is on: the view of each wanted control first, then the views of the
+/// linked output controls (paddle -> D-pad, SAX -> A/B/X). Empty = show all views (rest steps, idle, finished).
+enum DevFocus {
+    static func sides(overlay: DevOverlay?, layout: ControlLayout) -> [ControlLayout.Side] {
+        guard let overlay, overlay.isRunning else { return [] }
+        var out: [ControlLayout.Side] = []
+        for state in [DevHighlight.wanted, .linked] {
+            for c in layout.controls where overlay.highlights[c.id] == state && !out.contains(c.view) {
+                out.append(c.view)
+            }
+        }
+        // Wanted controls on two or more views and linked on a third: too much to show; fall back to the grid.
+        let wantedSides = Set(layout.controls.filter { overlay.highlights[$0.id] == .wanted }.map(\.view))
+        if wantedSides.isEmpty || out.count > 2 { return [] }
+        return out
+    }
+}
+
 /// How one control is dressed for the run.
 struct DevControlOverlay {
     var highlight: DevHighlight?

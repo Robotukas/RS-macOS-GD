@@ -193,7 +193,8 @@ private struct EnvisionProScreen: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            if showMonitor {
+            // Developer mode needs the height for the run panel and the drawing; it has its own live strip.
+            if showMonitor && device.dev == nil {
                 InputMonitorView(device: device)
                     .frame(height: 220)
             }

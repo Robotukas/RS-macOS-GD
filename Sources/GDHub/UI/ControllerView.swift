@@ -21,9 +21,13 @@ struct ControllerView: View {
 
     var body: some View {
         if let layout = device.layout {
-            VStack(spacing: 12) {
+            // Pinned to the top: when the content is taller than the window the bottom is what gets cut off,
+            // never the Developer panel (a plain VStack inside `frame(maxHeight: .infinity)` is centred, which
+            // pushed the top of an overflowing run above the window edge).
+            VStack(alignment: .leading, spacing: 12) {
                 if let dev = device.dev {
                     DevPanel(session: dev)
+                        .layoutPriority(2)
                 }
                 // One scale factor for all four views: each gets a width proportional to its image,
                 // so resizing the window grows or shrinks every view by the same amount.
@@ -43,36 +47,46 @@ struct ControllerView: View {
                     let availHeight = max(geo.size.height - CGFloat(maxRows) * titleHeight - spacing * CGFloat(maxRows - 1), 1)
                     let zoom = device.editor.isEditing ? CGFloat(device.editor.zoom) : 1
                     let scale = min(availWidth / totalWidth, availHeight / totalHeight) * zoom
-                    let grid = HStack(alignment: .bottom, spacing: spacing) {
-                        ForEach(0..<columns.count, id: \.self) { ci in
-                            VStack(spacing: spacing) {
-                                ForEach(columns[ci], id: \.self) { side in
-                                    let info = layout.images.info(for: side)
-                                    ControllerSideView(device: device, layout: layout, side: side, dev: dev)
-                                        .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
+                    let focus = device.editor.isEditing ? [] : DevFocus.sides(overlay: dev, layout: layout)
+                    Group {
+                    if !focus.isEmpty {
+                        focusedViews(focus, layout: layout, dev: dev, size: geo.size)
+                            .transition(.opacity)
+                    } else {
+                        let grid = HStack(alignment: .bottom, spacing: spacing) {
+                            ForEach(0..<columns.count, id: \.self) { ci in
+                                VStack(spacing: spacing) {
+                                    ForEach(columns[ci], id: \.self) { side in
+                                        let info = layout.images.info(for: side)
+                                        ControllerSideView(device: device, layout: layout, side: side, dev: dev)
+                                            .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
+                                    }
                                 }
                             }
                         }
+                        .coordinateSpace(name: "grid")
+                        if device.editor.isEditing {
+                            // Editing: the grid lives in a scroll view that zooms toward the pointer on mouse wheel.
+                            let padding: CGFloat = 8
+                            let contentSize = CGSize(
+                                width: max(totalWidth * scale + spacing * CGFloat(columns.count - 1) + padding * 2, geo.size.width),
+                                height: max(totalHeight * scale + CGFloat(maxRows) * titleHeight + spacing * CGFloat(maxRows - 1) + padding * 2, geo.size.height))
+                            ZoomScrollView(editor: device.editor, contentSize: contentSize,
+                                           content: grid.padding(padding).frame(width: contentSize.width, height: contentSize.height, alignment: .center))
+                                .frame(width: geo.size.width, height: geo.size.height)
+                        } else {
+                            grid.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     }
-                    .coordinateSpace(name: "grid")
-                    if device.editor.isEditing {
-                        // Editing: the grid lives in a scroll view that zooms toward the pointer on mouse wheel.
-                        let padding: CGFloat = 8
-                        let contentSize = CGSize(
-                            width: max(totalWidth * scale + spacing * CGFloat(columns.count - 1) + padding * 2, geo.size.width),
-                            height: max(totalHeight * scale + CGFloat(maxRows) * titleHeight + spacing * CGFloat(maxRows - 1) + padding * 2, geo.size.height))
-                        ZoomScrollView(editor: device.editor, contentSize: contentSize,
-                                       content: grid.padding(padding).frame(width: contentSize.width, height: contentSize.height, alignment: .center))
-                            .frame(width: geo.size.width, height: geo.size.height)
-                    } else {
-                        grid.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    .animation(.easeInOut(duration: 0.2), value: focus)
                 }
                 .padding(.horizontal)
-                .frame(minHeight: device.dev == nil ? 0 : 240)
+                .frame(minHeight: device.dev == nil ? 0 : 140, maxHeight: .infinity)
                 }
                 if let dev = device.dev, dev.finishedWithResults || !dev.rows.isEmpty {
                     DevResultTable(session: dev)
+                        .layoutPriority(1)
                 }
                 if !device.editor.isEditing && device.learn == nil && device.dev == nil {
                     ControllerStatusStrip(device: device, control: control)
@@ -86,15 +100,10 @@ struct ControllerView: View {
                                 .padding(.trailing)
                         }
                     }
-                } else {
-                    // The loupe follows the control the step asks for while a run is on.
-                    DevObserved(session: device.dev) { dev in
-                        if let dev, dev.isRunning, let wanted = dev.wantedControl(in: layout) {
-                            MagnifierView(device: device, layout: layout, control: wanted, dev: dev)
-                        }
-                    }
                 }
+                // Developer mode: no loupe. A step with a wanted control shows that view large (focused layout).
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, 8)
         } else {
             VStack(spacing: 8) {
@@ -103,6 +112,31 @@ struct ControllerView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+extension ControllerView {
+    /// Developer mode, active step: only the view(s) holding the wanted control, as large as the area allows.
+    /// One view fills the area (capped at 900 pt wide); two views (wanted + its linked output) share the width
+    /// 62 / 38. Each view gets its own scale.
+    @ViewBuilder
+    fileprivate func focusedViews(_ sides: [ControlLayout.Side], layout: ControlLayout, dev: DevOverlay?, size: CGSize) -> some View {
+        let spacing: CGFloat = 16
+        let titleHeight: CGFloat = 18
+        let share: [CGFloat] = sides.count == 1 ? [1] : [0.62, 0.38]
+        let usable = max(size.width - spacing * CGFloat(sides.count - 1), 1)
+        HStack(alignment: .center, spacing: spacing) {
+            ForEach(Array(sides.enumerated()), id: \.element) { i, side in
+                let info = layout.images.info(for: side)
+                let fw = layout.framedWidth(for: side)
+                let w = min(usable * share[i], 900)
+                let scale = max(min(w / fw, (size.height - titleHeight) / info.height), 0.01)
+                ControllerSideView(device: device, layout: layout, side: side, dev: dev)
+                    .frame(width: fw * scale, height: info.height * scale + titleHeight)
+            }
+        }
+        .coordinateSpace(name: "grid")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
