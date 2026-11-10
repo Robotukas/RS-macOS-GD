@@ -1160,3 +1160,8 @@ per axis (extra "down" present and no vertical direction reported means "up" is 
 from the reviewed latch and needs its own review before any code. The owner's standing answer for a failed gate is
 Q8 (b).
 
+**Owner's decision (2026-11-10 23:29): "Rework the rule".** Asked: rework the hiding rule for paddles (recommended:
+remove the known extra button in the same report and work out the real D-pad direction from what is left; a new
+design that is reviewed before any code), or keep paddles and SAX keys as today for this step (Q8 b). The plan's
+sections on the hiding rule are rewritten as plan v3 and reviewed again before S3.
+
