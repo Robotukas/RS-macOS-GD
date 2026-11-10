@@ -110,7 +110,7 @@ final class InputPathMenuTests: XCTestCase {
         XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "driver" }, engineRunningPid: 777, stored: "engine"), "driver")
         XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: 777, stored: "shadow"), "shadow")
         XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "shadow" }, engineRunningPid: 999, stored: "engine"), "engine", "a stale report is not trusted")
-        XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: nil), "engine")
+        XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: nil), "driver", "T8: nothing stored means the driver path")
         XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: "bogus"), "engine")
         XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: "count"), "count")
     }

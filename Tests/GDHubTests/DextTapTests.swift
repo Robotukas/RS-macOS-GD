@@ -411,7 +411,7 @@ private let tapFakeOps: UnsafeMutablePointer<gdhr_ops> = {
 
 final class InputPathTests: XCTestCase {
     func testParsing() {
-        XCTAssertEqual(InputPath(defaultsValue: nil), .engine)
+        XCTAssertEqual(InputPath(defaultsValue: nil), .driver, "T8: nothing stored means the driver path")
         XCTAssertEqual(InputPath(defaultsValue: "engine"), .engine)
         XCTAssertEqual(InputPath(defaultsValue: "count"), .count)
         XCTAssertEqual(InputPath(defaultsValue: " Count\n"), .count, "case and surrounding spaces are ignored")
@@ -523,7 +523,7 @@ final class TapSupervisorTests: XCTestCase {
     }
 
     func testEveryOtherValueSendsInert() {
-        for v: Any? in [nil, "engine", "bogus", 7] {
+        for v: Any? in ["engine", "bogus", 7] {            // nil is the driver path since T8
             let tap = FakeTap()
             let s = make(path: v, tap: tap)
             queue.sync { s.connection(up: true) }

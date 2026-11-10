@@ -78,7 +78,7 @@ final class InputPathSnapshotTests: XCTestCase {
     }
 
     func testTheEndTextNamesWhatWasPutBack() {
-        XCTAssertEqual(DevPathSnapshot().restoredDescription, "Engine (App path)")
+        XCTAssertEqual(DevPathSnapshot().restoredDescription, "Driver", "T8: nothing stored means the driver path")
         XCTAssertEqual(DevPathSnapshot(inputPath: "driver").restoredDescription, "Driver")
         XCTAssertEqual(DevPathSnapshot(inputPath: "driver", tapBreakerTrippedAt: 1, tapBreakerReason: "limiter").restoredDescription,
                        "Driver (stopped by breaker: limiter, as before)")

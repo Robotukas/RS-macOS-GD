@@ -1,7 +1,8 @@
 import Foundation
 
 /// The `inputPath` defaults key (`defaults write com.interlinked.gdhub inputPath -string count`): where the controller's
-/// reports are read. `engine` (the default: the engine reads and posts, the dext's tap stays INERT), `count` (T4: the dext's tap
+/// reports are read. `driver` (the default since T8, 2026-11-10: the dext's tap drives the pad, LIVE), `engine` (the engine
+/// reads and posts, the dext's tap stays INERT), `count` (T4: the dext's tap
 /// opens interface 3 and only counts frames) and `shadow` (T5: the tap also translates every report with the mapping the engine
 /// pushed and records a parity sample; nothing is posted). The engine posts in all three, so nothing changes for games.
 /// `driver` is the value of the later LIVE phase (T7): until the dext reports a LIVE capability it runs exactly as `shadow`, the
@@ -22,9 +23,12 @@ enum InputPath: String, Equatable, CaseIterable {
     /// `inputPath` text itself did not change.
     static let choiceKey = "inputPathChoice"
 
-    /// nil, a non-string or an unknown string is `engine`. Case and surrounding spaces are ignored.
+    /// No value at all is the default, `driver` (T8, owner's decision of 2026-11-10 after the gate: faster on every row, the
+    /// one miss being the 0.2 ms stick-onset margin). A non-string or an unknown string is `engine`: a value someone wrote
+    /// that this build does not understand must not arm the driver. Case and surrounding spaces are ignored.
     init(defaultsValue: Any?) {
-        let raw = (defaultsValue as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let value = defaultsValue else { self = .driver; return }
+        let raw = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         self = raw.flatMap(InputPath.init(rawValue:)) ?? .engine
     }
 

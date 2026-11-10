@@ -101,6 +101,6 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertTrue(t.contains(#"[("engine", "App"), ("shadow", "App, with driver check"), ("driver", "Driver")]"#))
         XCTAssertEqual(InputPathMenu.selection(report: report { $0.path = "driver" }, engineRunningPid: 9, stored: nil), "driver")
         XCTAssertEqual(InputPathMenu.selection(report: nil, engineRunningPid: nil, stored: "driver"), "driver")
-        XCTAssertEqual(InputPath.engine.rawValue, "engine"); XCTAssertEqual(InputPath(defaultsValue: nil), .engine, "the default stays the engine path")
+        XCTAssertEqual(InputPath.engine.rawValue, "engine"); XCTAssertEqual(InputPath(defaultsValue: nil), .driver, "T8: no stored value means the driver path"); XCTAssertEqual(InputPath(defaultsValue: "bogus"), .engine, "an unknown value never arms the driver"); XCTAssertEqual(InputPath(defaultsValue: 7), .engine)
     }
 }
