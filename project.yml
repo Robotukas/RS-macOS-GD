@@ -20,6 +20,7 @@ targets:
       properties: {CFBundleDisplayName: GDHub, CFBundleShortVersionString: $(MARKETING_VERSION),
                    CFBundleVersion: $(CURRENT_PROJECT_VERSION), LSMinimumSystemVersion: "14.0",
                    NSPrincipalClass: NSApplication, NSHighResolutionCapable: true,
+                   GDHubDextSourceHash: $(GDHUB_DEXT_SOURCE_HASH),   # what the embedded driver was built from (build-xcode.sh passes it)
                    NSSystemExtensionUsageDescription: "GDHub installs a driver that publishes its virtual controller, keyboard and pointer."}
     entitlements: {path: Xcode/App/GDHub.entitlements, properties: {com.apple.developer.system-extension.install: true}}
     settings:

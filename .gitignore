@@ -12,7 +12,9 @@ scuf-envision/tools/sdlmatch
 scuf-envision/tools/gcprobe
 # Xcode/DriverKit build (scripts/build-xcode.sh)
 .xcodebuild/
+.xcodebuild-check/
 Xcode/build-number
+Xcode/dext-source.hash
 
 scuf-envision/tools/bragi
 
