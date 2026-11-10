@@ -28,13 +28,14 @@ the old chat. Read in this order:
 
 ### What is in flight
 
-- **Remap step 1** (the approved mockup `docs/mockups/remap-buttons.html`): plan v1 is committed. A two-reviewer check of the
-  plan was running when the session ended and its findings are **not** folded in — re-run a plan review before building.
-  Phase **R0** needs the owner for one minute: controller on, set
+- **Remap step 1** (the approved mockup `docs/mockups/remap-buttons.html`): plan **v2** (2026-11-10) has the plan review folded in
+  (98 confirmed findings; the main corrections are listed in the plan). Building waits for R0b: mockup v6 and the owner's OK
+  on the plan's "Changes from mockup v5". Phase **R0** needs the owner for a few minutes and is now run as the template
+  `volume-spike` with two halves (see the plan); the `hidutil` half is: controller on, set
   `hidutil property --matching '{"VendorID":0x1b1c,"ProductID":0x3a08,"PrimaryUsagePage":12}' --set '{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0xC000000E9,"HIDKeyboardModifierMappingDst":0x0}]}'`,
   owner presses G3 ×3 (volume must not change) and G2 ×3 (must change), read the volume before/after
   (`osascript -e 'output volume of (get volume settings)'`), check the log for "Insufficient permissions to remap", undo with
-  `--set '{"UserKeyMapping":[]}'`. R1 (model + translators) and R2 (UI) do not depend on it.
+  the same `--matching '{…}'` and `--set '{"UserKeyMapping":[]}'` (never a bare `--set`: it writes to every keyboard). R1 (model + translators) and R2 (UI) do not depend on it.
 - **Carried from T8:** Shadow play test with the Slipstream receiver *not* USB-forwarded by the Shadow client; a 30-flick
   variant of the `t8-latency` template; the owner's verdict on how last night's play on the driver felt (asked, not answered).
   Do **not** delete `PassthroughPadMapper` with the `xlateCore` key: it is the oracle and the fallback (see the remap plan).
