@@ -247,7 +247,8 @@ enum DevBuiltins {
         return DevTemplate(
             id: "gkeys-volume", title: "Volume keys under a remap: G2, G3, G4 (App, then Driver)",
             notes: "Use it after changing anything about the volume keys G2, G3 and G4 or about remapping. Before you start, in "
-                + "Mapping: G3 → RB, leave G4 as it is (Mute, built in), G2 → Nothing. Also set the Mac's sound output to "
+                + "Mapping: G3 → RB, leave G4 as it is (Mute, built in), G2 → Nothing. Choose the Mac's own speakers as the sound "
+                + "output (a headset with its own volume wheel cannot be checked) and set them to "
                 + "about half volume and not muted (not at the very bottom or top, or a step cannot tell and says so), and leave the "
                 + "sound output alone while it runs. Afterwards: Mapping → Reset all remaps. G3 must send RB to the pad and leave the "
                 + "Mac's volume alone; G4 must still mute and then unmute the Mac (two separate steps); G2 must send nothing to the "

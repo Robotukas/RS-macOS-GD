@@ -241,6 +241,12 @@ enum DevVolumeJudge {
         // Volume down at zero or volume up at full changes nothing, so "unchanged" would pass without proving anything.
         var pressed = DevConsumerReport.Keys()
         for report in keyed { pressed.formUnion(report.keys) }
+        // A volume-up or volume-down key on an output without a software volume (a USB headset with its own volume
+        // wheel, say) moves nothing whether it is silenced or not: only mute can be watched there. Found in the owner's
+        // first run (2026-11-10, a headset as the output): "unchanged" passed without proving anything.
+        if !pressed.contains(.mute), pressed.contains(.volumeUp) || pressed.contains(.volumeDown), !go.hasVolume {
+            return cannot("this sound output has no volume the Mac can change (only mute), so a volume-up or volume-down key cannot be checked on it: choose the Mac's own speakers as the sound output and run the step again")
+        }
         if !pressed.contains(.mute), pressed.contains(.volumeUp) || pressed.contains(.volumeDown), let s = go.scalar {
             let upStuck = !pressed.contains(.volumeUp) || s >= highest
             let downStuck = !pressed.contains(.volumeDown) || s <= lowest

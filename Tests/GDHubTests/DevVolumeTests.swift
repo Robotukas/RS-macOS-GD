@@ -164,9 +164,14 @@ final class DevVolumeTests: XCTestCase {
         // Within a hair of the limit is the limit; one step away is not.
         assertCannotJudge(DevVolumeJudge.judge(.unchanged, obs(go: .device(scalar: 0.0001), reports: [key(100, 0x02)])), containing: "lowest")
         XCTAssertEqual(DevVolumeJudge.judge(.unchanged, obs(go: .device(scalar: 0.0625), reports: [key(100, 0x02)])).verdict, .pass)
-        // Mute-only device: no scalar to be at a limit.
+        // Mute-only device (the owner's headset, 2026-11-10): a volume-up or -down key cannot be checked there at all,
+        // the mute key can.
         let muteOnly = VolumeState(deviceID: 7, hasVolume: false, hasMute: true, scalar: nil, muted: false)
-        XCTAssertEqual(DevVolumeJudge.judge(.unchanged, obs(go: muteOnly, reports: [key(100, 0x02)])).verdict, .pass)
+        for want in DevVolumeExpectation.allCases {
+            assertCannotJudge(DevVolumeJudge.judge(want, obs(go: muteOnly, reports: [key(100, 0x02)])), containing: "no volume the Mac can change")
+            assertCannotJudge(DevVolumeJudge.judge(want, obs(go: muteOnly, reports: [key(100, 0x01)])), containing: "no volume the Mac can change")
+        }
+        XCTAssertEqual(DevVolumeJudge.judge(.unchanged, obs(go: muteOnly, reports: [key(100, 0x04)])).verdict, .pass)
     }
 
     func testAChangedOutputDeviceCannotBeJudged() {
