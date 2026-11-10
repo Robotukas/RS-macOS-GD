@@ -50,8 +50,8 @@ During R6 the progress line counts this S0–S9 ledger (Phase n/10); S2b, if it 
 
 | Phase | Title | Driver replacement? | Exit | Status |
 |---|---|---|---|---|
-| S0 | Plan review and the owner's answers to "Questions for the owner" | No | Review folded in (plan v2, 2026-11-10): done. Outstanding: the owner's answers to Q1–Q9, quoted in "S0 answers"; then plan v2 committed, the remap-plan R6 row and HANDOFF point here | ▶ current |
-| S1 | Safety net, build guard, receiver recorder, survey template, mockup v7 (app-only install) | No | Pins committed; build-24 source hash seeded; `--check` works; v7 approved (quoted) before the `record` display was coded; `swift test` + Python green; installed with `--same-build`; layout and mapping equal to their copies | pending |
+| S0 | Plan review and the owner's answers to "Questions for the owner" | No | Review folded in (plan v2, 2026-11-10): done. Outstanding: the owner's answers to Q1–Q9, quoted in "S0 answers"; then plan v2 committed, the remap-plan R6 row and HANDOFF point here | ✅ done 2026-11-10: "OK all" (see "S0 answers") |
+| S1 | Safety net, build guard, receiver recorder, survey template, mockup v7 (app-only install) | No | Pins committed; build-24 source hash seeded; `--check` works; v7 approved (quoted) before the `record` display was coded; `swift test` + Python green; installed with `--same-build`; layout and mapping equal to their copies | ▶ current |
 | S2 | Owner sitting 1: run row 10 (survey) | No | "S2 result" written: echoes and light colour per profile, each key's bit, lags, leads, hat behaviour, Profile during a hold; W, G and row 11's probe and picks fixed; gate passed, or the Q8 answer applied (S2b opened when needed) | pending |
 | S2b | Re-plan after a failed gate (only if the S2 gate fails) | No | Q8 = (b): the (b) changes applied and v7b approved; any other case: plan v3 written, reviewed against the code, owner's OK quoted. "skipped" when the gate passes | pending |
 | S3 | Model, Swift echo filter, menus, labels, lighting (App path only) | No | Tests green; S1 pins byte-identical; echo cases E1–E29 pass in Swift | pending |
@@ -1085,4 +1085,14 @@ Q9. **Buttons an old learn tied to a paddle's signal** (only if S1 finds any in 
 
 ## S0 answers
 
-(to be filled in, quoted verbatim)
+2026-11-10, 20:27–20:31 GMT. The nine questions were put in chat with the recommendation first in each.
+
+- On Q1 the owner asked: "But I will be able to map in future?" Answer given: yes, and in this step; "Controller's
+  profile (built in)" is only what a key does until it is touched, and each of the six keys gets the full menu.
+- On Q3 (the iCUE route) the owner wrote: "you what it doesn't store in controller memory keyboard ampping". Read as:
+  the controller does not keep keyboard mappings in its own memory. Recorded as the owner's statement, not measured;
+  it does not change the plan (GDHub maps on the Mac and never writes to the controller; the iCUE route stays unused).
+- Then: **"OK all"**. Every recommendation is accepted: Q1 "Controller's profile (built in)" as the default and its
+  wording; Q2 hide only for remapped keys; Q3 the limits; Q4 the survey presses Profile three times; Q5 two stages;
+  Q6 "apprall" for step 2 and a push to `main` after each phase's commit; Q7 nothing else in this driver replacement;
+  Q8 (b) if the survey gate fails; Q9 the owner re-learns the listed buttons, if any are found.

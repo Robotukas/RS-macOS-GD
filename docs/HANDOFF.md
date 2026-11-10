@@ -6,7 +6,8 @@ The owner is moving this work to another Claude account. Everything needed is in
 the old chat. Read in this order:
 
 1. This section.
-2. `docs/plans/remap-plan.md` — **the work in progress** (phase ledger R0–R7; step 1 = R0–R5 is done, R6 is next and needs a driver replacement).
+2. `docs/plans/remap-step2-plan.md` — **the work in progress** (remap step 2, phases S0–S9); its parent is
+   `docs/plans/remap-plan.md` (phase ledger R0–R7; step 1 = R0–R5 is done, R6 is next and needs a driver replacement).
 3. `docs/plans/receiver-takeover-plan.md` — done through T8 (ledger near the top; results sections at the end).
 4. `docs/plans/developer-mode-plan.md` and `docs/protocol/developer-mode-files.md` — the test tool.
 5. The conversation itself, if a decision's reason is unclear: `docs/sessions/2026-11-08-to-10-driver-takeover-developer-mode-remap.md`
@@ -44,8 +45,9 @@ the old chat. Read in this order:
   - Undo of a hand-set key mapping is always scoped:
     `hidutil property --matching '{"VendorID":0x1b1c,"ProductID":0x3a08,"PrimaryUsagePage":12}' --set '{"UserKeyMapping":[]}'`
     (never a bare `--set`: it writes to every keyboard).
-- **Next: R6** (paddles and SAX by their physical bits, GDHM v2) — needs a plan review and a driver replacement by the
-  takeover plan §7.1.
+- **R6 (remap step 2) in progress, phase S1**; see `docs/plans/remap-step2-plan.md` (ledger S0–S9; the owner's answers
+  are in its "S0 answers": "OK all", which includes "apprall" and a push after each phase). During R6 the progress
+  line counts that ledger. One driver replacement (24 → 25) comes in S7, by the takeover plan §7.1.
 - **Carried from T8:** Shadow play test with the Slipstream receiver *not* USB-forwarded by the Shadow client; a 30-flick
   variant of the `t8-latency` template; the owner's verdict on how last night's play on the driver felt (asked, not answered).
   Do **not** delete `PassthroughPadMapper` with the `xlateCore` key: it is the oracle and the fallback (see the remap plan).
