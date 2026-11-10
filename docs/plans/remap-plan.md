@@ -232,6 +232,15 @@ expectations (they must not check the mapper against itself). `requires` is step
 - `dev-run-compare.py` and `docs/protocol/developer-mode-files.md` gain the `requires` vocabulary, `expect.volume`,
   `expect.releases` and the volume values in the report.
 
+### R4 results so far (2026-11-10)
+
+`remap-g1-as-y`, owner's run of 14:08 with G1 → Y set from the Mapping menu: **all four steps pass on App and on Driver**
+(rest; G1 twice → Y; Y twice → Y; hold G1, add Y, let go of G1, keep Y — one pad report in the whole hold, so Y never
+flickered at the hand-over). Controller → pad p50: 0.43–0.55 ms on App, 0.09–0.18 ms on Driver. The first run (13:51)
+failed only the hold step, because Y was let go 0.25–0.45 s before the window ended; the judge now treats the owner
+letting go of everything after the hand-over as the end of the step (read from the receiver).
+Still to run: `remap-swap-a-b`; `gkeys-volume` (needs R0 and R3).
+
 ## Tests
 
 `ControlMappingTests` (old files load; round trip; pinned default JSON; stray key and unknown value tolerated and equal
