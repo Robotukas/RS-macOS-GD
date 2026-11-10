@@ -51,7 +51,7 @@ enum PassthroughPadMapper {
     }
 
     /// The `PadButtons` bit of a digital pad output (nil for LT / RT, which are analog). Total over `PadOutput`.
-    private static func buttons(of o: PadOutput) -> PadButtons? {
+    static func buttons(of o: PadOutput) -> PadButtons? {
         switch o {
         case .a: return .a
         case .b: return .b
