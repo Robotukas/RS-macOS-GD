@@ -136,6 +136,31 @@ enum XlateFixtures {
 
     // MARK: Random remaps (outputs)
 
+    /// The 23 remappable controls of remap step 1, in the order `ControlMapping.remappableIDs` had then. `randomOutputs`
+    /// draws from this list, not from the live one, so a seed keeps giving the same mapping when the model grows more
+    /// remappable controls (remap step 2 appends six). The S1 pins (`GDHMv1PinTests`) depend on it.
+    static let frozenRemappableIDs: [String] = [
+        "a", "b", "x", "y", "lb", "rb", "lt", "rt", "view", "menu", "l3", "r3",
+        "dpad_up", "dpad_right", "dpad_down", "dpad_left", "start", "profile", "g1", "g2", "g3", "g4", "g5",
+    ]
+
+    /// `m` plus stray learned bits on the two analog triggers, as an old learn can leave them: lt mostly 1 and rt mostly
+    /// 0x20 (the paddle outer right and SAX right table bits), sometimes another bit or both bits. Drawn from its own
+    /// generator, so no existing seeded mapping changes. A trigger's bits matter only while it is a source of a remapped
+    /// button; the encoder and the Swift mapper both read them then.
+    static func withStrayTriggerBits(_ m: ControlMapping, _ seed: UInt64) -> ControlMapping {
+        var rng = SplitMix64(seed: seed)
+        var out = m
+        for (id, usual) in [("lt", UInt16(1)), ("rt", UInt16(0x20))] where rng.chance(70) {
+            switch rng.int(0...9) {
+            case 0: out.physicalBits[id] = UInt16(1) << UInt16(rng.int(0...12))
+            case 1: out.physicalBits[id] = usual | (UInt16(1) << UInt16(rng.int(0...12)))
+            default: out.physicalBits[id] = usual
+            }
+        }
+        return out
+    }
+
     /// `m` plus a few random remaps, drawn from ITS OWN generator (`seed`), never from the stream `randomMapping` uses, so
     /// the existing seeded mappings stay what they were. With `expressibleOnly` (the default) a pick that GDHM v1 could not
     /// say (`MapBlobEncoder.remapLimit`) is dropped, so every result encodes; without it the result can be anything.
@@ -143,7 +168,7 @@ enum XlateFixtures {
     static func randomOutputs(_ m: ControlMapping, _ seed: UInt64, expressibleOnly: Bool = true) -> ControlMapping {
         var rng = SplitMix64(seed: seed)
         var out = m
-        let ids = ControlMapping.remappableIDs
+        let ids = frozenRemappableIDs
         func output(for id: String) -> ControlOutput {
             switch rng.int(0...9) {
             case 0: return .nothing
