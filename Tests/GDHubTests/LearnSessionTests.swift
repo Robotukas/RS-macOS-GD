@@ -71,4 +71,46 @@ final class LearnSessionTests: XCTestCase {
         XCTAssertEqual(session.currentControl?.id, "a")
         XCTAssertFalse(session.canGoBack)
     }
+
+    // MARK: Learn guard wiring
+
+    private func learn(_ id: String, mode: LearnSession.Mode, button: Int, mapping: inout ControlMapping) -> LearnSession {
+        let holder = mapping
+        var applied = mapping
+        let session = LearnSession(controls: [control(id, kind: .button)], mode: mode, baseline: .idle,
+                                   refusal: { LearnGuard.refusal(mapping: holder, assignment: $0) { $0.uppercased() } },
+                                   onAssign: { applied.apply($0) }, onFinish: {})
+        var pressed = GamepadFrame.idle
+        pressed.buttons = 1 << UInt32(button - 1)
+        let t0 = Date(timeIntervalSinceReferenceDate: 0)
+        session.feed(pressed, now: t0)
+        session.feed(.idle, now: t0.addingTimeInterval(0.2))
+        session.feed(.idle, now: t0.addingTimeInterval(0.8))
+        mapping = applied
+        return session
+    }
+
+    func testSingleRelearnOfG1OntoYIsRefusedWithTheExactMessage() {
+        var m = ControlMapping.default
+        let before = m
+        let s = learn("g1", mode: .single, button: 4, mapping: &m)
+        XCTAssertEqual(s.lastResult, "That is Y's button. To make G1 send Y use Mapping \u{2192} Y.")
+        XCTAssertEqual(m, before)
+        XCTAssertTrue(s.isFinished)
+    }
+
+    func testSingleRelearnOfAIsApplied() {
+        var m = ControlMapping.default
+        m.buttons["a"] = .button(7)
+        let s = learn("a", mode: .single, button: 1, mapping: &m)
+        XCTAssertEqual(m.buttons["a"], .button(1))
+        XCTAssertTrue(s.lastResult.hasPrefix("a:"), s.lastResult)
+    }
+
+    func testGuidedLearnIsNeverRefused() {
+        var m = ControlMapping.default
+        let s = learn("g1", mode: .guided, button: 4, mapping: &m)
+        XCTAssertEqual(m.buttons["g1"], .button(4))
+        XCTAssertFalse(s.lastResult.hasPrefix("That is"))
+    }
 }

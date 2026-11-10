@@ -48,7 +48,11 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     }
     @Published private(set) var eventLog: [LoggedEvent] = []
     @Published var mapping: ControlMapping {
-        didSet { if mapping != oldValue { mappingRevision &+= 1; store.save(mapping) } }
+        didSet {
+            guard mapping != oldValue else { return }
+            mappingRevision &+= 1
+            if !adoptingExternalMapping { store.save(mapping) }       // an adopted file is already on disk
+        }
     }
     /// Bumped on every mapping change; lets the virtual pad feed drop duplicate frames cheaply.
     private(set) var mappingRevision = 0
@@ -71,6 +75,9 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     @Published private(set) var dev: DevSession?
 
     private let store: MappingStore
+    private var mappingWatcher: MappingWatcher?
+    private var adoptingExternalMapping = false
+    private static let watcherQueue = DispatchQueue(label: "gdhub.gui.mapping-watch", qos: .utility)
     private var latestFrame = GamepadFrame()
     private var hasFrame = false
     private var lastReportAt: Date?
@@ -88,12 +95,14 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     init(layout: ControlLayout?, store: MappingStore = .envisionPro) {
         self.layout = layout
         self.store = store
-        self.mapping = store.load()
+        var startNotes: [String] = []
+        self.mapping = store.loadMovingUnreadableAside { startNotes.append($0) }
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.timerTick() } }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        for n in startNotes { log(n) }
         // Views observe the device for the row layout; re-publish only for the editor state that
         // changes it (edit mode and zoom), not for every selection or drag update.
         editorForward = editor.$isEditing.map { _ in () }.merge(with: editor.$zoom.map { _ in () })
@@ -102,6 +111,30 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     }
 
     deinit { timer?.invalidate() }
+
+    // MARK: External mapping changes
+
+    /// Watches the mapping file so an edit made outside this window (a script, another copy of the app) is adopted rather
+    /// than overwritten by the next save. Called once by the app after init; tests may call it with a temp store.
+    func startMappingWatch(debounce: TimeInterval = 0.05) {
+        guard mappingWatcher == nil else { return }
+        let w = MappingWatcher(store: store, initial: mapping, queue: Self.watcherQueue, debounce: debounce) { [weak self] m in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.adoptExternalMapping(m) } }
+        }
+        if w.start() { mappingWatcher = w }
+    }
+
+    func stopMappingWatch() { mappingWatcher?.stop(); mappingWatcher = nil }
+
+    /// On the main actor. The watcher read the file on its own queue, so by now this app may have saved something newer:
+    /// adopt only while the file still holds exactly what was delivered. An adopted mapping is not written back.
+    private func adoptExternalMapping(_ m: ControlMapping) {
+        guard m != mapping, (try? store.loadStrict()) == m else { return }
+        adoptingExternalMapping = true
+        mapping = m
+        adoptingExternalMapping = false
+        log("mapping file changed outside this window; adopted")
+    }
 
     // MARK: DeviceModule
 
@@ -316,6 +349,12 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         learn?.cancel()
         let session = LearnSession(
             controls: controls, mode: mode, baseline: latestFrame,
+            refusal: { [weak self] a in
+                guard let self else { return nil }
+                return LearnGuard.refusal(mapping: self.mapping, assignment: a) { id in
+                    self.layout?.control(id: id)?.label ?? id.uppercased()
+                }
+            },
             onAssign: { [weak self] a in self?.mapping.apply(a) },
             onFinish: { [weak self] in
                 // Defer so the session can finish updating itself first; keep the final

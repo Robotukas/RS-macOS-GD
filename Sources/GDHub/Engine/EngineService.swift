@@ -44,7 +44,12 @@ final class EngineService: @unchecked Sendable {
         config.xlateCore = VirtualPadSink.runtimeXlateCore()
         let padSink = VirtualPadSink(queue: vhidQueue, transport: client, config: config)
         sink = padSink
-        let mapping = store.load()
+        let mapping: ControlMapping
+        do { mapping = try store.loadStrict() } catch {
+            // Lenient on purpose (the pad must work); the unreadable file is left alone for the GUI to move aside.
+            EngineService.log.error("mapping file cannot be read (\(String(describing: error), privacy: .public)); running with defaults")
+            mapping = .default
+        }
         core = EngineCore(queue: vhidQueue, dext: client, sink: padSink, scheduler: DispatchSinkScheduler(queue: vhidQueue),
                           mapping: mapping, options: options)
         presence = ControllerPresence(queue: vhidQueue)

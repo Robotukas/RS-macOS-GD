@@ -23,7 +23,7 @@ final class EngineIsolationTests: XCTestCase {
         for rel in ["Output/VirtualHID/DextClient.swift", "Output/VirtualHID/DextControlling.swift",
                     "Output/VirtualHID/DextProtocol.swift", "Output/VirtualHID/DextStatusPoller.swift",
                     "Output/VirtualHID/HIDReportSizer.swift", "Mapping/ControlMapping.swift", "Mapping/MappingStore.swift",
-                    "Devices/EnvisionPro/EnvisionProReport.swift", "Shared/ControllerStatus.swift"] {
+                    "Devices/EnvisionPro/EnvisionProReport.swift", "Shared/ControllerStatus.swift", "Shared/GDHubID.swift"] {
             urls.append(root.appendingPathComponent(rel))
         }
         return urls

@@ -6,6 +6,17 @@ struct LearnProgress: Equatable {
     var text: String { "\(current) of \(total)" }
 }
 
+/// The learn guard's decision, pure so it can be tested without a session (remap plan, "Learn guard").
+enum LearnGuard {
+    /// The result line when `assignment` would take another control's binding, else nil. `label` maps a control id to its
+    /// layout label.
+    static func refusal(mapping: ControlMapping, assignment: LearnAssignment, label: (String) -> String) -> String? {
+        guard let owner = mapping.learnConflict(assignment) else { return nil }
+        let o = label(owner), c = label(assignment.controlId)
+        return "That is \(o)'s button. To make \(c) send \(o) use Mapping \u{2192} \(o)."
+    }
+}
+
 /// Learn algorithm: docs/ARCHITECTURE.md. Fed every frame by the device.
 @MainActor
 final class LearnSession: ObservableObject {
@@ -54,6 +65,8 @@ final class LearnSession: ObservableObject {
     private var stepIndex = 0
     private let onAssign: (LearnAssignment) -> Void
     private let onFinish: () -> Void
+    /// Single-control learn only: returns a result line when the assignment must not be applied (see `LearnGuard`).
+    private let refusal: ((LearnAssignment) -> String?)?
 
     private var baseline: GamepadFrame
     private var lastFrame: GamepadFrame
@@ -69,8 +82,10 @@ final class LearnSession: ObservableObject {
     private var axisMax: [String: Int] = [:]
 
     init(controls: [ControlLayout.Control], mode: Mode, baseline: GamepadFrame,
+         refusal: ((LearnAssignment) -> String?)? = nil,
          onAssign: @escaping (LearnAssignment) -> Void, onFinish: @escaping () -> Void) {
         self.mode = mode
+        self.refusal = mode == .single ? refusal : nil          // guided "Learn all" is never refused
         self.baseline = baseline
         self.lastFrame = baseline
         self.onAssign = onAssign
@@ -237,7 +252,9 @@ final class LearnSession: ObservableObject {
         } else {
             lastResult = "\(label): nothing usable detected"
         }
-        if assignment.binding != nil || assignment.physicalBits != 0 || assignment.stick != nil {
+        if let line = refusal?(assignment) {
+            lastResult = line
+        } else if assignment.binding != nil || assignment.physicalBits != 0 || assignment.stick != nil {
             onAssign(assignment)
         }
         advance()

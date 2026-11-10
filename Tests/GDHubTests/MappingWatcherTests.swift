@@ -58,4 +58,32 @@ final class MappingWatcherTests: XCTestCase {
         XCTAssertEqual(count(), 1)
         w.stop()
     }
+
+    func testOutputsOnlyChangeDelivers() {
+        let w = MappingWatcher(store: store, initial: .default, queue: queue, debounce: 0.03) { [self] m in
+            lock.lock(); delivered.append(m); lock.unlock()
+        }
+        XCTAssertTrue(w.start())
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "g1")
+        store.save(m)
+        XCTAssertTrue(waitFor(count: 1))
+        XCTAssertEqual(delivered.last?.outputs["g1"], .pad(.y))
+        w.stop()
+    }
+
+    func testUndecodableFileDeliversNothingAndALaterGoodFileDelivers() throws {
+        store.save(mapping(9))
+        let w = MappingWatcher(store: store, initial: mapping(9), queue: queue, debounce: 0.03) { [self] m in
+            lock.lock(); delivered.append(m); lock.unlock()
+        }
+        XCTAssertTrue(w.start())
+        try Data("{ not json".utf8).write(to: store.url, options: .atomic)
+        Thread.sleep(forTimeInterval: 0.4)
+        XCTAssertEqual(count(), 0, "a half-written or broken file keeps the last good mapping in force")
+        store.save(mapping(10))
+        XCTAssertTrue(waitFor(count: 1))
+        XCTAssertEqual(delivered.last, mapping(10))
+        w.stop()
+    }
 }

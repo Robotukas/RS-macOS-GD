@@ -6,7 +6,7 @@ import os
 /// loads the file on `queue` (never on the pad's queue: file I/O stays off the hot path) and hands over a mapping that
 /// differs from the last one delivered.
 final class MappingWatcher: @unchecked Sendable {
-    private static let log = Logger(subsystem: "com.interlinked.gdhub", category: "engine")
+    private static let log = Logger(subsystem: GDHubID.subsystem, category: "engine")
     private let store: MappingStore
     private let queue: DispatchQueue
     private let debounce: TimeInterval
@@ -56,7 +56,12 @@ final class MappingWatcher: @unchecked Sendable {
 
     private func reload() {
         guard FileManager.default.fileExists(atPath: store.url.path) else { return }
-        let m = store.load()
+        let m: ControlMapping
+        do { m = try store.loadStrict() } catch {
+            // Keep the last good mapping in force; the next good write delivers.
+            Self.log.error("mapping file changed but cannot be read (\(String(describing: error), privacy: .public)); keeping the last good mapping")
+            return
+        }
         guard m != last else {
             // By design: a rewrite of identical content (same mapping, however the bytes were written) changes nothing and is not
             // reported at the default log level. Debug level, so a check with `log stream --level debug` can see it happened.

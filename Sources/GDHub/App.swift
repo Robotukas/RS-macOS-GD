@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
         driver = DriverManager(mode: mode)
         let layout = ControlLayout.load()
         envision = EnvisionProDevice(layout: layout)
+        envision.startMappingWatch()
         modules = [envision]
         monitor = HIDMonitor(matchList: modules.flatMap { $0.matchList })
 
