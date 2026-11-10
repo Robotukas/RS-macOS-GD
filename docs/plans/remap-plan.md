@@ -18,8 +18,8 @@ volume"; "Of course light up any linked buttons"; every hands-on test is a Devel
 | R0b | Mockup v6 (what changed since v5) and the owner's OK on "Changes from mockup v5" below | No | Answers recorded in this file | ✅ done 2026-11-10: "OK all" (mockup `remap-buttons-v6.html`) |
 | R1 | Model and translators: `outputs` in the mapping, mapper OR, encoder limits, strict reload, learn guard, Developer mode under remaps | No | Listed tests green; factory blob, checked-in header, default JSON and `mappingHash` byte-identical; `swift test` + Python green | ✅ done 2026-11-10 (813 tests; independent review folded in) |
 | R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | ✅ done 2026-11-10 (909 tests; the owner checked the screen: linked lighting made two-way, labels kept in place) |
-| R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | ▶ current |
-| R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | pending (`gkeys-volume` needs R3) |
+| R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | ✅ done 2026-11-10 (see "R3 result"); the wake-after-engine-start case is still to be seen in the engine's log |
+| R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | ▶ current: `remap-g1-as-y` and `remap-swap-a-b` pass on both paths; `gkeys-volume` to build |
 | R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | pending |
 | R6 | Step 2: paddles and SAX by their physical bits, echo hidden; GDHM v2 (3+ sources, button → trigger, two triggers) | Yes | — | pending |
 | R7 | Step 3: keyboard keys, mouse buttons, macros in the same menu (with takeover T11) | Yes | — | pending |
@@ -216,6 +216,16 @@ mapping only the mapped keys' usages to 0 — G2 → 0xC000000EA, G3 → 0xC0000
     that is not the writer neither sets nor clears. Cleared on SIGTERM / quit.
   - First step of R3: G3 only, installed with `--same-build`, engine as the writer, checked with the template and the
     log. If the engine is refused, the owner is asked before anything is granted.
+- **R3 result (2026-11-10): pass after one fix.** First live check (engine build of 14:28, Driver path, G3 → RB set in
+  Mapping at 14:44): G3 still changed the volume. The engine had reloaded the mapping but logged nothing under
+  `volume-keys`: it found no service. Cause: an event-system simple client that is not scheduled keeps the service list
+  it had when it was created; the engine's client was made while the controller slept. Measured with a scratch program
+  across a wake: the client made before the wake listed 148 services and no match, also 3 s later; a new client listed
+  149 and one match. The service itself is the same on the Driver path (page 12, the receiver's IDs). Fix: a fresh
+  client for every look-up. After the install the engine logged "switched off [0xC000000E9] (start); read-back
+  matches", the property on the service holds that one pair, and the owner confirmed: G3 leaves the volume alone, G4
+  still mutes and unmutes. Not yet seen in the engine's log: the apply after a wake that follows the engine's start
+  (the case that failed); `gkeys-volume` after a sleep covers it.
 - `scripts/receiver-check.sh` adds the filter's live map (`hidutil … --get FilterDebug`); the plain property read-back is
   labelled "as last set (not proof)".
 
@@ -247,7 +257,7 @@ expectations (they must not check the mapper against itself). `requires` is step
 flickered at the hand-over). Controller → pad p50: 0.43–0.55 ms on App, 0.09–0.18 ms on Driver. The first run (13:51)
 failed only the hold step, because Y was let go 0.25–0.45 s before the window ended; the judge now treats the owner
 letting go of everything after the hand-over as the end of the step (read from the receiver).
-Still to run: `remap-swap-a-b`; `gkeys-volume` (needs R0 and R3).
+`remap-swap-a-b`: passes on App and on Driver (owner's run, 2026-11-10). Still to run: `gkeys-volume`.
 
 ## Tests
 
