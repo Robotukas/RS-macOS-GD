@@ -2,7 +2,7 @@
 
 Status: **plan v2 (2026-11-10)** — v1 plus the plan review of 2026-11-10 (seven reviewers against the code, every finding
 challenged by a second agent: 98 confirmed, 1 refuted; 5 more from a completeness pass, marked ‡ below, not second-checked).
-Not approved for building yet: see phase R0b.
+Approved for building: the owner answered "OK all" to the nine changes on 2026-11-10 (mockup v6).
 Mockup: `docs/mockups/remap-buttons.html` v5, approved 2026-11-09 with decisions
 **A** build order (step 1 ordinary buttons + G1–G5 + Start + Profile + volume off; step 2 paddles and SAX; step 3 keyboard,
 mouse, macros), **B** linked buttons light up in the app, **C** a click in the live view no longer starts a learn.
@@ -15,9 +15,9 @@ volume"; "Of course light up any linked buttons"; every hands-on test is a Devel
 | Phase | Title | Driver replacement? | Exit | Status |
 |---|---|---|---|---|
 | R0 | Volume-key spike, run as the template `volume-spike` (owner presses G3 and G2). Gate for R3 and for `gkeys-volume` only | No | Result (pass / which half failed) written here | ▶ current — needs the owner |
-| R0b | Mockup v6 (what changed since v5) and the owner's OK on "Changes from mockup v5" below | No | Answers recorded in this file | pending |
-| R1 | Model and translators: `outputs` in the mapping, mapper OR, encoder limits, strict reload, learn guard, Developer mode under remaps | No | Listed tests green; factory blob, checked-in header, default JSON and `mappingHash` byte-identical; `swift test` + Python green | pending (the parts no decision touches may start before R0b) |
-| R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | pending — after R0b |
+| R0b | Mockup v6 (what changed since v5) and the owner's OK on "Changes from mockup v5" below | No | Answers recorded in this file | ✅ done 2026-11-10: "OK all" (mockup `remap-buttons-v6.html`) |
+| R1 | Model and translators: `outputs` in the mapping, mapper OR, encoder limits, strict reload, learn guard, Developer mode under remaps | No | Listed tests green; factory blob, checked-in header, default JSON and `mappingHash` byte-identical; `swift test` + Python green | ▶ in progress (pin tests committed) |
+| R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | pending |
 | R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | pending — needs R0 pass |
 | R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | pending (`gkeys-volume` needs R3) |
 | R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | pending |
@@ -236,9 +236,9 @@ new skips un-remapped; one test per R4 template; `expect.volume` and `expect.rel
 `RemapLightingTests`, `ModeGateTests` (truth table, display-only refused), `visibleColumns` cases ·
 `ConsumerKeyMuteTests` · `EngineIsolationTests` (new files listed) · `DevRunReportTests` (pinned hashes).
 
-## Changes from mockup v5 (need the owner's OK — R0b)
+## Changes from mockup v5 (owner: "OK all", 2026-11-10)
 
-Mockup v6 shows each of these, with a "changed since v5" box; kept in `docs/mockups/` and sent as an HTML file.
+Mockup v6 (`docs/mockups/remap-buttons-v6.html`) shows each of these in a "changed since v5" box.
 
 1. G2–G4 show "Volume … (built in)" as their default; **Nothing is a real pick that silences the key** (v5: Nothing was
    the default).
