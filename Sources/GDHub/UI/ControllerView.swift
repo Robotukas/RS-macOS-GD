@@ -1315,27 +1315,33 @@ private struct LayoutToolbar: View {
                 Text("Drag labels, or drag a box on empty space to select several (Shift adds); selected labels move together. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Leader menu sets shape and corner direction; drag the yellow square to move where the line meets the label and the green dot to move where it meets the control. Mouse wheel zooms toward the pointer.")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else {
+                // The owner's rule (2026-11-10): a mode that cannot be used right now is not shown at all, instead of a
+                // greyed button that does not say why.
                 let gate = device.modeGate
-                Button("Edit layout") { device.beginEditingLayout() }
-                    .disabled(!gate.canBeginEditing)
-                Button(device.isRemapping ? "Mapping ✓ Done" : "Mapping") {
-                    if device.isRemapping { device.endRemapping() } else { _ = device.beginRemapping() }
+                if gate.canBeginEditing {
+                    Button("Edit layout") { device.beginEditingLayout() }
                 }
-                .disabled(!gate.mappingButtonEnabled)
-                .help("Choose what a button sends: click a label or a button")
-                .accessibilityIdentifier("toolbar.mapping")
-                Button("Learn all (guided)") { device.startGuidedLearn() }
-                    .disabled(!gate.learnAllEnabled)
-                Button(device.dev == nil ? "Developer" : "Developer ✓ Done") {
-                    if let dev = device.dev {
-                        if dev.isRunning { dev.stop() }
-                        device.endDeveloper()
-                    } else {
-                        _ = device.beginDeveloper()
+                if gate.mappingButtonEnabled {
+                    Button(device.isRemapping ? "Mapping ✓ Done" : "Mapping") {
+                        if device.isRemapping { device.endRemapping() } else { _ = device.beginRemapping() }
                     }
+                    .help("Choose what a button sends: click a label or a button")
+                    .accessibilityIdentifier("toolbar.mapping")
                 }
-                .disabled(device.dev == nil && !gate.canBeginDeveloper)
-                .help("Record what the virtual pad sends while the app tells you what to press")
+                if gate.learnAllEnabled {
+                    Button("Learn all (guided)") { device.startGuidedLearn() }
+                }
+                if device.dev != nil || gate.canBeginDeveloper {
+                    Button(device.dev == nil ? "Developer" : "Developer ✓ Done") {
+                        if let dev = device.dev {
+                            if dev.isRunning { dev.stop() }
+                            device.endDeveloper()
+                        } else {
+                            _ = device.beginDeveloper()
+                        }
+                    }
+                    .help("Record what the virtual pad sends while the app tells you what to press")
+                }
                 if device.isRemapping {
                     Button("Reset all remaps") { device.resetAllRemaps() }
                         .disabled(device.mapping.outputs.isEmpty)
