@@ -14,11 +14,11 @@ volume"; "Of course light up any linked buttons"; every hands-on test is a Devel
 
 | Phase | Title | Driver replacement? | Exit | Status |
 |---|---|---|---|---|
-| R0 | Volume-key spike, run as the template `volume-spike` (owner presses G3 and G2). Gate for R3 and for `gkeys-volume` only | No | Result (pass / which half failed) written here | waiting for the owner (controller on); template and scratch script ready |
+| R0 | Volume-key spike, run as the template `volume-spike` (owner presses G3 and G2). Gate for R3 and for `gkeys-volume` only | No | Result (pass / which half failed) written here | ✅ **pass, both halves**, 2026-11-10 14:15–14:18 (see "R0 result") |
 | R0b | Mockup v6 (what changed since v5) and the owner's OK on "Changes from mockup v5" below | No | Answers recorded in this file | ✅ done 2026-11-10: "OK all" (mockup `remap-buttons-v6.html`) |
 | R1 | Model and translators: `outputs` in the mapping, mapper OR, encoder limits, strict reload, learn guard, Developer mode under remaps | No | Listed tests green; factory blob, checked-in header, default JSON and `mappingHash` byte-identical; `swift test` + Python green | ✅ done 2026-11-10 (813 tests; independent review folded in) |
 | R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | ✅ done 2026-11-10 (909 tests; the owner checked the screen: linked lighting made two-way, labels kept in place) |
-| R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | pending — needs R0 pass |
+| R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | ▶ current |
 | R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | pending (`gkeys-volume` needs R3) |
 | R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | pending |
 | R6 | Step 2: paddles and SAX by their physical bits, echo hidden; GDHM v2 (3+ sources, button → trigger, two triggers) | Yes | — | pending |
@@ -194,6 +194,14 @@ mapping only the mapped keys' usages to 0 — G2 → 0xC000000EA, G3 → 0xC0000
   to every keyboard on the Mac.
   R0 does not prove: the engine process as writer, mute and volume-down, re-apply after the service is re-created.
   R3 and R4 cover those.
+- **R0 result (2026-11-10): pass.** Output: MacBook Pro Speakers, 37.5 % at the start, read from CoreAudio (the
+  AppleScript `output volume` returned "missing value" on this Mac and is not usable). Template `volume-spike`, run twice.
+  (a) `hidutil`, G3 → 0: three G3 presses, no volume change; one G2 press, 37.5 → 31.25 %.
+  (b) the unentitled scratch program making the engine's calls (`IOHIDServiceClientSetProperty` returned true, the
+  property read back, no "Insufficient permissions" in the log): G3 presses, no change; G2, 31.25 → 25 → 18.75 % (two
+  steps down, both decreases — G2 was pressed or held a second time after the step ended). No increase in either half.
+  The pad sent nothing for either key. Cleared afterwards with the scoped call and read back empty.
+  So R3 is built as planned, with no driver change and no extra permission.
 - **If R0 fails: stop and ask the owner.** A mapped G2–G4 that still changes the volume is never shipped. Until the owner
   answers, G2–G4 are locked in step 1 (menu note "Remapping G2–G4 comes with the next driver update", 20 remappable
   controls). Options to offer: an interface-4 filter in the driver (one driver replacement; the battery / sleep-timer
