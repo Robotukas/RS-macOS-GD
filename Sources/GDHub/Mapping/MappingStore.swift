@@ -12,6 +12,10 @@ struct MappingStore {
         if let dir = ProcessInfo.processInfo.environment["GDHUB_SUPPORT_DIR"], !dir.isEmpty {
             return URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent(fileName)
         }
+        // Under the unit tests nothing may ever land in the owner's real folder (a test that began a layout edit left a
+        // pre-edit snapshot there, and the next app start replaced the owner's layout with it): one throw-away folder
+        // per test process.
+        if let dir = testSupportDirectory { return dir.appendingPathComponent(fileName) }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("GDHub", isDirectory: true).appendingPathComponent(fileName)
@@ -20,6 +24,14 @@ struct MappingStore {
     private static let log = Logger(subsystem: GDHubID.subsystem, category: "mapping")
 
     /// Lenient read for the engine: a missing or undecodable file gives defaults (the failure is logged at error level).
+    /// Non-nil only inside an XCTest process: a temporary folder that stands in for Application Support/GDHub.
+    static let testSupportDirectory: URL? = {
+        guard NSClassFromString("XCTestCase") != nil else { return nil }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gdhub-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
     func load() -> ControlMapping {
         do {
             return try loadStrict()

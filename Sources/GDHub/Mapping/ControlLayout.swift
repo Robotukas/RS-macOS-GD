@@ -180,9 +180,9 @@ struct ControlLayout: Codable {
     // MARK: User layout (edit mode)
 
     static var userLayoutURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("GDHub", isDirectory: true)
-        return dir.appendingPathComponent("envision-pro-layout.json")
+        // Same folder rule as the mapping: `GDHUB_SUPPORT_DIR`, a throw-away folder under the unit tests, else
+        // ~/Library/Application Support/GDHub.
+        MappingStore.defaultURL(fileName: "envision-pro-layout.json")
     }
 
     /// The user's edited layout if one was saved, otherwise the bundled one.

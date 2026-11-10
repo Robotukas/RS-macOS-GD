@@ -139,7 +139,7 @@ final class InputPathMenuTests: XCTestCase {
         XCTAssertEqual(store.read(), report())
         XCTAssertEqual(store.url.deletingLastPathComponent().lastPathComponent, "state",
                        "a sub-directory, so the engine's MappingWatcher on the parent does not wake for its own status writes")
-        XCTAssertTrue(TapStatusStore.standard.url.path.hasSuffix("/GDHub/state/engine-tap-status.json") || ProcessInfo.processInfo.environment["GDHUB_SUPPORT_DIR"] != nil)
+        XCTAssertTrue(TapStatusStore.standard.url.path.hasSuffix("/state/engine-tap-status.json"))   // the folder itself is a throw-away one under tests
     }
 
     func testWatcherDeliversAChangeOnceAndNotAnIdenticalRewrite() throws {
