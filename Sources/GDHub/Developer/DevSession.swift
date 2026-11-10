@@ -247,8 +247,9 @@ final class DevSession: ObservableObject {
         if template.paths != nil, driver.mode == .inApp {
             return "This template switches who drives the controller, which needs the background engine; in-app mode has none."
         }
-        if device?.layout == nil { return "No controller layout loaded" }
-        return nil
+        guard let device, let layout = device.layout else { return "No controller layout loaded" }
+        // Every step would be skipped for the mapping: nothing to record, so say what to set first.
+        return DevRequirementCheck.startBlock(template: template, mapping: device.mapping, layout: layout)
     }
 
     func restartEngine() { driver.restartEngine() }

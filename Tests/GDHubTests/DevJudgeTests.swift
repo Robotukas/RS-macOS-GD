@@ -39,10 +39,11 @@ final class DevJudgeTests: XCTestCase {
 
     private func run(_ step: DevStep, expected: DevExpectedItems = DevExpectedItems(), entry: PadState? = PadState(),
                      rig: Rig, windowMs: Double = 5000, releaseMs: Double = 500, matched: Int = 1,
-                     reference: DevJudge.Reference? = nil, rules: DevJudge.Rules = .init(), handOvers: Int = 0) -> DevJudge.Outcome {
+                     reference: DevJudge.Reference? = nil, rules: DevJudge.Rules = .init(), handOvers: Int = 0,
+                     activity: [DevJudge.ControlSample] = []) -> DevJudge.Outcome {
         let input = DevJudge.Input(step: step, expected: expected, entryState: entry.map(decoded), reports: rig.reports,
                                    windowStartNs: Rig.ns(0), windowEndNs: Rig.ns(windowMs), endNs: Rig.ns(windowMs + releaseMs),
-                                   matchedCount: matched, reference: reference, handOvers: handOvers)
+                                   matchedCount: matched, reference: reference, handOvers: handOvers, controlActivity: activity)
         return DevJudge.judge(input, rules: rules)
     }
 
@@ -468,6 +469,96 @@ final class DevJudgeTests: XCTestCase {
         var west = Rig()
         west.set(state { $0.buttons = [.dpadLeft] }, at: 100)
         assertPass(run(hat, expected: DevExpectedItems(hat: "W"), rig: west, windowMs: 5000))
+    }
+
+    // MARK: held with expect.releases (remap R4)
+
+    /// "Hold G1, then also hold Y, let go of G1, keep Y held": G1 is sent to Y, so the pad's Y comes up with G1.
+    private var g1ThenY: DevStep {
+        var s = DevStep(id: "hold-g1-then-y", kind: .held, controls: ["g1", "y"], title: "t", seconds: 5)
+        var e = DevExpect(); e.item = "Y"; e.releases = ["g1"]
+        s.expect = e
+        return s
+    }
+    private func sample(_ ms: Double, _ active: Set<String>) -> DevJudge.ControlSample { .init(tNs: Rig.ns(ms), active: active) }
+    /// G1 down from 0 to `letGoAt` (nil = never let go), Y down on the physical key from 800 to the end.
+    private func g1Frames(letGoAt: Double?) -> [DevJudge.ControlSample] {
+        var out: [DevJudge.ControlSample] = []
+        var t = 0.0
+        while t <= 5000 {
+            var a: Set<String> = []
+            if letGoAt.map({ t < $0 }) ?? true { a.insert("g1") }
+            if t >= 800 { a.insert("y") }
+            out.append(sample(t, a))
+            t += 100
+        }
+        return out
+    }
+    private var yHeld: Rig {
+        var rig = Rig()
+        rig.set(state { $0.buttons = [.y] }, at: 20)            // G1 reaches the pad as Y, then the real Y joins and G1 goes
+        return rig
+    }
+
+    func testHeldReleasesPassesWhenG1IsLetGoWhileYStaysHeld() {
+        let o = run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: yHeld, activity: g1Frames(letGoAt: 2000))
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["held.drops"], 0)
+        XCTAssertEqual(o.metrics.values["held.released"], 1)
+        XCTAssertTrue(o.metrics.detail.contains("G1 let go while Y stayed held"), o.metrics.detail)
+    }
+
+    func testHeldReleasesFailsWhenG1IsNeverLetGo() {
+        let o = run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: yHeld, activity: g1Frames(letGoAt: nil))
+        assertFail(o, containing: "G1 was never let go while Y stayed held")
+        XCTAssertEqual(o.metrics.values["held.drops"], 0, "Y itself never dropped")
+        XCTAssertEqual(o.metrics.values["held.released"], 0)
+    }
+
+    func testHeldReleasesFailsWhenG1WasNeverSeenPressed() {
+        let none = (0...50).map { sample(Double($0) * 100, $0 >= 8 ? ["y"] : []) }
+        assertFail(run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: yHeld, activity: none),
+                   containing: "G1 was never seen pressed while Y stayed held")
+    }
+
+    func testHeldReleasesStillFailsWhenYDropsAndSaysSoToo() {
+        var rig = Rig()
+        rig.set(state { $0.buttons = [.y] }, at: 20)
+        rig.set(PadState(), at: 3000)                           // Y falls out, G1 was let go at 2000
+        let o = run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: rig, activity: g1Frames(letGoAt: 2000))
+        assertFail(o, containing: "Y did not stay held: drops 1")
+        XCTAssertEqual(o.metrics.values["held.released"], 1)
+    }
+
+    func testHeldReleasesCountsOnlyALetGoWhileTheItemIsHeldAndInsideTheWindow() {
+        // Y reaches the pad only at 1000; G1 was let go at 500, before that: not a hand-over.
+        var late = Rig()
+        late.set(state { $0.buttons = [.y] }, at: 1000)
+        assertFail(run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: late, activity: g1Frames(letGoAt: 500)),
+                   containing: "G1 was never let go")
+        // Let go after the window ends (in the release tail): the window is what is judged.
+        let tail = (0...55).map { sample(Double($0) * 100, $0 * 100 < 5200 ? ["g1", "y"] : ["y"]) }
+        assertFail(run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: yHeld, activity: tail),
+                   containing: "G1 was never let go while Y stayed held")
+        // A second press after a let-go is fine; only one let-go is needed.
+        var twice = g1Frames(letGoAt: 2000)
+        twice += (31...40).map { sample(Double($0) * 100, ["g1", "y"]) }
+        assertPass(run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: yHeld, activity: twice))
+    }
+
+    func testHeldReleasesWithoutReceiverFramesCannotBeJudged() {
+        let o = run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: yHeld)
+        guard case .inconclusive(let why) = o.verdict else { return XCTFail("\(o.verdict)") }
+        XCTAssertTrue(why.contains("G1"), why)
+        // A held step without releases is unchanged by the samples.
+        var plain = g1ThenY
+        plain.expect?.releases = nil
+        assertPass(run(plain, expected: DevExpectedItems(buttons: ["Y"]), rig: yHeld))
+    }
+
+    func testControlWordIsTheOwnersWord() {
+        XCTAssertEqual(DevJudge.controlWord("g1"), "G1")
+        XCTAssertEqual(DevJudge.controlWord("paddle_outer_left"), "paddle outer left")
     }
 
     func testHeldInconclusiveCases() {

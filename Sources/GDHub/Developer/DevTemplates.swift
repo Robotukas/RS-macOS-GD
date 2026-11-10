@@ -153,7 +153,77 @@ enum DevBuiltins {
                 + "profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
             steps: echoIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
         echo.paths = ["engine", "driver"]
-        return [full, sticks, gkeys, echo, t7RTHoldToggle(), t8Latency(layout: layout)]
+        return [full, sticks, gkeys, echo, remapG1AsY(), remapSwapAB(), t7RTHoldToggle(), t8Latency(layout: layout)]
+    }
+
+    // MARK: Remap checks
+
+    /// A step that only counts when the mapping has these picks (the runner never sets a mapping; the owner does, in Mapping).
+    private static func requiring(_ mapping: [String: String], _ step: DevStep) -> DevStep {
+        var s = step
+        var r = DevRequires()
+        r.mapping = mapping
+        s.requires = r
+        return s
+    }
+
+    /// A digital step whose expectation is written out, so the template does not check the mapper against itself.
+    private static func pressing(_ id: String, label: String, expect buttons: [String], detail: String) -> DevStep {
+        var s = DevStep(id: id, kind: .digital, controls: [id], title: "Press \(label) twice", detail: detail, seconds: 3)
+        var e = DevExpect()
+        e.items = DevExpectedItems(buttons: buttons)
+        s.expect = e
+        return s
+    }
+
+    /// G1 sent to the pad's Y (remap R4): the key presses Y, the real Y still presses Y, and handing Y from one to the
+    /// other leaves it held.
+    static func remapG1AsY() -> DevTemplate {
+        let need = ["g1": "y"]
+        var hold = DevStep(id: "hold-g1-then-y", kind: .held, controls: ["g1", "y"],
+                           title: "Hold G1, then also hold Y, let go of G1, keep Y held",
+                           detail: "Press and hold G1. While it is held, also press and hold Y. Then let go of G1 and keep holding Y until the screen says \"Let go now\". The pad's Y must stay down the whole time.",
+                           seconds: 6)
+        var holdExpect = DevExpect()
+        holdExpect.item = "Y"
+        holdExpect.releases = ["g1"]
+        hold.expect = holdExpect
+        return DevTemplate(
+            id: "remap-g1-as-y", title: "Remap check: G1 sent to Y (App, then Driver)",
+            notes: "Use it after changing anything that remaps keys: the mapper, the driver's map or Mapping itself. Before you start: "
+                + "Mapping → G1 → Y. Afterwards: Mapping → Reset all remaps. Pressing G1 must show Y on the pad, pressing Y must "
+                + "still show Y, and with both down the pad's Y must stay down when G1 is let go. The expectations are written out in "
+                + "the template on purpose, so it does not check the mapper against itself. Runs on the App path and then on Driver "
+                + "LIVE; if the driver cannot express the mapping, the Driver pass says so instead of passing.",
+            paths: ["engine", "driver"],
+            steps: [
+                requiring(need, restStep()),
+                requiring(need, pressing("g1", label: "G1", expect: ["Y"],
+                                         detail: "Press G1, let go, press it again, let go. With G1 sent to Y the pad shows Y.")),
+                requiring(need, pressing("y", label: "Y", expect: ["Y"],
+                                         detail: "Press Y, let go, press it again, let go. Y still shows Y on the pad.")),
+                requiring(need, hold),
+            ])
+    }
+
+    /// A and B swapped (remap R4): the two keys cross over on the pad, and a swap left on breaks games, so the notes end
+    /// with the reset.
+    static func remapSwapAB() -> DevTemplate {
+        let need = ["a": "b", "b": "a"]
+        return DevTemplate(
+            id: "remap-swap-a-b", title: "Remap check: A and B swapped (App, then Driver)",
+            notes: "Use it after changing anything that remaps keys. Before you start: Mapping → A → B, then Mapping → B → A. "
+                + "Afterwards: Mapping → Reset all remaps (an A/B swap left on breaks games). Pressing A must show B on the pad "
+                + "and pressing B must show A. The expectations are written out in the template on purpose, so it does not check the "
+                + "mapper against itself. Runs on the App path and then on Driver LIVE.",
+            paths: ["engine", "driver"],
+            steps: [
+                requiring(need, restStep()),
+                requiring(need, pressing("a", label: "A", expect: ["B"],
+                                         detail: "Press A, let go, press it again, let go. With A and B swapped the pad shows B.")),
+                requiring(need, pressing("b", label: "B", expect: ["A"],
+                                         detail: "Press B, let go, press it again, let go. With A and B swapped the pad shows A.")),
+            ])
     }
 
     /// RT held while the app hands the controller between Driver and App (the T7 driver check the stopwatch kept

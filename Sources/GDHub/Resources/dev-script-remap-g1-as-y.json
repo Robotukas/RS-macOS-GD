@@ -1,0 +1,96 @@
+{
+  "id" : "remap-g1-as-y",
+  "notes" : "Use it after changing anything that remaps keys: the mapper, the driver's map or Mapping itself. Before you start: Mapping → G1 → Y. Afterwards: Mapping → Reset all remaps. Pressing G1 must show Y on the pad, pressing Y must still show Y, and with both down the pad's Y must stay down when G1 is let go. The expectations are written out in the template on purpose, so it does not check the mapper against itself. Runs on the App path and then on Driver LIVE; if the driver cannot express the mapping, the Driver pass says so instead of passing.",
+  "paths" : [
+    "engine",
+    "driver"
+  ],
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+
+      ],
+      "detail" : "Put the controller down and let go of every stick, trigger and button. The pad has to stay completely still.",
+      "id" : "rest",
+      "kind" : "rest",
+      "requires" : {
+        "mapping" : {
+          "g1" : "y"
+        }
+      },
+      "seconds" : 3,
+      "title" : "Hands off everything"
+    },
+    {
+      "controls" : [
+        "g1"
+      ],
+      "detail" : "Press G1, let go, press it again, let go. With G1 sent to Y the pad shows Y.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "Y"
+          ],
+          "guide" : false
+        }
+      },
+      "id" : "g1",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "g1" : "y"
+        }
+      },
+      "seconds" : 3,
+      "title" : "Press G1 twice"
+    },
+    {
+      "controls" : [
+        "y"
+      ],
+      "detail" : "Press Y, let go, press it again, let go. Y still shows Y on the pad.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "Y"
+          ],
+          "guide" : false
+        }
+      },
+      "id" : "y",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "g1" : "y"
+        }
+      },
+      "seconds" : 3,
+      "title" : "Press Y twice"
+    },
+    {
+      "controls" : [
+        "g1",
+        "y"
+      ],
+      "detail" : "Press and hold G1. While it is held, also press and hold Y. Then let go of G1 and keep holding Y until the screen says \"Let go now\". The pad's Y must stay down the whole time.",
+      "expect" : {
+        "item" : "Y",
+        "releases" : [
+          "g1"
+        ]
+      },
+      "id" : "hold-g1-then-y",
+      "kind" : "held",
+      "requires" : {
+        "mapping" : {
+          "g1" : "y"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Hold G1, then also hold Y, let go of G1, keep Y held"
+    }
+  ],
+  "title" : "Remap check: G1 sent to Y (App, then Driver)",
+  "version" : 1
+}

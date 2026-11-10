@@ -115,10 +115,14 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(errors("left_stick", "nothing"), ["full.json step 1: requires names left_stick, which has no output that can be remapped"])
     }
 
-    func testBundledTemplatesUseNoRequirementsYet() {
-        // Every `requires` in a built-in must pass the closed vocabulary; today none uses it.
+    func testOnlyTheRemapTemplatesUseRequirementsAndAllBuiltInsValidate() {
+        // Every `requires` in a built-in must pass the closed vocabulary; only the remap templates use it.
         for t in DevBuiltins.generate(layout: layout) {
-            XCTAssertTrue(t.steps.allSatisfy { $0.requires == nil }, t.id)
+            if t.id.hasPrefix("remap-") {
+                XCTAssertTrue(t.steps.allSatisfy { $0.requires != nil }, t.id)
+            } else {
+                XCTAssertTrue(t.steps.allSatisfy { $0.requires == nil }, t.id)
+            }
             XCTAssertEqual(t.validation(layout: layout).errors, [], t.id)
         }
     }
@@ -190,7 +194,7 @@ final class DevTemplateTests: XCTestCase {
     func testBundledFilesAreTheGeneratorsOutputAndValidate() throws {
         let entries = DevTemplates.load(folder: fresh(), layout: layout)
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, t7-rt-hold-toggle, t8-latency, in that order")
+        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, remap-g1-as-y, remap-swap-a-b, t7-rt-hold-toggle, t8-latency, in that order")
         for (entry, want) in zip(entries, generated) {
             XCTAssertEqual(entry.source, .builtIn)
             XCTAssertEqual(entry.url.lastPathComponent, DevBuiltins.fileName(for: want))
@@ -396,6 +400,98 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
     }
 
+    // MARK: remap templates (R4)
+
+    func testRemapG1AsYTemplateIsAsSpecifiedAndValidates() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "remap-g1-as-y" })
+        XCTAssertEqual(t.title, "Remap check: G1 sent to Y (App, then Driver)")
+        XCTAssertEqual(t.paths, ["engine", "driver"])
+        XCTAssertEqual(t.validate(layout: layout), [])
+        XCTAssertTrue(t.notes.contains("Before you start: Mapping → G1 → Y. Afterwards: Mapping → Reset all remaps."), t.notes)
+        XCTAssertEqual(t.steps.map(\.id), ["rest", "g1", "y", "hold-g1-then-y"])
+        XCTAssertEqual(t.steps.map { $0.devKind }, [.rest, .digital, .digital, .held])
+        XCTAssertEqual(t.steps.map(\.controls), [[], ["g1"], ["y"], ["g1", "y"]])
+        XCTAssertEqual(t.steps.map(\.title), ["Hands off everything", "Press G1 twice", "Press Y twice",
+                                              "Hold G1, then also hold Y, let go of G1, keep Y held"])
+        for step in t.steps { XCTAssertEqual(step.requires?.mapping, ["g1": "y"], step.id) }
+        XCTAssertEqual(t.steps[1].expect?.items, DevExpectedItems(buttons: ["Y"]))
+        XCTAssertEqual(t.steps[2].expect?.items, DevExpectedItems(buttons: ["Y"]))
+        XCTAssertEqual(t.steps[3].expect?.item, "Y")
+        XCTAssertEqual(t.steps[3].expect?.releases, ["g1"])
+        XCTAssertNil(t.steps[3].actions)
+        XCTAssertTrue(t.steps.allSatisfy { !$0.detail.isEmpty })
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+        // The expectations are written out, so they hold whatever the mapper does: not derived from the mapping.
+        let resolved = DevResolvedStep.resolve(template: t, mapping: .default, layout: layout)
+        XCTAssertEqual(resolved[1].expected, DevExpectedItems(buttons: ["Y"]))
+        XCTAssertEqual(resolved[3].expected, DevExpectedItems(buttons: ["Y"]))
+    }
+
+    func testRemapSwapABTemplateIsAsSpecifiedAndValidates() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "remap-swap-a-b" })
+        XCTAssertEqual(t.title, "Remap check: A and B swapped (App, then Driver)")
+        XCTAssertEqual(t.paths, ["engine", "driver"])
+        XCTAssertEqual(t.validate(layout: layout), [])
+        XCTAssertTrue(t.notes.contains("Mapping → A → B"), t.notes)
+        XCTAssertTrue(t.notes.contains("Mapping → B → A"), t.notes)
+        XCTAssertTrue(t.notes.contains("an A/B swap left on breaks games"), t.notes)
+        XCTAssertTrue(t.notes.contains("Afterwards: Mapping → Reset all remaps"), t.notes)
+        XCTAssertEqual(t.steps.map(\.id), ["rest", "a", "b"])
+        XCTAssertEqual(t.steps.map { $0.devKind }, [.rest, .digital, .digital])
+        XCTAssertEqual(t.steps.map(\.controls), [[], ["a"], ["b"]])
+        XCTAssertEqual(t.steps.map(\.title), ["Hands off everything", "Press A twice", "Press B twice"])
+        for step in t.steps { XCTAssertEqual(step.requires?.mapping, ["a": "b", "b": "a"], step.id) }
+        XCTAssertEqual(t.steps[1].expect?.items, DevExpectedItems(buttons: ["B"]))
+        XCTAssertEqual(t.steps[2].expect?.items, DevExpectedItems(buttons: ["A"]))
+        XCTAssertTrue(t.steps.allSatisfy { !$0.detail.isEmpty })
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+    }
+
+    func testRemapTemplatesAreBundledAsTheGeneratorWritesThem() throws {
+        let entries = DevTemplates.load(folder: fresh(), layout: layout)
+        for id in ["remap-g1-as-y", "remap-swap-a-b"] {
+            let entry = try XCTUnwrap(entries.first { $0.id == id }, id)
+            XCTAssertEqual(entry.source, .builtIn)
+            XCTAssertEqual(entry.url.lastPathComponent, "dev-script-\(id).json")
+            XCTAssertEqual(entry.template, DevBuiltins.generate(layout: layout).first { $0.id == id }, "\(id) has drifted from DevBuiltins.generate")
+            XCTAssertEqual(entry.problems, [])
+        }
+    }
+
+    // MARK: expect.releases
+
+    func testReleasesDecodesAndRoundTrips() throws {
+        let json = #"{"id":"r","steps":[{"id":"h","kind":"held","controls":["g1","y"],"expect":{"item":"Y","releases":["g1"]}}]}"#
+        let t = try DevTemplate.decode(Data(json.utf8))
+        XCTAssertEqual(t.steps[0].expect?.releases, ["g1"])
+        XCTAssertEqual(t.steps[0].expect?.item, "Y")
+        XCTAssertEqual(t.validate(layout: layout), [])
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+        let without = try DevTemplate.decode(Data(#"{"id":"r","steps":[{"id":"h","kind":"held","controls":["a"],"expect":{"item":"A"}}]}"#.utf8))
+        XCTAssertNil(without.steps[0].expect?.releases, "older files have no releases")
+    }
+
+    func testReleasesIsValidated() {
+        func errors(_ kind: DevKind, controls: [String], releases: [String]) -> [String] {
+            var s = DevStep(id: "s", kind: kind, controls: controls, title: "t")
+            var e = DevExpect(); e.releases = releases
+            s.expect = e
+            return template(steps: [s]).validation(layout: layout).errors
+        }
+        XCTAssertEqual(errors(.held, controls: ["g1", "y"], releases: ["g1"]), [])
+        XCTAssertEqual(errors(.held, controls: ["g1", "y"], releases: ["g1", "y"]), [])
+        XCTAssertEqual(errors(.held, controls: ["g1", "y"], releases: []), [])
+        XCTAssertEqual(errors(.held, controls: ["g1", "y"], releases: ["a"]),
+                       ["full.json step 1: expect releases names a, which is not one of the step's controls"])
+        XCTAssertEqual(errors(.held, controls: ["g1", "y"], releases: ["g1", "x", "b"]),
+                       ["full.json step 1: expect releases names x, which is not one of the step's controls",
+                        "full.json step 1: expect releases names b, which is not one of the step's controls"])
+        XCTAssertEqual(errors(.digital, controls: ["g1"], releases: ["g1"]),
+                       ["full.json step 1: expect releases only applies to held steps"])
+        XCTAssertEqual(errors(.trigger, controls: ["rt"], releases: ["rt"]),
+                       ["full.json step 1: expect releases only applies to held steps"])
+    }
+
     // MARK: loader
 
     func testLocalFilesOverrideBuiltInsAndAddNewOnes() throws {
@@ -426,13 +522,13 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(entry("wrong")?.errors, ["wrong.json step 1: unknown control g6"])
         XCTAssertEqual(entry("wrong")?.isRunnable, false, "Start stays disabled while an error stands")
         XCTAssertNil(entry("notes"))
-        XCTAssertEqual(entries.prefix(6).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "t7-rt-hold-toggle", "t8-latency"], "built-ins and overrides first, in their order")
+        XCTAssertEqual(entries.prefix(8).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b", "t7-rt-hold-toggle", "t8-latency"], "built-ins and overrides first, in their order")
         XCTAssertEqual(entries.last?.source, .local)
     }
 
     func testAMissingFolderIsFine() {
         let entries = DevTemplates.load(folder: fresh().appendingPathComponent("nope"), layout: layout)
-        XCTAssertEqual(entries.count, 6)
+        XCTAssertEqual(entries.count, 8)
     }
 
     func testWarningsKeepATemplateRunnable() throws {

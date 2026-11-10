@@ -720,11 +720,93 @@ final class DevRunCoreTests: XCTestCase {
     func testBuiltInTemplatesResolveWithoutAnySkipOnTheFactoryMapping() {
         let templates = DevBuiltins.generate(layout: Rig.layout)
         XCTAssertFalse(templates.isEmpty)
-        for t in templates {
+        // The remap templates are meant to skip until the owner makes their picks; every other one runs as is.
+        let others = templates.filter { !$0.id.hasPrefix("remap-") }
+        XCTAssertEqual(others.count, templates.count - 2)
+        for t in others {
             for r in DevResolvedStep.resolve(template: t, mapping: .default, layout: Rig.layout) {
                 XCTAssertNil(r.skipReason, "\(t.id) step \(r.step.id)")
             }
         }
+        for t in templates where t.id.hasPrefix("remap-") {
+            let skips = DevResolvedStep.resolve(template: t, mapping: .default, layout: Rig.layout).map(\.skipReason)
+            XCTAssertTrue(skips.allSatisfy { $0 != nil }, "\(t.id) skips every step on the factory mapping: \(skips)")
+        }
+    }
+
+    // MARK: expect.releases and the run-anyway text (remap R4)
+
+    private var g1ThenYStep: DevStep {
+        var s = DevStep(id: "hold-g1-then-y", kind: .held, controls: ["g1", "y"], title: "t", seconds: 3, readySeconds: 1)
+        var e = DevExpect(); e.item = "Y"; e.releases = ["g1"]
+        s.expect = e
+        var req = DevRequires(); req.mapping = ["g1": "y"]
+        s.requires = req
+        return s
+    }
+
+    /// G1 (sent to Y) is pressed, the real Y joins, G1 is let go (unless `letGoG1` is false), Y is kept (unless `dropY`).
+    private func holdG1ThenY(letGoG1: Bool, dropY: Bool = false) throws -> (Rig, DevAttempt) {
+        let r = Rig()
+        r.mapping.setOutput(.pad(.y), for: "g1")
+        let g1 = try XCTUnwrap(DevExpectation.pressedFrame(for: "g1", mapping: r.mapping))
+        let y = try XCTUnwrap(DevExpectation.pressedFrame(for: "y", mapping: r.mapping))
+        var both = g1
+        both.buttons |= y.buttons; both.extra |= y.extra
+        var padY = PadState(); padY.buttons = [.y]
+        r.prepare()
+        r.start(steps: [g1ThenYStep])
+        XCTAssertNil(r.core.setupSteps.first?.skipReason)
+        r.untilGo()
+        r.move(g1, padY, hold: 400)
+        XCTAssertEqual(r.core.state, .step(index: 0, phase: .window), "G1 opens the window")
+        r.move(both, padY, hold: 500)
+        r.move(letGoG1 ? y : both, padY, hold: 1000)
+        if dropY { r.move(.idle, PadState(), hold: 300) }
+        r.advance(dropY ? 950 : 1250)
+        r.releaseAll(hold: 100)
+        r.advance(1500)
+        return (r, try XCTUnwrap(r.core.results[0][0]?.attempts.last))
+    }
+
+    func testHeldReleasesPassesWhenG1IsPressedYAddedG1LetGoAndYKept() throws {
+        let (r, att) = try holdG1ThenY(letGoG1: true)
+        XCTAssertEqual(r.verdict(0), .pass, att.metrics.detail)
+        XCTAssertEqual(att.metrics.values["held.released"], 1)
+        XCTAssertEqual(att.metrics.values["held.drops"], 0)
+    }
+
+    func testHeldReleasesFailsWithAPlainReasonWhenG1IsNeverLetGo() throws {
+        let (r, att) = try holdG1ThenY(letGoG1: false)
+        XCTAssertEqual(r.verdict(0), .fail("G1 was never let go while Y stayed held"), att.metrics.detail)
+        XCTAssertEqual(att.metrics.values["held.drops"], 0)
+    }
+
+    func testHeldReleasesFailsAsBeforeWhenYDrops() throws {
+        let (r, att) = try holdG1ThenY(letGoG1: true, dropY: true)
+        guard case .fail(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0))) \(att.metrics.detail)") }
+        XCTAssertTrue(why.contains("Y did not stay held: drops 1"), why)
+    }
+
+    func testDriverPassNamesTheMappingNoteWhenItCannotBeConfirmed() {
+        let r = Rig()
+        r.prepare(status: Rig.status(armed: "inert", path: "driver") { $0.mappingNote = "a button sent to LT needs a driver update" })
+        r.start(.driver)
+        r.advance(10_100)
+        guard case .runAnyway(let text)? = r.prompts.first else { return XCTFail("\(r.prompts)") }
+        XCTAssertEqual(text, "Driver pass cannot be confirmed: a button sent to LT needs a driver update. Reset that remap first.")
+        // a fault of GDHub's own is not something a reset fixes: the status line stays
+        let internalFault = Rig()
+        internalFault.prepare(status: Rig.status(armed: "inert", path: "driver") { $0.mappingNote = "internal: blob check failed" })
+        internalFault.start(.driver)
+        internalFault.advance(10_100)
+        guard case .runAnyway(let other)? = internalFault.prompts.first else { return XCTFail("\(internalFault.prompts)") }
+        XCTAssertTrue(other.hasPrefix("Driven by:"), other)
+        // the engine pass is never asked
+        let engine = Rig()
+        engine.prepare(status: Rig.status(armed: "inert", path: "engine") { $0.mappingNote = "x" })
+        engine.start(.engine)
+        XCTAssertTrue(engine.prompts.isEmpty)
     }
 
     // MARK: Stop, finish, restore

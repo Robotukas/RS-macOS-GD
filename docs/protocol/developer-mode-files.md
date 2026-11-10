@@ -55,8 +55,9 @@ compare tool (exit 2).
 `requireReturn` (true), `flicks` (absent) and `requireDirections` (true); trigger `peak` (0.90), `release` (0.05)
 and `times` (1); digital `items` (`{buttons:[...], hat:"N"..."NW", guide:bool}`, replaces the simulated expectation;
 empty means "nothing on the pad") and `times` (2); held `item` (`RT`, `LT`, a button name such as `A`, `D-pad left`,
-or a hat direction `N`…`NW`; absent = derived from the control) and `minLevel` (0.5, the trigger value that counts as
-held).
+or a hat direction `N`…`NW`; absent = derived from the control), `minLevel` (0.5, the trigger value that counts as
+held) and `releases` (absent; a list of the step's own controls that must be let go while the item stays held, see "Held
+steps" below).
 
 - `times` (digital) is how many times every expected item must go down and up ("Tap A 10 times" = 10). On a trigger
   step it is the number of **full pulls**: the pad's value reaches `peak` and is then released to `release` or less,
@@ -82,6 +83,13 @@ g1–g5). Learned bindings are not compared. A miss skips the step in the owner'
 `needs G2 → Nothing: set it in Mapping`, `needs G4 left at its built-in function: Reset it in Mapping` (`Reset it` when
 the wanted output is the control's factory one).
 
+Start is blocked when **every** step of the selected template would be skipped for an unmet `requires.mapping`: the bar
+says `Needs G1 → Y: set it in Mapping first (leave Developer mode, press Mapping, pick, Done)` (several needs are joined
+with `; `, each in the owner's words: `G2 → Nothing`, `G4 at its built-in function`). When only some steps are unmet the
+run starts and those steps are recorded as skipped with their reason. The runner never sets a mapping itself. When a
+Driver pass cannot be confirmed because the driver cannot express the current mapping, the "Run anyway" question reads
+`Driver pass cannot be confirmed: <the engine's mapping note>. Reset that remap first.`
+
 Developer mode under remaps: a digital or held step expects what the virtual pad shows for the control **under the
 current mapping** (G1 sent to Y expects Y; A and B swapped, A expects B). Trigger remaps are not judged yet: a trigger or
 held step on a remapped `lt` / `rt` is recorded `skipped` ("LT is remapped to A; trigger remaps are checked after the
@@ -97,7 +105,23 @@ direction. Every held-to-released transition is a drop, and a report that puts e
 must be held within 2 s of the window start (the pull is still on its way when the window opens). Pass = `held.drops`
 0 and held at the end of the window. Only the window is judged; the release tail after it is where the owner lets go.
 Metric values: `held.minLevel` (lowest trigger value once it had been all the way down), `held.drops`,
-`held.padReports`, `held.ms`; with actions also `held.handOvers` and `held.handOversConfirmed`.
+`held.padReports`, `held.ms`; with actions also `held.handOvers` and `held.handOversConfirmed`; with `expect.releases`
+also `held.released`.
+
+A held step may name several `controls` (for example `["g1","y"]`): the window opens on the first frame where **any** of
+them is active, and `expect.item` names the one pad item that has to stay held.
+
+`expect.releases` (held steps only) makes a hand-over part of the pass: every listed control (each must be one of the
+step's `controls`) has to be seen **active and then released** while the item stays held. "Active" is
+`ControlMapping.isActive(control, frame)` on the receiver frames (the physical key, whatever it is mapped to), so it is
+independent of what the pad shows. The control counts as held at the moment the item first becomes held (or when it is
+next seen active), and its release is the first receiver frame after that without it; a release before the item was held,
+or after the window's end (in the release tail), does not count. The item must still stay held for the whole window as
+for any held step, so a template can say "hold G1 (sent to Y), also hold Y, let go of G1, Y must still be down" and cannot
+pass unless G1 really was let go. A listed control that was never let go fails the attempt with a plain reason (`G1 was
+never let go while Y stayed held`; `G1 was never seen pressed while Y stayed held` when it was never active). Without any
+receiver frames for the window the attempt is `inconclusive` (`cannot tell when G1 was let go: no receiver frames`), never
+a pass.
 
 Without `actions` the window runs the full `seconds` and never ends early. With `toggleInputPath` actions the window
 ends 1.5 s after the last action has completed (`count` × `intervalMs`; `seconds` is not used then, and a warning says so
@@ -131,6 +155,7 @@ style `<id>.json step <n>: ...`:
   `requires names X, which has no output that can be remapped`
 - `step n: expect names unknown button "X"` / `unknown hat direction "X"`
 - `step n: expect times T must be 1 or more` / `expect flicks F must be 1 or more` / `expect flicks only applies to stick steps`
+- `step n: expect releases only applies to held steps` / `expect releases names X, which is not one of the step's controls`
 - `step n: toggleInputPath value "X" is not engine, shadow or driver` / `toggleInputPath needs values, a count of 1 or more and an intervalMs of 1 or more`
 - warnings: `seconds S is outside 1...120, using U`, `readySeconds ...`, `releaseSeconds ...`
 
@@ -185,9 +210,18 @@ A complete real template is `Sources/GDHub/Resources/dev-script-full.json`.
 
 ### Built-in templates
 
-`full`, `sticks`, `gkeys` (generated from the layout), `paddles-sax-echo`, `t7-rt-hold-toggle` and `t8-latency`. The
-bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
+`full`, `sticks`, `gkeys` (generated from the layout), `paddles-sax-echo`, `remap-g1-as-y`, `remap-swap-a-b`,
+`t7-rt-hold-toggle` and `t8-latency`. The bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
 `GDHUB_WRITE_DEV_TEMPLATES=1 swift test --filter DevTemplateTests/testWriteBundledTemplates` rewrites them.
+
+**`remap-g1-as-y`** ("Remap check: G1 sent to Y (App, then Driver)", `paths: ["engine","driver"]`) and
+**`remap-swap-a-b`** ("Remap check: A and B swapped (App, then Driver)", same `paths`) check remapping end to end. The
+owner makes the picks by hand first (`Mapping → G1 → Y`; `Mapping → A → B` and `Mapping → B → A`) and resets afterwards
+(`Mapping → Reset all remaps`; an A/B swap left on breaks games). **Every** step carries `requires.mapping` (`{"g1":"y"}`;
+`{"a":"b","b":"a"}`), because `requires` is step-level only, and every expectation is written out in the template
+(`expect.items`, `expect.item`), so the template never checks the mapper against itself. `remap-g1-as-y`: `rest`; `g1`
+(digital, expects `Y`); `y` (digital, expects `Y`); `hold-g1-then-y` (held, controls `["g1","y"]`, 6 s, `expect.item`
+`Y`, `expect.releases` `["g1"]`). `remap-swap-a-b`: `rest`; `a` (expects `B`); `b` (expects `A`).
 
 **`t8-latency`** ("Latency: controller to pad, per press (App, then Driver) — T8 gate", `paths: ["engine","driver"]`)
 is the evidence for the receiver-takeover gate rows G4a (Driver digital p50 at most 0.5 ms) and G4b (Driver at least

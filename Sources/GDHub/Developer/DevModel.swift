@@ -86,6 +86,9 @@ struct DevExpect: Codable, Equatable {
     var item: String?
     var minLevel: Double?
     var seconds: Double?
+    /// Held steps only: controls (ids from the step's `controls`) that must be seen pressed and then let go while the
+    /// held item stays held, so a step cannot pass without that hand-over ("hold G1, add Y, let go of G1, Y stays").
+    var releases: [String]?
 
     init() {}
 
@@ -105,6 +108,7 @@ struct DevExpect: Codable, Equatable {
         item = try c.decodeIfPresent(String.self, forKey: .item)
         minLevel = try c.decodeIfPresent(Double.self, forKey: .minLevel)
         seconds = try c.decodeIfPresent(Double.self, forKey: .seconds)
+        releases = try c.decodeIfPresent([String].self, forKey: .releases)
     }
 }
 
@@ -434,6 +438,15 @@ struct DevTemplate: Codable, Equatable {
                 }
                 if let level = step.expect?.minLevel, !(level > 0 && level <= 1) {
                     v.errors.append("\(at): expect minLevel \(Self.number(level)) must be above 0 and at most 1")
+                }
+            }
+            if let releases = step.expect?.releases {
+                if kind != nil, kind != .held {
+                    v.errors.append("\(at): expect releases only applies to held steps")
+                } else {
+                    for id in releases where !step.controls.contains(id) {
+                        v.errors.append("\(at): expect releases names \(id), which is not one of the step's controls")
+                    }
                 }
             }
             if !(step.actions ?? []).isEmpty, kind != nil, kind != .held {

@@ -126,10 +126,10 @@ struct DevResolvedStep: Equatable {
     // MARK: Skip reasons (plain words, layout labels)
 
     /// The owner's word for a control: the layout label ("G1"), else the id.
-    private static func label(_ id: String, _ layout: ControlLayout) -> String { layout.control(id: id)?.label ?? id }
+    static func label(_ id: String, _ layout: ControlLayout) -> String { layout.control(id: id)?.label ?? id }
 
     /// The owner's word for an output: "Y", "D-pad up", "Nothing", "its built-in function".
-    private static func label(_ output: ControlOutput, _ layout: ControlLayout) -> String {
+    static func label(_ output: ControlOutput, _ layout: ControlLayout) -> String {
         switch output {
         case .nothing: return "Nothing"
         case .builtIn: return "its built-in function"
@@ -137,20 +137,36 @@ struct DevResolvedStep: Equatable {
         }
     }
 
+    /// One `requires.mapping` entry the current mapping does not meet.
+    struct RequirementMiss: Equatable {
+        var control: String
+        /// The value as the template wrote it.
+        var value: String
+        /// nil when the value is not an output this build knows.
+        var output: ControlOutput?
+    }
+
     /// `requires.mapping`: every named control must currently send the named output (`effectiveOutput`, by value).
-    /// The first miss, in control order, gives the reason.
-    private static func requirementSkip(_ step: DevStep, mapping: ControlMapping, layout: ControlLayout) -> String? {
-        guard let want = step.requires?.mapping else { return nil }
+    /// The misses, in control order.
+    static func requirementMisses(_ step: DevStep, mapping: ControlMapping) -> [RequirementMiss] {
+        guard let want = step.requires?.mapping else { return [] }
+        var out: [RequirementMiss] = []
         for (cid, value) in want.sorted(by: { $0.key < $1.key }) {
             let output = ControlOutput(string: value)
             if let output, mapping.effectiveOutput(cid) == output { continue }
-            let who = label(cid, layout)
-            guard let output else { return "needs \(who) → \"\(value)\": not an output this build knows" }
-            if output == .builtIn { return "needs \(who) left at its built-in function: Reset it in Mapping" }
-            let how = mapping.defaultOutput(cid) == output ? "Reset it in Mapping" : "set it in Mapping"
-            return "needs \(who) → \(label(output, layout)): \(how)"
+            out.append(RequirementMiss(control: cid, value: value, output: output))
         }
-        return nil
+        return out
+    }
+
+    /// The first miss, in the owner's words.
+    private static func requirementSkip(_ step: DevStep, mapping: ControlMapping, layout: ControlLayout) -> String? {
+        guard let miss = requirementMisses(step, mapping: mapping).first else { return nil }
+        let who = label(miss.control, layout)
+        guard let output = miss.output else { return "needs \(who) → \"\(miss.value)\": not an output this build knows" }
+        if output == .builtIn { return "needs \(who) left at its built-in function: Reset it in Mapping" }
+        let how = mapping.defaultOutput(miss.control) == output ? "Reset it in Mapping" : "set it in Mapping"
+        return "needs \(who) → \(label(output, layout)): \(how)"
     }
 
     /// Step 1 of the remap work does not judge the pad's triggers under a remap: a step on a remapped `lt` / `rt`, or
@@ -381,6 +397,8 @@ struct DevRunCore {
         var frameTimes: [UInt64] = []
         /// The receiver-derived pad state of each of those frames (same order), for the per-event latency.
         var frameStates: [PadState] = []
+        /// A held step with `expect.releases`: which of those controls each receiver frame had active.
+        var controlActivity: [DevJudge.ControlSample] = []
         var wantedActiveSeen = false
         var wantedNowActive = false
         var lastWantedActiveNs: UInt64?
@@ -525,6 +543,18 @@ struct DevRunCore {
         InputPathMenu.status(mode: .engine, engineRunningPid: pid.map { Int32(truncatingIfNeeded: $0) }, report: status)
     }
 
+    /// The "Run anyway" question. A Driver pass that cannot be confirmed because the driver cannot express the current
+    /// mapping names that mapping note and what to do; every other reason keeps the status line. A note that starts with
+    /// "internal:" is a GDHub fault, which resetting a remap does not fix, so it keeps the status line too.
+    private var runAnywayText: String {
+        if target == .driver, let s = liveStatus, s.latched == nil, s.fallback == nil,
+           let note = s.mappingNote, !note.hasPrefix("internal:") {
+            let why = note.hasSuffix(".") ? String(note.dropLast()) : note
+            return "Driver pass cannot be confirmed: \(why). Reset that remap first."
+        }
+        return statusText
+    }
+
     /// The plan's confirm rule: this engine, no fallback, no latch, no mapping note, and armed as the target needs.
     /// The engine path keeps posting whatever the driver does, so it only needs `inert`.
     private func confirmed(for t: DevTarget) -> Bool {
@@ -589,7 +619,7 @@ struct DevRunCore {
             armedBaseline = target.expectedArmed
             beginSteps(a: &a)
         } else if now >= started, now - started >= Timing.confirmTimeout {
-            let p = DevPrompt.runAnyway(statusText)
+            let p = DevPrompt.runAnyway(runAnywayText)
             prompt = p
             a.append(.needsPrompt(p))
         }
@@ -754,6 +784,7 @@ struct DevRunCore {
         cur!.refChanges = []
         cur!.frameTimes = []
         cur!.frameStates = []
+        cur!.controlActivity = []
         cur!.padReportsInWindow = 0
         cur!.padChanged = 0
         cur!.wantedRises = 0
@@ -890,7 +921,8 @@ struct DevRunCore {
         let entry = c.entry ?? (c.reports.contains { $0.tNs < ws } ? PadDecodedState.neutral : nil)
         return DevJudge.Input(step: r.step, expected: r.expected, entryState: entry, reports: c.reports,
                               windowStartNs: ws, windowEndNs: we, endNs: end, matchedCount: c.matchedAtStart,
-                              reference: reference(c, from: ws, to: end), handOvers: c.handOvers.count)
+                              reference: reference(c, from: ws, to: end), handOvers: c.handOvers.count,
+                              controlActivity: c.controlActivity)
     }
 
     private mutating func judgeAndAdvance(a: inout [Action]) {
@@ -1051,6 +1083,10 @@ struct DevRunCore {
               let ws = cur!.windowStartNs, t >= ws else { return }
         cur!.frameTimes.append(t)
         cur!.frameStates.append(sum.snapped)
+        if r.step.devKind == .held, let ids = r.step.expect?.releases, !ids.isEmpty {
+            let m = setup!.mapping
+            cur!.controlActivity.append(.init(tNs: t, active: Set(ids.filter { m.isActive($0, f) })))
+        }
         if changed { cur!.refChanges.append(t) }
         // Tracked in the release phase too: the tail ends when the control has come back to rest.
         let act = wantedActive(r, f, sum.pad)

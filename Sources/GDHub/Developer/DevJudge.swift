@@ -21,7 +21,8 @@ import Foundation
 ///   `hat.visited` (bit mask of the hat values seen, bit n = value n), `neutrals`, `unexpected`, `entrySet`
 /// - held: `held.minLevel` (lowest trigger value from the moment it was held; 1 or 0 for a button), `held.drops`
 ///   (held to released transitions), `held.padReports`, `held.ms` (held until the window end). Only the window counts:
-///   the release tail is where the owner lets go.
+///   the release tail is where the owner lets go. With `expect.releases`: `held.released` (how many of the listed
+///   controls were seen pressed and then let go while the item stayed held).
 /// - every kind but rest, when the receiver frames are known (`Reference.frames`): `lat.n`, `lat.unmatched`, and when
 ///   n > 0 `lat.p50Ms`, `lat.p95Ms`, `lat.p99Ms`, `lat.maxMs`; see `DevLatency` for the edge and match definitions.
 enum DevJudge {
@@ -101,6 +102,13 @@ enum DevJudge {
         var frames: [Frame] = []
     }
 
+    /// Which of a held step's `expect.releases` controls were physically active (`ControlMapping.isActive`) on one
+    /// receiver frame. Only the listed controls are recorded.
+    struct ControlSample: Equatable {
+        var tNs: UInt64
+        var active: Set<String>
+    }
+
     struct Input {
         var step: DevStep
         var expected: DevExpectedItems
@@ -118,11 +126,15 @@ enum DevJudge {
         var reference: Reference?
         /// Path hand-overs the app made during the window (held steps with actions), for the detail line.
         var handOvers: Int
+        /// Receiver frames from the window start on, for `expect.releases`. Empty = no frames known.
+        var controlActivity: [ControlSample]
 
         init(step: DevStep, expected: DevExpectedItems = DevExpectedItems(), entryState: PadDecodedState?,
              reports: [TimedReport], windowStartNs: UInt64, windowEndNs: UInt64, endNs: UInt64? = nil,
-             matchedCount: Int = 1, reference: Reference? = nil, handOvers: Int = 0) {
+             matchedCount: Int = 1, reference: Reference? = nil, handOvers: Int = 0,
+             controlActivity: [ControlSample] = []) {
             self.handOvers = handOvers
+            self.controlActivity = controlActivity
             self.step = step
             self.expected = expected
             self.entryState = entryState
@@ -536,11 +548,42 @@ enum DevJudge {
             if engageMs > rules.heldEngageMs {
                 fails.append("\(label) only became held \(String(format: "%.1f", engageMs / 1000)) s into the window (allowed \(String(format: "%.1f", rules.heldEngageMs / 1000)) s)")
             }
+            // `expect.releases`: each listed control must be seen pressed and then let go while the item is held.
+            let wanted = (input.step.expect?.releases ?? []).filter { !$0.isEmpty }
+            var releasedText = ""
+            if !wanted.isEmpty {
+                let samples = input.controlActivity.enumerated()
+                    .sorted { ($0.element.tNs, $0.offset) < ($1.element.tNs, $1.offset) }.map(\.element)
+                    .filter { $0.tNs <= input.windowEndNs }
+                var released: [String] = []
+                var releaseFails: [String] = []
+                for id in wanted {
+                    let who = DevJudge.controlWord(id)
+                    let engageNs = times[engage]
+                    // Armed once the control is down while the item is held; the next sample without it is the let-go.
+                    var armed = samples.last { $0.tNs <= engageNs }?.active.contains(id) ?? false
+                    var done = false
+                    for s in samples where s.tNs > engageNs {
+                        if s.active.contains(id) { armed = true } else if armed { done = true; break }
+                    }
+                    if done { released.append(who); continue }
+                    releaseFails.append(samples.contains { $0.active.contains(id) }
+                                        ? "\(who) was never let go while \(label) stayed held"
+                                        : "\(who) was never seen pressed while \(label) stayed held")
+                }
+                m.values["held.released"] = Double(released.count)
+                if samples.isEmpty && fails.isEmpty {
+                    return Outcome(verdict: .inconclusive("cannot tell when \(wanted.map(DevJudge.controlWord).joined(separator: ", ")) was let go: no receiver frames"),
+                                   metrics: with(&m, "The run has no receiver frames for this window, so the let-go of \(wanted.map(DevJudge.controlWord).joined(separator: ", ")) cannot be judged."))
+                }
+                if !samples.isEmpty { fails += releaseFails }
+                if !released.isEmpty { releasedText = "; \(released.joined(separator: ", ")) let go while \(label) stayed held" }
+            }
             let overs = input.handOvers > 0 ? " through \(input.handOvers) hand-over\(input.handOvers == 1 ? "" : "s")" : ""
             let lowText = low.map { "; lowest \(DevJudge.fmt($0))" } ?? ""
             let blipText = blips > 0 ? String(format: "; %d switch blip%@ of at most %.2f ms (the design's switch neutral, reposted at once)", blips, blips == 1 ? "" : "s", longestMs) : ""
-            let pass = "\(label) stayed held for \(String(format: "%.1f", heldMs / 1000)) s\(overs)\(lowText)\(blipText); \(m.padReports) pad reports."
-            let summary = "\(label) held \(String(format: "%.1f", heldMs / 1000)) s of a \(String(format: "%.1f", windowMs / 1000)) s window\(overs)\(lowText)\(blipText); \(m.padReports) pad reports, \(m.padChanged) changed."
+            let pass = "\(label) stayed held for \(String(format: "%.1f", heldMs / 1000)) s\(overs)\(lowText)\(blipText)\(releasedText); \(m.padReports) pad reports."
+            let summary = "\(label) held \(String(format: "%.1f", heldMs / 1000)) s of a \(String(format: "%.1f", windowMs / 1000)) s window\(overs)\(lowText)\(blipText)\(releasedText); \(m.padReports) pad reports, \(m.padChanged) changed."
             return finish(fails, passText: pass, summary: summary, &m)
         }
 
@@ -571,6 +614,11 @@ enum DevJudge {
     }
 
     static func fmt(_ v: Double) -> String { String(format: "%.2f", v) }
+
+    /// A control id as the owner says it in a verdict: "g1" → "G1", "paddle_outer_left" → "paddle outer left".
+    static func controlWord(_ id: String) -> String {
+        id.count <= 3 ? id.uppercased() : id.replacingOccurrences(of: "_", with: " ")
+    }
 
     /// What is out of tolerance in one state, in words ("A down, left stick at 0.31").
     static func describeOffences(_ s: PadDecodedState, rules: Rules) -> String {
