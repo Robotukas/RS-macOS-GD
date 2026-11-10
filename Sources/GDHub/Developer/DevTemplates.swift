@@ -36,7 +36,9 @@ struct DevTemplateEntry: Equatable, Identifiable {
 
 enum DevTemplates {
     static let filePrefix = "dev-script-"
-    static let builtInOrder = ["full", "sticks", "gkeys"]
+    /// The picker order of the built-ins; anything else follows in id order, local files last.
+    static let builtInOrder = ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b",
+                               "gkeys-volume", "t7-rt-hold-toggle", "t8-latency"]
 
     /// `~/Library/Application Support/GDHub/dev-scripts/` (or under `GDHUB_SUPPORT_DIR`).
     static var folderURL: URL { MappingStore.defaultURL(fileName: "dev-scripts") }
@@ -153,7 +155,7 @@ enum DevBuiltins {
                 + "profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
             steps: echoIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
         echo.paths = ["engine", "driver"]
-        return [full, sticks, gkeys, echo, remapG1AsY(), remapSwapAB(), t7RTHoldToggle(), t8Latency(layout: layout)]
+        return [full, sticks, gkeys, echo, remapG1AsY(), remapSwapAB(), gkeysVolume(), t7RTHoldToggle(), t8Latency(layout: layout)]
     }
 
     // MARK: Remap checks
@@ -223,6 +225,52 @@ enum DevBuiltins {
                                          detail: "Press A, let go, press it again, let go. With A and B swapped the pad shows B.")),
                 requiring(need, pressing("b", label: "B", expect: ["A"],
                                          detail: "Press B, let go, press it again, let go. With A and B swapped the pad shows A.")),
+            ])
+    }
+
+    /// The volume keys under a remap (remap R3/R4): a G key sent to the pad leaves the Mac's volume alone, a silenced one
+    /// does too, and one left at its built-in function still changes it. The volume is judged from change events on the
+    /// Mac's output and the controller's own volume-key reports, so a silenced key still proves it was pressed.
+    static func gkeysVolume() -> DevTemplate {
+        let need = ["g3": "rb", "g4": "built_in", "g2": "nothing"]
+        func step(_ id: String, _ control: String, _ title: String, _ detail: String, times: Int,
+                  buttons: [String], volume: DevVolumeExpectation) -> DevStep {
+            var s = DevStep(id: id, kind: .digital, controls: [control], title: title, detail: detail,
+                            seconds: 6, releaseSeconds: 1)
+            var e = DevExpect()
+            e.items = DevExpectedItems(buttons: buttons)
+            e.times = times
+            e.volume = volume.rawValue
+            s.expect = e
+            return requiring(need, s)
+        }
+        return DevTemplate(
+            id: "gkeys-volume", title: "Volume keys under a remap: G2, G3, G4 (App, then Driver)",
+            notes: "Use it after changing anything about the volume keys G2, G3 and G4 or about remapping. Before you start, in "
+                + "Mapping: G3 → RB, leave G4 as it is (Mute, built in), G2 → Nothing. Also set the Mac's sound output to "
+                + "about half volume and not muted (not at the very bottom or top, or a step cannot tell and says so), and leave the "
+                + "sound output alone while it runs. Afterwards: Mapping → Reset all remaps. G3 must send RB to the pad and leave the "
+                + "Mac's volume alone; G4 must still mute and then unmute the Mac (two separate steps); G2 must send nothing to the "
+                + "pad and leave the volume alone. The volume is judged from what the Mac's sound output does while the controller "
+                + "reports the key press, so a key that is silenced still has to be pressed to count; a step that cannot tell "
+                + "(no key press seen, the output has no volume or mute, the volume already at its limit, the output changed) "
+                + "shows as inconclusive, not as a pass. The pad side is written out in the template on purpose, so it does not "
+                + "check the mapper against itself. Runs on the App path and then on Driver LIVE.",
+            paths: ["engine", "driver"],
+            steps: [
+                requiring(need, restStep()),
+                step("g3-rb", "g3", "Press G3 twice",
+                     "Press G3, let go, press it again, let go. G3 now sends RB: the pad must show RB, and the Mac's volume must not move.",
+                     times: 2, buttons: ["RB"], volume: .unchanged),
+                step("g4-mute-on", "g4", "Press G4 once",
+                     "Press G4 once and let go. It still does its own job: the Mac's sound should switch off (mute).",
+                     times: 1, buttons: [], volume: .changes),
+                step("g4-mute-off", "g4", "Press G4 once more",
+                     "Press G4 once more and let go. The Mac's sound should come back on (unmute).",
+                     times: 1, buttons: [], volume: .changes),
+                step("g2-nothing", "g2", "Press G2 twice",
+                     "Press G2, let go, press it again, let go. G2 now sends Nothing: the pad must stay quiet and the Mac's volume must not move.",
+                     times: 2, buttons: [], volume: .unchanged),
             ])
     }
 

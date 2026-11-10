@@ -89,6 +89,10 @@ struct DevExpect: Codable, Equatable {
     /// Held steps only: controls (ids from the step's `controls`) that must be seen pressed and then let go while the
     /// held item stays held, so a step cannot pass without that hand-over ("hold G1, add Y, let go of G1, Y stays").
     var releases: [String]?
+    /// Digital steps only: what the Mac's volume must do while the key is pressed, "unchanged" or "changes" (kept as
+    /// text so a word from a newer build still loads; `DevTemplate.validate` rejects what this build does not know).
+    /// Judged from CoreAudio change events and the receiver's 0x11 reports, see `DevVolume.swift`.
+    var volume: String?
 
     init() {}
 
@@ -109,7 +113,11 @@ struct DevExpect: Codable, Equatable {
         minLevel = try c.decodeIfPresent(Double.self, forKey: .minLevel)
         seconds = try c.decodeIfPresent(Double.self, forKey: .seconds)
         releases = try c.decodeIfPresent([String].self, forKey: .releases)
+        volume = try c.decodeIfPresent(String.self, forKey: .volume)
     }
+
+    /// `volume` as a value; nil when absent or not a word this build knows.
+    var volumeExpectation: DevVolumeExpectation? { volume.flatMap(DevVolumeExpectation.init(rawValue:)) }
 }
 
 /// What a digital control should do on the pad: the buttons that go down, the hat direction (N, NE … NW) and Guide.
@@ -449,6 +457,13 @@ struct DevTemplate: Codable, Equatable {
                     }
                 }
             }
+            if let volume = step.expect?.volume {
+                if DevVolumeExpectation(rawValue: volume) == nil {
+                    v.errors.append("\(at): expect volume \"\(volume)\" must be \(DevVolumeExpectation.words)")
+                } else if kind != nil, kind != .digital {
+                    v.errors.append("\(at): expect volume only applies to digital steps")
+                }
+            }
             if !(step.actions ?? []).isEmpty, kind != nil, kind != .held {
                 v.errors.append("\(at): actions are only supported on held steps")
             }
@@ -623,6 +638,8 @@ struct DevAttempt: Codable, Equatable {
     var entryRaw: [String] = []
     var effectivePath = DevEffectivePath()
     var raw: [DevRawReport] = []
+    /// What the Mac's volume did, for a step with `expect.volume`; absent otherwise.
+    var volume: DevVolumeResult?
 
     init() {}
 
@@ -640,6 +657,7 @@ struct DevAttempt: Codable, Equatable {
         entryRaw = try c.value(.entryRaw, [])
         effectivePath = try c.value(.effectivePath, DevEffectivePath())
         raw = try c.value(.raw, [])
+        volume = try c.decodeIfPresent(DevVolumeResult.self, forKey: .volume)
     }
 }
 

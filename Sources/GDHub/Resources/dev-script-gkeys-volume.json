@@ -1,0 +1,142 @@
+{
+  "id" : "gkeys-volume",
+  "notes" : "Use it after changing anything about the volume keys G2, G3 and G4 or about remapping. Before you start, in Mapping: G3 → RB, leave G4 as it is (Mute, built in), G2 → Nothing. Also set the Mac's sound output to about half volume and not muted (not at the very bottom or top, or a step cannot tell and says so), and leave the sound output alone while it runs. Afterwards: Mapping → Reset all remaps. G3 must send RB to the pad and leave the Mac's volume alone; G4 must still mute and then unmute the Mac (two separate steps); G2 must send nothing to the pad and leave the volume alone. The volume is judged from what the Mac's sound output does while the controller reports the key press, so a key that is silenced still has to be pressed to count; a step that cannot tell (no key press seen, the output has no volume or mute, the volume already at its limit, the output changed) shows as inconclusive, not as a pass. The pad side is written out in the template on purpose, so it does not check the mapper against itself. Runs on the App path and then on Driver LIVE.",
+  "paths" : [
+    "engine",
+    "driver"
+  ],
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+
+      ],
+      "detail" : "Put the controller down and let go of every stick, trigger and button. The pad has to stay completely still.",
+      "id" : "rest",
+      "kind" : "rest",
+      "requires" : {
+        "mapping" : {
+          "g2" : "nothing",
+          "g3" : "rb",
+          "g4" : "built_in"
+        }
+      },
+      "seconds" : 3,
+      "title" : "Hands off everything"
+    },
+    {
+      "controls" : [
+        "g3"
+      ],
+      "detail" : "Press G3, let go, press it again, let go. G3 now sends RB: the pad must show RB, and the Mac's volume must not move.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "RB"
+          ],
+          "guide" : false
+        },
+        "times" : 2,
+        "volume" : "unchanged"
+      },
+      "id" : "g3-rb",
+      "kind" : "digital",
+      "releaseSeconds" : 1,
+      "requires" : {
+        "mapping" : {
+          "g2" : "nothing",
+          "g3" : "rb",
+          "g4" : "built_in"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press G3 twice"
+    },
+    {
+      "controls" : [
+        "g4"
+      ],
+      "detail" : "Press G4 once and let go. It still does its own job: the Mac's sound should switch off (mute).",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false
+        },
+        "times" : 1,
+        "volume" : "changes"
+      },
+      "id" : "g4-mute-on",
+      "kind" : "digital",
+      "releaseSeconds" : 1,
+      "requires" : {
+        "mapping" : {
+          "g2" : "nothing",
+          "g3" : "rb",
+          "g4" : "built_in"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press G4 once"
+    },
+    {
+      "controls" : [
+        "g4"
+      ],
+      "detail" : "Press G4 once more and let go. The Mac's sound should come back on (unmute).",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false
+        },
+        "times" : 1,
+        "volume" : "changes"
+      },
+      "id" : "g4-mute-off",
+      "kind" : "digital",
+      "releaseSeconds" : 1,
+      "requires" : {
+        "mapping" : {
+          "g2" : "nothing",
+          "g3" : "rb",
+          "g4" : "built_in"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press G4 once more"
+    },
+    {
+      "controls" : [
+        "g2"
+      ],
+      "detail" : "Press G2, let go, press it again, let go. G2 now sends Nothing: the pad must stay quiet and the Mac's volume must not move.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false
+        },
+        "times" : 2,
+        "volume" : "unchanged"
+      },
+      "id" : "g2-nothing",
+      "kind" : "digital",
+      "releaseSeconds" : 1,
+      "requires" : {
+        "mapping" : {
+          "g2" : "nothing",
+          "g3" : "rb",
+          "g4" : "built_in"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press G2 twice"
+    }
+  ],
+  "title" : "Volume keys under a remap: G2, G3, G4 (App, then Driver)",
+  "version" : 1
+}

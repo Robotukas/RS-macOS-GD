@@ -8,6 +8,10 @@ When the steps carry per-event latency (values lat.n, lat.p50Ms, lat.p99Ms, lat.
 columns, a |p50 difference| above --latency-threshold (0.1 ms) is marked, and a last line summarises the T8 gate rows:
 the digital and the stick-onset p50 (the n-weighted median of the steps' p50s) of A and B and the difference B - A.
 
+A step with expect.volume carries a `volume` object in its attempt (what the Mac's volume did while the key was pressed):
+the tables get a volume column ("unchanged: pass ..."; an inconclusive volume verdict reads "cannot judge", never pass or
+fail), and a paired step whose volume verdict differs is marked "volume".
+
 Exit 0: nothing differs. 1: a paired verdict differs or a marked difference exists. 2: a file cannot be used
 (unreadable, not a report, or a schema newer than 1).
 """
@@ -65,6 +69,58 @@ def num(v):
     return v
 
 
+def volume_of(attempt):
+    """The attempt's volume object reduced to what the tables show, or None when the step has no volume check."""
+    v = attempt.get("volume")
+    if not isinstance(v, dict):
+        return None
+    verdict = v.get("verdict") if isinstance(v.get("verdict"), dict) else {}
+    tag = str(verdict.get("verdict") or DASH)
+    return {
+        "expect": str(v.get("expect") or DASH),
+        "verdict": tag,
+        "reason": str(verdict.get("reason") or ""),
+        "consumerReports": num(v.get("consumerReports")),
+        "keyReports": num(v.get("keyReports")),
+        "volumeEvents": num(v.get("volumeEvents")),
+        "muteEvents": num(v.get("muteEvents")),
+        "deviceEvents": num(v.get("deviceEvents")),
+        "startScalar": num(v.get("startScalar")),
+        "endScalar": num(v.get("endScalar")),
+        "startMuted": v.get("startMuted") if isinstance(v.get("startMuted"), bool) else None,
+        "endMuted": v.get("endMuted") if isinstance(v.get("endMuted"), bool) else None,
+    }
+
+
+def volume_word(vol):
+    """pass / fail stay as they are; inconclusive is "cannot judge"."""
+    if vol is None:
+        return DASH
+    return "cannot judge" if vol["verdict"] == "inconclusive" else vol["verdict"]
+
+
+def level(scalar, muted):
+    parts = []
+    if scalar is not None:
+        parts.append("%d%%" % round(scalar * 100))
+    if muted is not None:
+        parts.append("muted" if muted else "unmuted")
+    return " ".join(parts) or DASH
+
+
+def volume_text(vol):
+    """One cell: 'unchanged: pass (keys 2, vol 0, mute 0, 50% unmuted -> 50% unmuted)'."""
+    if vol is None:
+        return DASH
+    head = "%s: %s" % (vol["expect"], volume_word(vol))
+    counts = "keys %s, vol %s, mute %s" % (fmt(vol["keyReports"]), fmt(vol["volumeEvents"]), fmt(vol["muteEvents"]))
+    if vol["deviceEvents"]:
+        counts += ", device %s" % fmt(vol["deviceEvents"])
+    levels = "%s -> %s" % (level(vol["startScalar"], vol["startMuted"]), level(vol["endScalar"], vol["endMuted"]))
+    why = (" [%s]" % vol["reason"]) if vol["reason"] else ""
+    return "%s (%s, %s)%s" % (head, counts, levels, why)
+
+
 def rows(report):
     out = []
     for i, step in enumerate(report.get("steps") or []):
@@ -90,6 +146,7 @@ def rows(report):
             "latP50": num(vals.get("lat.p50Ms")),
             "latP99": num(vals.get("lat.p99Ms")),
             "latUnmatched": num(vals.get("lat.unmatched")),
+            "volume": volume_of(a),
             "effectivePath": (a.get("effectivePath") or {}).get("atEnd"),
             "attempts": len(step.get("attempts") or []),
         })
@@ -145,6 +202,9 @@ def report_table(rs):
     lat = has_latency(rs)
     if lat:
         head += ["lat.n", "lat.p50Ms", "lat.p99Ms", "lat.unmatched"]
+    vol = any(r["volume"] is not None for r in rs)
+    if vol:
+        head.append("volume")
     head.append("effectivePath")
     body = []
     for r in rs:
@@ -152,6 +212,8 @@ def report_table(rs):
                fmt(r["padReports"]), fmt(r["padChanged"]), fmt(r["lossRatio"], 3), fmt(r["onsetMs"], 2), fmt(r["framesSeen"])]
         if lat:
             row += [fmt(r["latN"]), fmt(r["latP50"], 3), fmt(r["latP99"], 3), fmt(r["latUnmatched"])]
+        if vol:
+            row.append(volume_text(r["volume"]))
         row.append(fmt(r["effectivePath"]))
         body.append(row)
     return table(head, body) if body else "(no steps)"
@@ -229,6 +291,8 @@ def compare(a, b, loss_threshold, onset_threshold, latency_threshold=0.1):
         if x and y:
             if x["verdict"] != y["verdict"]:
                 marks.append("verdict")
+            if x["volume"] is not None and y["volume"] is not None and x["volume"]["verdict"] != y["volume"]["verdict"]:
+                marks.append("volume")
             d_loss = delta(x["lossRatio"], y["lossRatio"])
             if d_loss is not None and abs(d_loss) > loss_threshold + 1e-12:
                 marks.append("lossRatio")
@@ -259,6 +323,9 @@ def side_by_side(cmp):
     lat = any((p["a"] and p["a"]["latP50"] is not None) or (p["b"] and p["b"]["latP50"] is not None) for p in cmp["pairs"])
     if lat:
         head += ["lat.p50Ms A", "B", "Δ", "lat.p99Ms A", "B", "Δ"]
+    vol = any((p["a"] and p["a"]["volume"]) or (p["b"] and p["b"]["volume"]) for p in cmp["pairs"])
+    if vol:
+        head.append("volume A/B")
     head.append("diff")
     body = []
     for p in cmp["pairs"]:
@@ -273,6 +340,8 @@ def side_by_side(cmp):
         if lat:
             row += [fmt(x["latP50"], 3) if x else DASH, fmt(y["latP50"], 3) if y else DASH, signed(p["latP50Delta"], 3),
                     fmt(x["latP99"], 3) if x else DASH, fmt(y["latP99"], 3) if y else DASH, signed(p["latP99Delta"], 3)]
+        if vol:
+            row.append("%s / %s" % (volume_word(x["volume"]) if x else DASH, volume_word(y["volume"]) if y else DASH))
         row.append(("* " + ",".join(p["marks"])) if p["marks"] else "")
         body.append(row)
     return table(head, body) if body else "(no steps)"
@@ -325,7 +394,7 @@ def main(argv=None):
                 print("WARNING: run %s is incomplete; steps it did not reach show %s" % (label, DASH))
         if cmp["headerWarnings"]:
             print()
-        print("Side by side (paired by stepId; * = verdict change, lossRatio Δ > %s, onsetMs Δ > %s ms, lat.p50Ms Δ > %s ms)" %
+        print("Side by side (paired by stepId; * = verdict or volume verdict change, lossRatio Δ > %s, onsetMs Δ > %s ms, lat.p50Ms Δ > %s ms)" %
               (fmt(args.loss_threshold, 3), fmt(args.onset_threshold, 2), fmt(args.latency_threshold, 3)))
         print(side_by_side(cmp))
         n = sum(1 for p in cmp["pairs"] if p["marks"])

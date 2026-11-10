@@ -96,6 +96,12 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     /// Developer mode: every parsed report 0x06 with its kernel timestamp (ns on `LatencyMeter.nowNs()`), on the main
     /// actor, before the 125 Hz publish cap. Set only while a run is going, so a normal session pays nothing for it.
     var frameTap: ((GamepadFrame, UInt64) -> Void)?
+    /// Developer mode, volume checks: every report 0x11 of the receiver's Consumer Control interface (the volume keys:
+    /// `11 01` up, `11 02` down, `11 04` mute, `11 00` release) as read, with the time it reached the app (ns on
+    /// `LatencyMeter.nowNs()`), on the main actor. It rides on the reader the app already has (`HIDMonitor`, a plain
+    /// non-exclusive open, never a seize), so it only observes; the report is still logged as before. Set only while a
+    /// run with a volume step is going.
+    var consumerTap: (([UInt8], UInt64) -> Void)?
     /// Developer mode needs the driver manager (input path, engine pid, tap status); the app sets it at launch.
     var driverForDeveloper: DriverManager?
     /// Developer mode: non-nil while the mode is on. Exclusive with the layout editor and the guided learn.
@@ -188,6 +194,9 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     }
 
     func handle(reportID: UInt32, bytes: [UInt8], usagePage: Int) {
+        if reportID == UInt32(DevConsumerReport.reportID), usagePage == Self.consumerUsagePage {
+            consumerTap?(bytes, LatencyMeter.nowNs())
+        }
         guard usagePage == Self.gamepadUsagePage, reportID == 6 else {
             logRaw(reportID: reportID, bytes: bytes, usagePage: usagePage)
             return

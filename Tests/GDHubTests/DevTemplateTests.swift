@@ -118,7 +118,7 @@ final class DevTemplateTests: XCTestCase {
     func testOnlyTheRemapTemplatesUseRequirementsAndAllBuiltInsValidate() {
         // Every `requires` in a built-in must pass the closed vocabulary; only the remap templates use it.
         for t in DevBuiltins.generate(layout: layout) {
-            if t.id.hasPrefix("remap-") {
+            if t.id.hasPrefix("remap-") || t.id == "gkeys-volume" {
                 XCTAssertTrue(t.steps.allSatisfy { $0.requires != nil }, t.id)
             } else {
                 XCTAssertTrue(t.steps.allSatisfy { $0.requires == nil }, t.id)
@@ -194,7 +194,7 @@ final class DevTemplateTests: XCTestCase {
     func testBundledFilesAreTheGeneratorsOutputAndValidate() throws {
         let entries = DevTemplates.load(folder: fresh(), layout: layout)
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, remap-g1-as-y, remap-swap-a-b, t7-rt-hold-toggle, t8-latency, in that order")
+        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, remap-g1-as-y, remap-swap-a-b, gkeys-volume, t7-rt-hold-toggle, t8-latency, in that order")
         for (entry, want) in zip(entries, generated) {
             XCTAssertEqual(entry.source, .builtIn)
             XCTAssertEqual(entry.url.lastPathComponent, DevBuiltins.fileName(for: want))
@@ -522,13 +522,13 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(entry("wrong")?.errors, ["wrong.json step 1: unknown control g6"])
         XCTAssertEqual(entry("wrong")?.isRunnable, false, "Start stays disabled while an error stands")
         XCTAssertNil(entry("notes"))
-        XCTAssertEqual(entries.prefix(8).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b", "t7-rt-hold-toggle", "t8-latency"], "built-ins and overrides first, in their order")
+        XCTAssertEqual(entries.prefix(9).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b", "gkeys-volume", "t7-rt-hold-toggle", "t8-latency"], "built-ins and overrides first, in their order")
         XCTAssertEqual(entries.last?.source, .local)
     }
 
     func testAMissingFolderIsFine() {
         let entries = DevTemplates.load(folder: fresh().appendingPathComponent("nope"), layout: layout)
-        XCTAssertEqual(entries.count, 8)
+        XCTAssertEqual(entries.count, 9)
     }
 
     func testWarningsKeepATemplateRunnable() throws {
@@ -539,5 +539,104 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertTrue(e.isRunnable)
         XCTAssertEqual(e.errors, [])
         XCTAssertEqual(e.warnings.count, 1)
+    }
+
+    // MARK: expect.volume and the gkeys-volume template (remap R4b)
+
+    func testExpectVolumeDecodesTolerantlyAndRoundTripsAndIsOmittedWhenAbsent() throws {
+        let t = try DevTemplate.decode(Data(#"{"id":"v","steps":[{"id":"s","kind":"digital","controls":["g3"],"expect":{"volume":"unchanged","futureKey":1}}]}"#.utf8))
+        XCTAssertEqual(t.steps[0].expect?.volume, "unchanged")
+        XCTAssertEqual(t.steps[0].expect?.volumeExpectation, .unchanged)
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+        let old = try DevTemplate.decode(Data(#"{"id":"o","steps":[{"id":"s","kind":"digital","controls":["a"],"expect":{"times":3}}]}"#.utf8))
+        XCTAssertNil(old.steps[0].expect?.volume)
+        XCTAssertFalse(String(decoding: try old.encoded(), as: UTF8.self).contains("volume"), "absent stays absent in the file")
+        // a word from a newer build still loads, and is rejected by validation rather than guessed at
+        let odd = try DevTemplate.decode(Data(#"{"id":"o","steps":[{"id":"s","kind":"digital","controls":["g3"],"expect":{"volume":"louder"}}]}"#.utf8))
+        XCTAssertEqual(odd.steps[0].expect?.volume, "louder")
+        XCTAssertNil(odd.steps[0].expect?.volumeExpectation)
+        XCTAssertThrowsError(try DevTemplate.decode(Data(#"{"id":"b","steps":[{"id":"s","expect":{"volume":3}}]}"#.utf8)), "a wrong type is a broken file")
+    }
+
+    func testExpectVolumeIsValidated() {
+        func step(_ id: String, _ kind: DevKind, _ control: String, _ volume: String?) -> DevStep {
+            var s = DevStep(id: id, kind: kind, controls: [control], title: "t")
+            var e = DevExpect(); e.volume = volume; s.expect = e
+            return s
+        }
+        let t = template(steps: [
+            step("s1", .digital, "g3", "unchanged"),
+            step("s2", .digital, "g4", "changes"),
+            step("s3", .digital, "g2", "louder"),
+            step("s4", .digital, "g2", ""),
+            step("s5", .trigger, "rt", "unchanged"),
+            step("s6", .held, "a", "changes"),
+            step("s7", .digital, "a", nil),
+        ])
+        XCTAssertEqual(t.validate(layout: layout), [
+            "full.json step 3: expect volume \"louder\" must be \"unchanged\" or \"changes\"",
+            "full.json step 4: expect volume \"\" must be \"unchanged\" or \"changes\"",
+            "full.json step 5: expect volume only applies to digital steps",
+            "full.json step 6: expect volume only applies to digital steps",
+        ])
+    }
+
+    func testGKeysVolumeTemplateIsAsSpecifiedAndValidates() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "gkeys-volume" })
+        XCTAssertEqual(t.paths, ["engine", "driver"], "App, then Driver")
+        XCTAssertEqual(t.validate(layout: layout), [])
+        XCTAssertEqual(t.steps.map(\.id), ["rest", "g3-rb", "g4-mute-on", "g4-mute-off", "g2-nothing"])
+        XCTAssertEqual(t.steps.map { $0.devKind }, [.rest, .digital, .digital, .digital, .digital])
+        XCTAssertEqual(t.steps.map(\.controls), [[], ["g3"], ["g4"], ["g4"], ["g2"]])
+        for s in t.steps {
+            XCTAssertEqual(s.requires?.mapping, ["g3": "rb", "g4": "built_in", "g2": "nothing"], "\(s.id): requires is step-level, so every step carries it")
+            XCTAssertFalse(s.title.isEmpty); XCTAssertFalse(s.detail.isEmpty)
+        }
+        XCTAssertEqual(t.steps.map { $0.expect?.volume }, [nil, "unchanged", "changes", "changes", "unchanged"])
+        XCTAssertEqual(t.steps[1].expect?.items, DevExpectedItems(buttons: ["RB"]), "G3 sends RB to the pad")
+        XCTAssertEqual(t.steps[2].expect?.items, DevExpectedItems(), "G4 sends nothing to the pad")
+        XCTAssertEqual(t.steps[3].expect?.items, DevExpectedItems())
+        XCTAssertEqual(t.steps[4].expect?.items, DevExpectedItems(), "G2 is silenced: nothing on the pad")
+        XCTAssertEqual(t.steps[2].expect?.times, 1); XCTAssertEqual(t.steps[3].expect?.times, 1)
+        for s in t.steps.dropFirst() { XCTAssertEqual(s.effectiveReleaseSeconds, 1, "\(s.id): the 1 s release tail") }
+        // plain words, the picks the owner makes by hand, and the way back
+        for word in ["G3 → RB", "G4", "G2 → Nothing", "half", "inconclusive"] { XCTAssertTrue(t.notes.contains(word), "notes lack \(word)") }
+        XCTAssertTrue(t.notes.contains("Afterwards: Mapping → Reset all remaps"))
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+    }
+
+    func testGKeysVolumeSkipsEveryStepOnTheFactoryMappingAndRunsWithThePicks() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "gkeys-volume" })
+        let factory = DevResolvedStep.resolve(template: t, mapping: .default, layout: layout)
+        XCTAssertTrue(factory.allSatisfy { $0.skipReason != nil })
+        XCTAssertEqual(DevRequirementCheck.startBlock(template: t, mapping: .default, layout: layout),
+                       "Needs G2 → Nothing; G3 → RB: set it in Mapping first (leave Developer mode, press Mapping, pick, Done)")
+        var picked = ControlMapping.default
+        picked.setOutput(.pad(.rb), for: "g3")
+        picked.setOutput(.nothing, for: "g2")
+        let steps = DevResolvedStep.resolve(template: t, mapping: picked, layout: layout)
+        XCTAssertTrue(steps.allSatisfy { $0.skipReason == nil }, "\(steps.map(\.skipReason))")
+        XCTAssertEqual(steps[1].expected, DevExpectedItems(buttons: ["RB"]))
+        XCTAssertEqual(steps[2].expected, DevExpectedItems())
+        XCTAssertNil(DevRequirementCheck.startBlock(template: t, mapping: picked, layout: layout))
+    }
+
+    /// Existing templates are untouched by the volume work: a pinned hash of each (compact sorted JSON).
+    func testExistingBuiltInTemplatesAreByteIdenticalToBeforeTheVolumeWork() {
+        let pinned = [
+            "full": "f2774bac2edda1ef627ee5f9c85fc89ee061d6ad3974acc6cba7bbb058578b0c",
+            "sticks": "3201055f3b02ff3b155a69a575a4d948267316589d25d6e01ab1d0163b3cc027",
+            "gkeys": "baf29ee65edd062a11cdb234339abe3ee711048a48e9847ee72af64194741d20",
+            "paddles-sax-echo": "51bb4fed4932c429f1d5ab15451ade7a02a9c4706cfe45ddbc1243755e6d90d0",
+            "remap-g1-as-y": "b276c1d6b2d0f3420bf96555b6a8d98306ddf8e98807f69d300d465c19e06394",
+            "remap-swap-a-b": "1da25b925a427722b788c981e5b8b2464cfd05f775e10e6b1462f53feb4e5788",
+            "t7-rt-hold-toggle": "ade46865ef35704efe98f415254c19892c7d145eae262930d3f8ddffa6c870f0",
+            "t8-latency": "d5b889447f85385d388a08729da1b30e12c5dc81377379caadff72fb4b5f25d7",
+        ]
+        let generated = DevBuiltins.generate(layout: layout)
+        XCTAssertEqual(Set(generated.map(\.id)), Set(pinned.keys).union(["gkeys-volume"]))
+        for t in generated where t.id != "gkeys-volume" {
+            XCTAssertEqual(DevRunReportStore.templateSha256(t), pinned[t.id], "\(t.id) changed")
+        }
     }
 }

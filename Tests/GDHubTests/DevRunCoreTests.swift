@@ -720,15 +720,16 @@ final class DevRunCoreTests: XCTestCase {
     func testBuiltInTemplatesResolveWithoutAnySkipOnTheFactoryMapping() {
         let templates = DevBuiltins.generate(layout: Rig.layout)
         XCTAssertFalse(templates.isEmpty)
-        // The remap templates are meant to skip until the owner makes their picks; every other one runs as is.
-        let others = templates.filter { !$0.id.hasPrefix("remap-") }
-        XCTAssertEqual(others.count, templates.count - 2)
+        // The remap templates (and the volume-key one) are meant to skip until the owner makes their picks; every other one runs as is.
+        let needsPicks: (DevTemplate) -> Bool = { $0.id.hasPrefix("remap-") || $0.id == "gkeys-volume" }
+        let others = templates.filter { !needsPicks($0) }
+        XCTAssertEqual(others.count, templates.count - 3)
         for t in others {
             for r in DevResolvedStep.resolve(template: t, mapping: .default, layout: Rig.layout) {
                 XCTAssertNil(r.skipReason, "\(t.id) step \(r.step.id)")
             }
         }
-        for t in templates where t.id.hasPrefix("remap-") {
+        for t in templates where needsPicks(t) {
             let skips = DevResolvedStep.resolve(template: t, mapping: .default, layout: Rig.layout).map(\.skipReason)
             XCTAssertTrue(skips.allSatisfy { $0 != nil }, "\(t.id) skips every step on the factory mapping: \(skips)")
         }
@@ -1331,5 +1332,155 @@ final class DevRunCoreTests: XCTestCase {
         XCTAssertEqual(report.steps[1].expected, DevExpectedItems(buttons: ["A"]))
         XCTAssertEqual(report.steps[1].attempts[0].effectivePath.atStart, "engine")
         XCTAssertEqual(report.startedAt, DevRunReport.iso(Date(timeIntervalSince1970: 1_700_000_000)))
+    }
+}
+
+// MARK: - Volume steps (remap R4b)
+
+extension DevRunCoreTests {
+    private func volumeStep(_ control: String, buttons: [String], volume: String, times: Int) -> DevStep {
+        var s = DevStep(id: control, kind: .digital, controls: [control], title: "t", seconds: 4, readySeconds: 1, releaseSeconds: 1)
+        var e = DevExpect(); e.items = DevExpectedItems(buttons: buttons); e.times = times; e.volume = volume
+        s.expect = e
+        return s
+    }
+
+    private func key(_ r: Rig, _ payload: UInt8) -> DevRunCore.Event {
+        .consumerReport(DevConsumerReport(tNs: r.now, bytes: [0x11, payload]))
+    }
+
+    private func change(_ r: Rig, _ kind: VolumeEventKind, _ state: VolumeState = .device(scalar: 0.4375)) -> DevRunCore.Event {
+        .volumeEvent(VolumeEvent(tNs: r.now, kind: kind, state: state))
+    }
+
+    /// The key is pressed `times` times with its 0x11 reports (`payload` nil = the receiver reports nothing), `during`
+    /// runs while the key is down, `after` 700 ms after the last release (inside the 1 s tail). Runs to the end.
+    private func volumeRun(control: String, output: ControlOutput?, buttons: [String], volume: String, times: Int,
+                           start: VolumeState = .device(scalar: 0.5), payload: UInt8? = 0x01, padShows: Bool = true,
+                           beforeGo: (Rig) -> Void = { _ in }, during: (Rig, Int) -> Void = { _, _ in },
+                           after: (Rig) -> Void = { _ in }) throws -> (Rig, DevAttempt) {
+        let r = Rig()
+        if let output { r.mapping.setOutput(output, for: control) }
+        let down = try XCTUnwrap(DevExpectation.pressedFrame(for: control, mapping: r.mapping))
+        var pad = PadState()
+        if padShows, !buttons.isEmpty { pad.buttons = [.rb] }
+        r.prepare()
+        r.start(steps: [volumeStep(control, buttons: buttons, volume: volume, times: times)])
+        r.send(.volumeState(start, tNs: r.now))
+        beforeGo(r)
+        r.untilGo()
+        for i in 0..<times {
+            if let payload { r.send(key(r, payload)) }
+            r.move(down, pad)
+            during(r, i)
+            r.releaseAll()
+            if let payload { r.send(key(r, 0x00)); _ = payload }
+        }
+        r.advance(700)
+        after(r)
+        var spent = 0.0
+        while r.core.state != .finished, spent < 12_000 { r.advance(50); spent += 50 }
+        XCTAssertEqual(r.core.state, .finished)
+        return (r, try XCTUnwrap(r.core.results[0][0]?.attempts.last))
+    }
+
+    func testVolumeUnchangedPassesForAKeySentToThePadWhenTheMacStaysQuiet() throws {
+        let (r, att) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2)
+        XCTAssertEqual(r.verdict(0), .pass, att.metrics.detail)
+        let v = try XCTUnwrap(att.volume)
+        XCTAssertEqual(v.verdict, .pass)
+        XCTAssertEqual(v.keyReports, 2)
+        XCTAssertEqual(v.consumerReports, 4)
+        XCTAssertEqual([v.volumeEvents, v.muteEvents, v.deviceEvents], [0, 0, 0])
+        XCTAssertEqual(v.startScalar, 0.5); XCTAssertEqual(v.endScalar, 0.5)
+        XCTAssertEqual(r.reportsWritten.last?.steps[0].attempts.last?.volume, v, "the report carries it")
+    }
+
+    func testVolumeUnchangedFailsWhenTheMacsVolumeMovesWhileTheKeyIsDown() throws {
+        let (r, att) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2,
+                                     during: { r, i in if i == 0 { r.send(self.change(r, .volume, .device(scalar: 0.5625))) } })
+        guard case .fail(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertTrue(why.contains("1 volume and 0 mute change"), why)
+        XCTAssertEqual(att.volume?.endScalar, 0.5625)
+    }
+
+    func testAChangeInTheReleaseTailCountsAndOneBeforeGoDoesNot() throws {
+        let (r, _) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2,
+                                   after: { r in r.send(self.change(r, .volume, .device(scalar: 0.5625))) })
+        XCTAssertEqual(r.verdict(0)?.tag, "fail", "700 ms after the last release is still inside the 1 s tail")
+        let (early, att) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2,
+                                         beforeGo: { r in r.send(self.change(r, .volume, .device(scalar: 0.5))) })
+        XCTAssertEqual(early.verdict(0), .pass, "a change before Go is not the key's: \(att.metrics.detail)")
+        XCTAssertEqual(att.volume?.volumeEvents, 0)
+    }
+
+    func testVolumeChangesPassesOnAMuteAndFailsOnSilence() throws {
+        let (r, att) = try volumeRun(control: "g4", output: nil, buttons: [], volume: "changes", times: 1, payload: 0x04,
+                                     during: { r, _ in r.send(self.change(r, .mute, .device(scalar: 0.5, muted: true))) })
+        XCTAssertEqual(r.verdict(0), .pass, att.metrics.detail)
+        XCTAssertEqual(att.volume?.muteEvents, 1)
+        XCTAssertEqual(att.volume?.startMuted, false)
+        XCTAssertEqual(att.volume?.endMuted, true)
+        let (silent, att2) = try volumeRun(control: "g4", output: nil, buttons: [], volume: "changes", times: 1, payload: 0x04)
+        guard case .fail(let why)? = silent.verdict(0) else { return XCTFail("\(String(describing: silent.verdict(0))) \(att2.metrics.detail)") }
+        XCTAssertTrue(why.contains("neither the volume nor the mute changed"), why)
+    }
+
+    func testNoKeyReportIsInconclusiveAndShownAsSuchNotAsAFailure() throws {
+        let (r, att) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2, payload: nil)
+        guard case .inconclusive(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0))) \(att.metrics.detail)") }
+        XCTAssertTrue(why.hasPrefix("cannot judge the volume: no volume-key report"), why)
+        XCTAssertEqual(att.volume?.consumerReports, 0)
+    }
+
+    func testVolumeAtItsLimitAtGoIsInconclusive() throws {
+        // G2 (volume down) with the volume at zero.
+        let (r, att) = try volumeRun(control: "g2", output: .nothing, buttons: [], volume: "unchanged", times: 2,
+                                     start: .device(scalar: 0), payload: 0x02)
+        guard case .inconclusive(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0))) \(att.metrics.detail)") }
+        XCTAssertTrue(why.contains("already at its lowest"), why)
+        // G3 (volume up) with the volume at full.
+        let (top, _) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2,
+                                     start: .device(scalar: 1), payload: 0x01)
+        guard case .inconclusive(let why2)? = top.verdict(0) else { return XCTFail("\(String(describing: top.verdict(0)))") }
+        XCTAssertTrue(why2.contains("already at its highest"), why2)
+    }
+
+    func testADeviceWithNoVolumeOrMuteIsInconclusive() throws {
+        let (r, _) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2,
+                                   start: VolumeState(deviceID: 5, hasVolume: false, hasMute: false))
+        guard case .inconclusive(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertTrue(why.contains("neither a software volume nor a mute"), why)
+    }
+
+    func testAnOutputDeviceChangeDuringTheStepIsInconclusive() throws {
+        let (r, att) = try volumeRun(control: "g3", output: .pad(.rb), buttons: ["RB"], volume: "unchanged", times: 2,
+                                     during: { r, i in if i == 1 { r.send(self.change(r, .device, .device(9, scalar: 0.8))) } })
+        guard case .inconclusive(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertTrue(why.contains("output device changed"), why)
+        XCTAssertEqual(att.volume?.deviceEvents, 1)
+    }
+
+    func testAPadFailureWinsOverAnInconclusiveVolume() throws {
+        // The pad never shows RB although the step expects it: the pad part fails, and the missing key report does not hide it.
+        let (r, _) = try volumeRun(control: "g3", output: nil, buttons: ["RB"], volume: "unchanged", times: 2, payload: nil, padShows: false)
+        XCTAssertEqual(r.verdict(0)?.tag, "fail")
+    }
+
+    func testOnlyAStepWithExpectVolumeKeepsOrReportsAnything() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [Rig.restStep, Rig.aStep])
+        r.send(.volumeState(.device(), tNs: r.now))
+        r.untilGo(); r.advance(2100)
+        r.send(key(r, 0x01))
+        r.send(change(r, .volume))
+        r.untilGo(); r.pressA(); r.advance(400)
+        XCTAssertEqual(r.core.state, .finished)
+        let report = r.reportsWritten[0]
+        XCTAssertEqual(report.steps.map { $0.verdict }, [.pass, .pass], "volume events do not touch a step that did not ask")
+        XCTAssertTrue(report.steps.allSatisfy { $0.attempts.allSatisfy { $0.volume == nil } })
+        let json = String(decoding: (try? report.encoded()) ?? Data(), as: UTF8.self)
+        XCTAssertFalse(json.contains("\"volume\""), "such a report is byte for byte what it was")
     }
 }

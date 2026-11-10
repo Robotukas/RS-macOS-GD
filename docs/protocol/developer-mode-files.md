@@ -54,7 +54,8 @@ compare tool (exit 2).
 `expect` keys: stick `minReports` (100), `extent` (0.40), `deadZone` (0.12), `otherStickStill` (true),
 `requireReturn` (true), `flicks` (absent) and `requireDirections` (true); trigger `peak` (0.90), `release` (0.05)
 and `times` (1); digital `items` (`{buttons:[...], hat:"N"..."NW", guide:bool}`, replaces the simulated expectation;
-empty means "nothing on the pad") and `times` (2); held `item` (`RT`, `LT`, a button name such as `A`, `D-pad left`,
+empty means "nothing on the pad"), `times` (2) and `volume` (absent; `"unchanged"` or `"changes"`, see "Volume
+checks" below); held `item` (`RT`, `LT`, a button name such as `A`, `D-pad left`,
 or a hat direction `N`…`NW`; absent = derived from the control), `minLevel` (0.5, the trigger value that counts as
 held) and `releases` (absent; a list of the step's own controls that must be let go while the item stays held, see "Held
 steps" below).
@@ -96,6 +97,31 @@ held step on a remapped `lt` / `rt` is recorded `skipped` ("LT is remapped to A;
 next driver update"), and so is a digital or held step on a control that is sent to LT or RT ("a button sent to LT/RT is
 checked after the next driver update"). The window of an `lt` / `rt` step opens on the physical pull of that trigger, not
 on the pad's trigger value.
+
+### Volume checks (`expect.volume`)
+
+A **digital** step may say what the Mac's volume must do while its key is pressed: `"unchanged"` (the key is silenced
+or sent to the pad: G2 → Nothing, G3 → RB) or `"changes"` (the key kept its built-in function: G4 mutes and unmutes).
+Anything else, or a non-digital step, is a validation error. It is judged on **counted change events**, not on two
+samples, between the step's Go and the end of its release tail (give such a step `releaseSeconds: 1`):
+
+- CoreAudio property listeners on the default output device (software volume on the main element, else channels 1 and
+  2; mute; and the default-output-device property itself). Observation only, no permission; nothing sets a volume.
+  A notification counts only when the value really differs from the one before.
+- Raw **0x11** reports from the receiver's Consumer Control interface (interface 4: `11 01` volume up, `11 02` down,
+  `11 04` mute, `11 00` release). They arrive whether or not the Mac acts on the key, so a silenced key still proves it
+  was pressed. They are read by the app's existing HID reader (a plain non-exclusive open, never a seize).
+
+| Verdict | When |
+|---|---|
+| `pass`, `unchanged` | at least one key report (a 0x11 report with a key bit set) and no volume or mute change event |
+| `pass`, `changes` | at least one key report and at least one volume or mute change event |
+| `fail` | `unchanged` with a change event, or `changes` with none |
+| `inconclusive` ("cannot judge", never a pass, never a fail) | no key report arrived; or the device has neither a software volume nor a mute (or there is no output device); or the volume was at its limit in the key's direction at Go (volume down at 0, volume up at 1.0; a mute key has no limit); or the default output device changed during the span |
+
+The pad part of the step is judged as usual. Folded together: pad pass and volume pass is `pass`; pad pass and volume
+`inconclusive` makes the step `inconclusive` (`cannot judge the volume: ...`); a failure on either side is `fail` and
+a pad failure is never hidden by a volume that could not be judged.
 
 ### Held steps
 
@@ -155,6 +181,7 @@ style `<id>.json step <n>: ...`:
   `requires names X, which has no output that can be remapped`
 - `step n: expect names unknown button "X"` / `unknown hat direction "X"`
 - `step n: expect times T must be 1 or more` / `expect flicks F must be 1 or more` / `expect flicks only applies to stick steps`
+- `step n: expect volume "X" must be "unchanged" or "changes"` / `expect volume only applies to digital steps`
 - `step n: expect releases only applies to held steps` / `expect releases names X, which is not one of the step's controls`
 - `step n: toggleInputPath value "X" is not engine, shadow or driver` / `toggleInputPath needs values, a count of 1 or more and an intervalMs of 1 or more`
 - warnings: `seconds S is outside 1...120, using U`, `readySeconds ...`, `releaseSeconds ...`
@@ -211,7 +238,7 @@ A complete real template is `Sources/GDHub/Resources/dev-script-full.json`.
 ### Built-in templates
 
 `full`, `sticks`, `gkeys` (generated from the layout), `paddles-sax-echo`, `remap-g1-as-y`, `remap-swap-a-b`,
-`t7-rt-hold-toggle` and `t8-latency`. The bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
+`gkeys-volume`, `t7-rt-hold-toggle` and `t8-latency`. The bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
 `GDHUB_WRITE_DEV_TEMPLATES=1 swift test --filter DevTemplateTests/testWriteBundledTemplates` rewrites them.
 
 **`remap-g1-as-y`** ("Remap check: G1 sent to Y (App, then Driver)", `paths: ["engine","driver"]`) and
@@ -222,6 +249,15 @@ owner makes the picks by hand first (`Mapping → G1 → Y`; `Mapping → A → 
 (`expect.items`, `expect.item`), so the template never checks the mapper against itself. `remap-g1-as-y`: `rest`; `g1`
 (digital, expects `Y`); `y` (digital, expects `Y`); `hold-g1-then-y` (held, controls `["g1","y"]`, 6 s, `expect.item`
 `Y`, `expect.releases` `["g1"]`). `remap-swap-a-b`: `rest`; `a` (expects `B`); `b` (expects `A`).
+
+**`gkeys-volume`** ("Volume keys under a remap: G2, G3, G4 (App, then Driver)", `paths: ["engine","driver"]`, picker
+order after `remap-swap-a-b`) checks that a remapped or silenced G key leaves the Mac's volume alone and a G key left
+at its built-in function still changes it. The owner makes the picks by hand first (`Mapping → G3 → RB`, G4 left at
+Mute (built in), `Mapping → G2 → Nothing`), sets the Mac's output to about half volume and not muted, and resets
+afterwards (`Mapping → Reset all remaps`). Every step carries `requires.mapping` `{"g3":"rb","g4":"built_in","g2":"nothing"}`
+and an explicit expectation: `rest`; `g3-rb` (digital, pad `RB`, `times` 2, `expect.volume` `unchanged`); `g4-mute-on`
+(pad nothing, `times` 1, `changes`); `g4-mute-off` (the same again, a separate step, `changes`); `g2-nothing` (pad
+nothing, `times` 2, `unchanged`). Digital steps have a 1 s release tail. The runner never sets a mapping.
 
 **`t8-latency`** ("Latency: controller to pad, per press (App, then Driver) — T8 gate", `paths: ["engine","driver"]`)
 is the evidence for the receiver-takeover gate rows G4a (Driver digital p50 at most 0.5 ms) and G4b (Driver at least
@@ -264,7 +300,16 @@ one). **The last attempt that is not `superseded` carries the result**; if all a
 
 An attempt: `startedNs`, `readyNs`, `windowStartNs`, `windowEndNs`, `superseded`, `pathUnconfirmed` ("Run anyway" after
 a path confirmation timed out), `verdict`, `metrics`, `entryState` (pad state the judge started from; absent = no report
-seen yet), `entryRaw` (last report of each ID before the step, hex), `effectivePath` (`{atReady, atStart, atEnd}`), `raw`.
+seen yet), `entryRaw` (last report of each ID before the step, hex), `effectivePath` (`{atReady, atStart, atEnd}`), `raw`,
+and, only for a step with `expect.volume`, `volume`.
+
+`volume`: `{expect, verdict, consumerReports, keyReports, volumeEvents, muteEvents, deviceEvents, startScalar?,
+endScalar?, startMuted?, endMuted?, hasVolume, hasMute}`. `expect` is the step's word; `verdict` has the same shape as the
+attempt's (`inconclusive` = cannot judge, with the reason); `consumerReports` is the number of 0x11 reports from Go to the
+end of the release tail and `keyReports` how many of them were a key going down; the three `…Events` are the change events
+by kind (volume, mute, output device) in that span; `startScalar` / `endScalar` (0...1) and `startMuted` / `endMuted` are the
+output device's state at Go and at the end (absent when the device has no such control); `hasVolume` / `hasMute` say
+whether it has them. A report whose steps have no `expect.volume` carries no `volume` key at all.
 
 `verdict` is `{"verdict": "pass" | "fail" | "skipped" | "inconclusive" | "invalid", "reason": "..."}`; `pass` has no
 reason. A verdict word from a newer build reads as `inconclusive` with the word in the reason.
@@ -381,7 +426,9 @@ Driver LIVE report as B.
 short mappingHash, complete or not, app/engine/dext builds, pad identity, notes) and a table with one line per step:
 `#`, `stepId`, `kind`, `controls`, `verdict`, `detail` (the verdict reason, else the judge's words), `padReports`,
 `padChanged`, `lossRatio`, `onsetMs`, `framesSeen`, `effectivePath`, and, when any step carries latency, `lat.n`,
-`lat.p50Ms`, `lat.p99Ms`, `lat.unmatched` before `effectivePath`. The numbers come from the step's final attempt.
+`lat.p50Ms`, `lat.p99Ms`, `lat.unmatched` before `effectivePath`, and, when any step carries a `volume` object, a
+`volume` column (`unchanged: pass (keys 2, vol 0, mute 0, 50% unmuted -> 50% unmuted)`; an `inconclusive` volume verdict
+reads `cannot judge`). The numbers come from the step's final attempt.
 `—` means "not recorded".
 
 **Two reports** print both of those, then:
@@ -391,9 +438,9 @@ short mappingHash, complete or not, app/engine/dext builds, pad identity, notes)
    expected when comparing paths; the others mean the numbers are not directly comparable.
 2. A side-by-side table **paired by `stepId`** (not by position): `verdict A/B`, `lossRatio A | B | Δ`,
    `onsetMs A | B | Δ`, `padChanged A/B`, and, when either run has latency, `lat.p50Ms A | B | Δ` and
-   `lat.p99Ms A | B | Δ`. A step present in only one run shows `—` on the other side and is not a
+   `lat.p99Ms A | B | Δ`, and, when either run has a `volume` object, `volume A/B` (`pass`, `fail`, `cannot judge`). A step present in only one run shows `—` on the other side and is not a
    difference by itself (it is how an incomplete or shorter run looks). The `diff` column carries `*` and the reasons:
-   `verdict` (the verdict word changed), `lossRatio` (|Δ| above `--loss-threshold`, default 0.10), `onsetMs` (|Δ| above
+   `verdict` (the verdict word changed), `volume` (both runs have a volume check and its verdict differs), `lossRatio` (|Δ| above `--loss-threshold`, default 0.10), `onsetMs` (|Δ| above
    `--onset-threshold`, default 5 ms), `lat.p50Ms` (|Δ p50| above `--latency-threshold`, default 0.1 ms; p99 is shown, not
    marked). Δ is B minus A.
 3. When both reports carry latency, a last line, for the gate rows G4a and G4b:

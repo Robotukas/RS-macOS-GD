@@ -60,7 +60,7 @@ final class DevRequirementCheckTests: XCTestCase {
     }
 
     func testTemplatesWithoutRequirementsAreNeverBlocked() {
-        for t in DevBuiltins.generate(layout: layout) where !t.id.hasPrefix("remap-") {
+        for t in DevBuiltins.generate(layout: layout) where !t.id.hasPrefix("remap-") && t.id != "gkeys-volume" {
             XCTAssertEqual(DevRequirementCheck.unmet(template: t, mapping: .default, layout: layout), [], t.id)
             XCTAssertNil(DevRequirementCheck.startBlock(template: t, mapping: .default, layout: layout), t.id)
         }

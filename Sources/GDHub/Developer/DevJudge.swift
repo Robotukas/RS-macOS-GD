@@ -128,11 +128,15 @@ enum DevJudge {
         var handOvers: Int
         /// Receiver frames from the window start on, for `expect.releases`. Empty = no frames known.
         var controlActivity: [ControlSample]
+        /// What the Mac's volume did from Go to the end of the release tail, for a step with `expect.volume`. nil with
+        /// such a step = nothing was watched, which is "cannot judge".
+        var volume: DevVolumeObservation?
 
         init(step: DevStep, expected: DevExpectedItems = DevExpectedItems(), entryState: PadDecodedState?,
              reports: [TimedReport], windowStartNs: UInt64, windowEndNs: UInt64, endNs: UInt64? = nil,
              matchedCount: Int = 1, reference: Reference? = nil, handOvers: Int = 0,
-             controlActivity: [ControlSample] = []) {
+             controlActivity: [ControlSample] = [], volume: DevVolumeObservation? = nil) {
+            self.volume = volume
             self.handOvers = handOvers
             self.controlActivity = controlActivity
             self.step = step
@@ -159,6 +163,8 @@ enum DevJudge {
     struct Outcome: Equatable {
         var verdict: DevVerdict
         var metrics: DevMetrics
+        /// The volume part, for a step with `expect.volume`.
+        var volume: DevVolumeResult?
     }
 
     static func judge(_ input: Input, rules base: Rules = Rules(), decoder: PadReportDecoder = .xboxBT16) -> Outcome {
@@ -190,7 +196,9 @@ enum DevJudge {
         case .rest: return tl.judgeRest(input, entry: entry, rules: rules, metrics: &metrics)
         case .stick: outcome = tl.judgeStick(input, rules: rules, metrics: &metrics)
         case .trigger: outcome = tl.judgeTrigger(input, rules: rules, metrics: &metrics)
-        case .digital: outcome = tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
+        case .digital:
+            outcome = tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
+            if let want = step.expect?.volumeExpectation { outcome = applyVolume(want, to: outcome, input: input) }
         case .held: outcome = tl.judgeHeld(input, rules: rules, metrics: &metrics)
         }
 
@@ -208,6 +216,28 @@ enum DevJudge {
             outcome.metrics.detail += (outcome.metrics.detail.isEmpty ? "" : " ") + DevLatency.text(lat)
         }
         return outcome
+    }
+
+    /// Folds the volume check into the pad's outcome. The pad failing stays a failure; "cannot judge the volume" never
+    /// turns a pass into a pass (the step becomes inconclusive) and never hides a pad failure.
+    private static func applyVolume(_ want: DevVolumeExpectation, to pad: Outcome, input: Input) -> Outcome {
+        let vol = DevVolumeJudge.judge(want, input.volume ?? DevVolumeObservation())
+        var out = pad
+        out.volume = vol
+        out.metrics.detail += (out.metrics.detail.isEmpty ? "" : " ") + vol.summary
+        switch (pad.verdict, vol.verdict) {
+        case (.pass, .pass):
+            break
+        case (.pass, .inconclusive(let why)):
+            out.verdict = .inconclusive("cannot judge the volume: \(why)")
+        case (.pass, .fail(let why)):
+            out.verdict = .fail(why)
+        case (.fail(let padWhy), .fail(let why)):
+            out.verdict = .fail(padWhy + "; " + why)
+        default:
+            break
+        }
+        return out
     }
 
     /// What the latency measurement watches for a step, or nil when the step names nothing it can watch.

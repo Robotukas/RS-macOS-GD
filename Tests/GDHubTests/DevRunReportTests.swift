@@ -38,6 +38,12 @@ final class DevRunReportTests: XCTestCase {
         return r
     }
 
+    /// A report without `expect.volume` stays byte for byte what it was before the volume values existed.
+    func testSampleReportBytesArePinned() throws {
+        XCTAssertEqual(DevRunReportStore.sha256Hex(try sampleReport().encoded()),
+                       "b9384624ca0c6ed2c7d5393339eadc1ba183aa5079e9f4ac36cf3ec022684952")
+    }
+
     func testRoundTrip() throws {
         let r = sampleReport()
         let back = try JSONDecoder().decode(DevRunReport.self, from: try r.encoded())

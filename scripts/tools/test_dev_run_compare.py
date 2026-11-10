@@ -277,5 +277,94 @@ class LatencyTests(unittest.TestCase):
         self.assertEqual(wm([(0.9, 1), (0.5, 10)]), 0.5)
 
 
+def vol_step(step_id, expect, verdict, reason=None, keys=2, vol=0, mute=0, device=0, start=0.5, end=0.5,
+             start_muted=False, end_muted=False):
+    v = {"verdict": verdict}
+    if reason:
+        v["reason"] = reason
+    return {"index": 0, "stepId": step_id, "kind": "digital", "controls": [step_id],
+            "attempts": [{"verdict": v, "metrics": {"padReports": 4, "padChanged": 4},
+                          "volume": {"expect": expect, "verdict": v, "consumerReports": keys * 2, "keyReports": keys,
+                                     "volumeEvents": vol, "muteEvents": mute, "deviceEvents": device,
+                                     "startScalar": start, "endScalar": end, "startMuted": start_muted, "endMuted": end_muted,
+                                     "hasVolume": True, "hasMute": True}}]}
+
+
+class VolumeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Temp()
+        self.addCleanup(self.tmp.dir.cleanup)
+        self.a = lat_report("engine", [
+            vol_step("g3-rb", "unchanged", "pass"),
+            vol_step("g4-mute-on", "changes", "pass", keys=1, mute=1, end_muted=True),
+            vol_step("g2-nothing", "unchanged", "inconclusive", "the volume was already at its lowest", start=0.0, end=0.0)])
+        self.b = lat_report("driver", [
+            vol_step("g3-rb", "unchanged", "fail", "the Mac's volume changed", vol=1, end=0.4375),
+            vol_step("g4-mute-on", "changes", "pass", keys=1, mute=1, end_muted=True),
+            vol_step("g2-nothing", "unchanged", "inconclusive", "the volume was already at its lowest", start=0.0, end=0.0)])
+
+    def test_rows_carry_the_volume_values(self):
+        rows = tool.rows(self.a)
+        v = rows[1]["volume"]
+        self.assertEqual((v["expect"], v["verdict"], v["keyReports"], v["muteEvents"], v["endMuted"]), ("changes", "pass", 1, 1, True))
+        self.assertEqual((rows[0]["volume"]["startScalar"], rows[0]["volume"]["endScalar"]), (0.5, 0.5))
+        self.assertEqual(rows[2]["volume"]["reason"], "the volume was already at its lowest")
+        # a step without expect.volume has none
+        self.assertIsNone(tool.rows(load(ENGINE))[0]["volume"])
+
+    def test_inconclusive_reads_as_cannot_judge_never_pass_or_fail(self):
+        rows = tool.rows(self.a)
+        self.assertEqual(tool.volume_word(rows[2]["volume"]), "cannot judge")
+        self.assertEqual(tool.volume_word(rows[0]["volume"]), "pass")
+        self.assertEqual(tool.volume_word(None), tool.DASH)
+        text = tool.volume_text(rows[2]["volume"])
+        self.assertIn("unchanged: cannot judge", text)
+        self.assertIn("[the volume was already at its lowest]", text)
+        self.assertIn("keys 2, vol 0, mute 0, 0% unmuted -> 0% unmuted", text)
+        self.assertEqual(tool.volume_text(rows[1]["volume"]),
+                         "changes: pass (keys 1, vol 0, mute 1, 50% unmuted -> 50% muted)")
+
+    def test_single_table_gets_a_volume_column_only_when_present(self):
+        a = self.tmp.write("a.json", self.a)
+        _, out, _ = run(a)
+        self.assertIn("volume", out.splitlines()[[i for i, l in enumerate(out.splitlines()) if l.startswith("#")][0]])
+        self.assertIn("unchanged: pass", out)
+        self.assertIn("cannot judge", out)
+        _, plain, _ = run(ENGINE)
+        header = [l for l in plain.splitlines() if l.startswith("#")][0]
+        self.assertNotIn("volume", header)
+
+    def test_side_by_side_shows_both_words_and_marks_a_volume_difference(self):
+        a, b = self.tmp.write("a.json", self.a), self.tmp.write("b.json", self.b)
+        code, out, _ = run(a, b)
+        self.assertEqual(code, 1)
+        side = out.split("Side by side")[1]
+        self.assertIn("volume A/B", side)
+        self.assertIn("pass / fail", side)
+        self.assertIn("cannot judge / cannot judge", side)
+        by = {p["stepId"]: p for p in tool.compare(self.a, self.b, 0.10, 5.0)["pairs"]}
+        self.assertEqual(by["g3-rb"]["marks"], ["verdict", "volume"])
+        self.assertEqual(by["g4-mute-on"]["marks"], [])
+        self.assertEqual(by["g2-nothing"]["marks"], [], "cannot judge on both sides is not a difference")
+        # without volume data the old columns stay
+        _, plain, _ = run(ENGINE, DRIVER)
+        self.assertNotIn("volume A/B", plain)
+
+    def test_identical_volume_runs_exit_zero_and_json_has_the_rows(self):
+        a = self.tmp.write("a.json", self.a)
+        self.assertEqual(run(a, a)[0], 0)
+        _, out, _ = run(a, a, "--json")
+        data = json.loads(out)
+        self.assertEqual(data["a"]["rows"][0]["volume"]["verdict"], "pass")
+
+    def test_sparse_volume_object_does_not_crash(self):
+        rep = lat_report("engine", [{"stepId": "x", "attempts": [{"volume": {}}, ]}, {"stepId": "y", "attempts": [{"volume": "no"}]}])
+        p = self.tmp.write("sparse.json", rep)
+        code, out, _ = run(p, p)
+        self.assertEqual(code, 0)
+        self.assertEqual(tool.rows(rep)[1]["volume"], None)
+        self.assertEqual(tool.volume_word(tool.rows(rep)[0]["volume"]), tool.DASH)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -253,6 +253,12 @@ struct DevRunCore {
         case controllerActive(Bool)
         /// How many virtual pads the reader matches.
         case readerMatched(Int)
+        /// The default output device as it stands (when the watch starts), for steps with `expect.volume`.
+        case volumeState(VolumeState, tNs: UInt64)
+        /// A real change of the default output device's volume, mute or identity.
+        case volumeEvent(VolumeEvent)
+        /// A raw 0x11 report from the receiver's consumer interface (the volume keys).
+        case consumerReport(DevConsumerReport)
         case pause, resume, back, skip, stop, terminate
         /// Answers the open prompt: "Run anyway" for `.runAnyway`, "Re-arm" for `.rearmLatched`.
         case runAnyway
@@ -333,6 +339,8 @@ struct DevRunCore {
     private var refLast: PadState?
     private var cached: (frame: GamepadFrame, sum: FrameSummary)?
     private var digitalIDs: [String] = []
+    /// The default output device's state over the run (the state at the watch's start, then after every event).
+    private var volumeTimeline: [(tNs: UInt64, state: VolumeState)] = []
 
     // Per pass.
     private var pathUnconfirmed = false
@@ -403,6 +411,9 @@ struct DevRunCore {
         var wantedNowActive = false
         var lastWantedActiveNs: UInt64?
         var wantedRises = 0
+        /// Steps with `expect.volume`: the change events and the 0x11 reports since the step began.
+        var volumeEvents: [VolumeEvent] = []
+        var consumerReports: [DevConsumerReport] = []
         var lastEvalNs: UInt64 = 0
         var evalVersion = 0
         var lastEvalVersion = -1
@@ -456,6 +467,9 @@ struct DevRunCore {
         case .enginePid(let p): onPid(p, a: &a)
         case .controllerActive(let on): onController(on, a: &a)
         case .readerMatched(let n): onMatched(n, a: &a)
+        case .volumeState(let s, let t): volumeTimeline.append((t, s))
+        case .volumeEvent(let e): onVolumeEvent(e)
+        case .consumerReport(let r): onConsumerReport(r)
         case .pause: pause(reason: nil, a: &a)
         case .resume: resume(a: &a)
         case .back: back(a: &a)
@@ -498,6 +512,7 @@ struct DevRunCore {
         prompt = nil
         pauseReason = nil
         digitalIDs = Array(Set(s.mapping.buttons.keys).union(s.mapping.physicalBits.keys)).sorted()
+        volumeTimeline = []
         handOverValue = nil
         resetPassFlags()
         lastHighlights = nil
@@ -919,10 +934,14 @@ struct DevRunCore {
     private func judgeInput(_ c: Cur, _ r: DevResolvedStep, ws: UInt64, we: UInt64, end: UInt64) -> DevJudge.Input {
         // A pad that said nothing before the step but spoke during the ready phase is known by then.
         let entry = c.entry ?? (c.reports.contains { $0.tNs < ws } ? PadDecodedState.neutral : nil)
+        // From Go, not from the first movement: the key's report may reach the app a moment before its receiver frame.
+        let volume = r.step.expect?.volume == nil ? nil
+            : DevVolumeObservation.make(timeline: volumeTimeline, events: c.volumeEvents, reports: c.consumerReports,
+                                        from: min(c.goNs ?? ws, ws), to: end)
         return DevJudge.Input(step: r.step, expected: r.expected, entryState: entry, reports: c.reports,
                               windowStartNs: ws, windowEndNs: we, endNs: end, matchedCount: c.matchedAtStart,
                               reference: reference(c, from: ws, to: end), handOvers: c.handOvers.count,
-                              controlActivity: c.controlActivity)
+                              controlActivity: c.controlActivity, volume: volume)
     }
 
     private mutating func judgeAndAdvance(a: inout [Action]) {
@@ -933,6 +952,7 @@ struct DevRunCore {
         var att = makeAttempt(c, raw: input.rawReports())
         att.verdict = o.verdict
         att.metrics = o.metrics
+        att.volume = o.volume
         if !c.handOvers.isEmpty {
             att.metrics.values["held.handOvers"] = Double(c.handOvers.count)
             att.metrics.values["held.handOversConfirmed"] = Double(c.handOvers.filter(\.confirmed).count)
@@ -1101,6 +1121,20 @@ struct DevRunCore {
             cur!.lastWantedActiveNs = t
         }
         cur!.wantedNowActive = act
+    }
+
+    // MARK: Volume
+
+    /// Only a step that asks for the volume keeps what comes in, so every other step costs nothing.
+    private var watchesVolume: Bool { rs?.step.expect?.volume != nil }
+
+    private mutating func onVolumeEvent(_ e: VolumeEvent) {
+        volumeTimeline.append((e.tNs, e.state))
+        if cur != nil, watchesVolume { cur!.volumeEvents.append(e) }
+    }
+
+    private mutating func onConsumerReport(_ r: DevConsumerReport) {
+        if cur != nil, watchesVolume { cur!.consumerReports.append(r) }
     }
 
     // MARK: Pad reports

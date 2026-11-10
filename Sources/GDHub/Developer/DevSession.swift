@@ -123,6 +123,7 @@ final class DevSession: ObservableObject {
     private let driver: DriverManager
     private let reader: VirtualPadReader
     private let pathControl: DevInputPathControlling
+    private let volumeObserver: VolumeObserving
     private let defaults: UserDefaults
     private var core = DevRunCore()
     private var subscriptions = Set<AnyCancellable>()
@@ -137,13 +138,16 @@ final class DevSession: ObservableObject {
     private var lastIdentityCheck: UInt64 = 0
     private var matchedTask: Task<Void, Never>?
     private var closed = false
+    private var volumeWatching = false
 
     init(device: EnvisionProDevice, driver: DriverManager, reader: VirtualPadReader = VirtualPadReader(),
-         pathControl: DevInputPathControlling = DevInputPathControl(), defaults: UserDefaults = .standard) {
+         pathControl: DevInputPathControlling = DevInputPathControl(), defaults: UserDefaults = .standard,
+         volumeObserver: VolumeObserving = CoreAudioVolumeObserver()) {
         self.device = device
         self.driver = driver
         self.reader = reader
         self.pathControl = pathControl
+        self.volumeObserver = volumeObserver
         self.defaults = defaults
         reader.open()
         reloadTemplates()
@@ -190,6 +194,7 @@ final class DevSession: ObservableObject {
         matchedTask?.cancel()
         subscriptions.removeAll()
         device?.frameTap = nil
+        stopVolumeWatch()
         reader.close()
     }
 
@@ -426,6 +431,9 @@ final class DevSession: ObservableObject {
             case .setCapture(let on):
                 if on {
                     device?.frameTap = { [weak self] f, t in MainActor.assumeIsolated { self?.onFrame(f, t) } }
+                    startVolumeWatch()
+                } else {
+                    stopVolumeWatch()
                 }
             case .takeSnapshot:
                 snapshot = pathControl.snapshot()
@@ -450,6 +458,30 @@ final class DevSession: ObservableObject {
                 runEnded()
             }
         }
+    }
+
+    // MARK: Volume watch
+
+    /// Only a template with a volume step pays for the listeners: CoreAudio on the default output device and the
+    /// receiver's 0x11 reports. Both only observe; nothing here sets a volume or a mute.
+    private func startVolumeWatch() {
+        guard setup?.template.steps.contains(where: { $0.expect?.volume != nil }) == true else { return }
+        stopVolumeWatch()
+        volumeObserver.start { [weak self] event in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.send(.volumeEvent(event)) } }
+        }
+        send(.volumeState(volumeObserver.currentState(), tNs: LatencyMeter.nowNs()))
+        device?.consumerTap = { [weak self] bytes, t in
+            MainActor.assumeIsolated { self?.send(.consumerReport(DevConsumerReport(tNs: t, bytes: bytes))) }
+        }
+        volumeWatching = true
+    }
+
+    private func stopVolumeWatch() {
+        guard volumeWatching else { return }
+        volumeWatching = false
+        volumeObserver.stop()
+        device?.consumerTap = nil
     }
 
     private func writePath(_ value: String) {
@@ -496,6 +528,7 @@ final class DevSession: ObservableObject {
         pumpTask?.cancel()
         generation += 1
         device?.frameTap = nil
+        stopVolumeWatch()
         var parts: [String] = []
         if let t = hint, !t.isEmpty, t.hasPrefix("The pad reader") { parts.append(t) }
         if let note = restoreNote { parts.append(note) }
