@@ -21,7 +21,7 @@ volume"; "Of course light up any linked buttons"; every hands-on test is a Devel
 | R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | ✅ done 2026-11-10 (see "R3 result"); the wake-after-engine-start case is still to be seen in the engine's log |
 | R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | ✅ three templates pass on App and Driver (2026-11-10); the mapping-file comparison after "Reset all remaps" is open |
 | R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | ✅ committed 2026-11-10 (HANDOFF updated; mapping equal to the copy from before the tests, volume keys back on after "Reset all remaps"); pushed 18:58 on the owner's word |
-| R6 | Step 2: paddles and SAX by their physical bits, echo hidden; GDHM v2 (3+ sources, button → trigger, two triggers) | Yes | — | pending |
+| R6 | Step 2: paddles and SAX by their physical bits, echo hidden; GDHM v2 (3+ sources, button → trigger, two triggers) | Yes | See `remap-step2-plan.md` (phases S0–S9) | ▶ planned 2026-11-10: plan v2 (review folded in), waiting for the owner's answers (S0) |
 | R7 | Step 3: keyboard keys, mouse buttons, macros in the same menu (with takeover T11) | Yes | — | pending |
 
 Needs the owner's hands: R0 (controller on, press keys, one press of a Mac volume key), R0b (answers), R4 (make the picks
