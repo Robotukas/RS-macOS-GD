@@ -1153,7 +1153,21 @@ private struct CalloutLayer: View {
                 .onEnded { _ in if editor.isEditing { commitDrag(placed) } })
         switch pl.kind {
         case .center:
-            pill.position(pl.anchor).transaction { $0.animation = nil }
+            if rl.suffix != nil {
+                // A centred pill that grew by " → Y" would shift its own name sideways. The plain pill keeps the place and
+                // the size; the remapped one is laid over it from the same left edge, so "G1" stays exactly where it was.
+                let plain = RemapLabel(label: c.label, id: c.id, mapping: device.mapping, mode: .editLayout)
+                labelText(plain, mark: mark, color: col)
+                    .font(.system(size: fs, weight: .medium))
+                    .padding(.horizontal, fs * 0.5)
+                    .padding(.vertical, fs * 0.2)
+                    .fixedSize()
+                    .hidden()
+                    .overlay(alignment: .leading) { pill }
+                    .position(pl.anchor).transaction { $0.animation = nil }
+            } else {
+                pill.position(pl.anchor).transaction { $0.animation = nil }
+            }
         case .trailing:
             // Right-aligned: the pill ends on the anchor x.
             let w = max(pl.anchor.x, 1)
@@ -1352,13 +1366,14 @@ private struct RemapHintLine: View {
     var body: some View {
         let flashing = !device.isRemapping && device.remapHintFlashing
         if flashing {
-            Text(RemapHint.flash).font(.caption).foregroundStyle(RemapColors.flash).lineLimit(2)
+            Text(RemapHint.flash).font(.caption).foregroundStyle(RemapColors.flash).lineLimit(1).truncationMode(.tail)
         } else if let limit = device.remapLimit {
             Text("Driven by: App (mapping needs a driver update: \(limit))")
-                .font(.caption).foregroundStyle(RemapColors.flash).lineLimit(2)
+                .font(.caption).foregroundStyle(RemapColors.flash).lineLimit(1).truncationMode(.tail)
+                .help("Driven by: App (mapping needs a driver update: \(limit))")
         } else {
             Text(RemapHint.text(remapping: device.isRemapping, flashing: false))
-                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
         }
     }
 }
