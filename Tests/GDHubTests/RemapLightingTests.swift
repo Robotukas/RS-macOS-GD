@@ -48,9 +48,9 @@ final class RemapLightingTests: XCTestCase {
         XCTAssertEqual(levels(frame(buttons: [12]), m), ["g1": .pressed, "y": .linked])
     }
 
-    func testPressingYLightsOnlyY() {
+    func testPressingYLinksG1TheRelationShowsBothWays() {
         let m = mapped([("g1", .pad(.y))])
-        XCTAssertEqual(levels(frame(buttons: [4]), m), ["y": .pressed])
+        XCTAssertEqual(levels(frame(buttons: [4]), m), ["y": .pressed, "g1": .linked])
     }
 
     func testBothPressedIsPressedNotLinked() {
@@ -99,7 +99,7 @@ final class RemapLightingTests: XCTestCase {
     func testG5ToGuideLinksStartOnlyWhileStartSendsGuide() {
         var m = mapped([("g5", .pad(.guide))])
         XCTAssertEqual(levels(frame(buttons: [16]), m), ["g5": .pressed, "start": .linked])
-        XCTAssertEqual(levels(frame(buttons: [11]), m), ["start": .pressed])
+        XCTAssertEqual(levels(frame(buttons: [11]), m), ["start": .pressed, "g5": .linked])
         m.setOutput(.pad(.x), for: "start")
         XCTAssertEqual(levels(frame(buttons: [16]), m), ["g5": .pressed], "Start sends X now, not Guide")
         XCTAssertEqual(levels(frame(buttons: [11]), m), ["start": .pressed, "x": .linked], "Start pressed sends X, whose drawing links")
@@ -141,7 +141,7 @@ final class RemapLightingTests: XCTestCase {
         // the D-pad right drawing; pressing the paddle presses the paddle and (via the echo) the D-pad right drawing.
         let m = mapped([("g1", .pad(.dpad_right))])
         XCTAssertEqual(levels(frame(buttons: [12]), m), ["g1": .pressed, "dpad_right": .linked])
-        XCTAssertEqual(levels(frame(hat: 2, extra: 1), m), ["paddle_outer_right": .pressed, "dpad_right": .pressed])
+        XCTAssertEqual(levels(frame(hat: 2, extra: 1), m), ["paddle_outer_right": .pressed, "dpad_right": .pressed, "g1": .linked])
     }
 
     func testPrecomputedSourcesGiveTheSameAnswer() {
@@ -154,7 +154,7 @@ final class RemapLightingTests: XCTestCase {
 
     func testTwoControlsOnOneItemLinkTheItemsDrawingFromEither() {
         let m = mapped([("g1", .pad(.y)), ("g2", .pad(.y))])
-        XCTAssertEqual(levels(frame(buttons: [13]), m), ["g2": .pressed, "y": .linked])
+        XCTAssertEqual(levels(frame(buttons: [13]), m), ["g2": .pressed, "y": .linked, "g1": .linked])
         XCTAssertEqual(levels(frame(buttons: [12, 13]), m), ["g1": .pressed, "g2": .pressed, "y": .linked])
     }
 }

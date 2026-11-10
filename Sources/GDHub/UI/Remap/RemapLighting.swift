@@ -4,11 +4,10 @@ import Foundation
 ///
 /// - **pressed**: `mapping.isActive` for every control in the layout, exactly as before remaps (a control mapped to
 ///   Nothing lights too).
-/// - **linked**: the drawing of a pad item the pad is actually sending, when nothing else makes it light. Pressing G1
-///   (set to Y) lights G1 (pressed) and Y (linked); pressing Y lights only Y. The linked drawing is the item's home
-///   control, which must still send its own item (a control mapped away from an item is not linked to it) and must not be
-///   pressed. "Actually sending" is judged from the mapper's own output (`PassthroughPadMapper.padState`), so opposite
-///   D-pad directions that cancel light nothing, and Start lights for G5 → Guide only while Start still sends Guide.
+/// - **linked**: every other control that sends a pad item the pad is actually sending this frame. The relation shows in
+///   both directions: with G1 set to Y, pressing G1 lights G1 (pressed) and Y (linked), and pressing Y lights Y (pressed)
+///   and G1 (linked). A control mapped away from an item is not linked to it. "Actually sending" is judged from the
+///   mapper's own output (`PassthroughPadMapper.padState`), so opposite D-pad directions that cancel light nothing.
 ///   Controls mapped to Nothing or to the built-in function feed no item and are never linked.
 enum RemapLighting {
     enum Level: Equatable { case pressed, linked }
@@ -27,9 +26,11 @@ enum RemapLighting {
 
         let table = sources ?? mapping.sourcesByOutput()
         let pad = PassthroughPadMapper.padState(frame, mapping, sources: table)
-        for c in controls where out[c.id] == nil && !mapping.isRemapped(c.id) {
-            guard case .pad(let item) = mapping.defaultOutput(c.id), isSent(item, pad) else { continue }
-            out[c.id] = .linked
+        // Every control that sends an item the pad is sending right now is part of the relation, in both directions:
+        // with G1 → Y, pressing G1 links Y and pressing Y links G1.
+        let drawn = Set(controls.map(\.id))
+        for (item, ids) in table where isSent(item, pad) {
+            for id in ids where out[id] == nil && drawn.contains(id) { out[id] = .linked }
         }
         return out
     }
