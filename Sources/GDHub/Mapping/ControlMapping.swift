@@ -56,13 +56,95 @@ struct LearnAssignment {
     var stick: StickBinding? = nil
 }
 
-struct ControlMapping: Codable, Equatable {
+/// One output item of the virtual pad, named by its control id ("guide" for Guide). Everything but the triggers maps
+/// onto the existing `PadItem` (the GDX-numbered item), so there is no second hand-numbered table.
+enum PadOutput: String, CaseIterable {
+    case a, b, x, y, lb, rb, lt, rt, view, menu, l3, r3, guide
+    case dpad_up, dpad_right, dpad_down, dpad_left
+
+    var padItem: PadItem? {
+        switch self {
+        case .a: return .a
+        case .b: return .b
+        case .x: return .x
+        case .y: return .y
+        case .lb: return .lb
+        case .rb: return .rb
+        case .view: return .view
+        case .menu: return .menu
+        case .l3: return .ls
+        case .r3: return .rs
+        case .guide: return .guide
+        case .dpad_up: return .dpadUp
+        case .dpad_right: return .dpadRight
+        case .dpad_down: return .dpadDown
+        case .dpad_left: return .dpadLeft
+        case .lt, .rt: return nil
+        }
+    }
+
+    /// Reverse of `padItem`.
+    init(_ item: PadItem) {
+        // Total over PadItem; a new PadItem case without a PadOutput fails the build here.
+        switch item {
+        case .a: self = .a
+        case .b: self = .b
+        case .x: self = .x
+        case .y: self = .y
+        case .lb: self = .lb
+        case .rb: self = .rb
+        case .view: self = .view
+        case .menu: self = .menu
+        case .ls: self = .l3
+        case .rs: self = .r3
+        case .guide: self = .guide
+        case .dpadUp: self = .dpad_up
+        case .dpadRight: self = .dpad_right
+        case .dpadDown: self = .dpad_down
+        case .dpadLeft: self = .dpad_left
+        }
+    }
+
+    var isTrigger: Bool { self == .lt || self == .rt }
+}
+
+/// What a remappable control sends to the virtual pad.
+enum ControlOutput: Hashable {
+    case pad(PadOutput)
+    case nothing
+    /// The controller's own function (the volume keys on G2-G4); valid only there.
+    case builtIn
+
+    /// On-disk form: the pad control id ("y"), "nothing" or "built_in".
+    var string: String {
+        switch self {
+        case .pad(let p): return p.rawValue
+        case .nothing: return "nothing"
+        case .builtIn: return "built_in"
+        }
+    }
+
+    init?(string: String) {
+        switch string {
+        case "nothing": self = .nothing
+        case "built_in": self = .builtIn
+        default:
+            guard let p = PadOutput(rawValue: string) else { return nil }
+            self = .pad(p)
+        }
+    }
+}
+
+struct ControlMapping: Equatable {
     var buttons: [String: Binding] = [:]
     var sticks: [String: StickBinding] = [:]
     /// "Extra" bit (13-bit field) that identifies the physical paddle / SAX button. When present it
     /// takes precedence over `buttons`, because the standard field only carries the function the
     /// on-controller profile maps the paddle to (D-pad, A, B ...).
     var physicalBits: [String: UInt16] = [:]
+    /// Remaps: control id -> what it sends to the pad. Absent = the control's default output. Never holds an entry
+    /// equal to the default (see `setOutput`).
+    var outputs: [String: ControlOutput] = [:]
 
     /// Factory layout of the SCUF Envision Pro as learned on real hardware (docs/protocol).
     static var `default`: ControlMapping {
@@ -192,6 +274,115 @@ struct ControlMapping: Codable, Equatable {
             physicalBits[a.controlId] = a.physicalBits
         } else if a.target == .whole {
             physicalBits[a.controlId] = nil
+        }
+    }
+}
+
+// MARK: Remaps
+
+extension ControlMapping {
+    /// The controls whose output can be changed, in the order the UI and `sources(of:)` use.
+    static let remappableIDs: [String] = [
+        "a", "b", "x", "y", "lb", "rb", "lt", "rt", "view", "menu", "l3", "r3",
+        "dpad_up", "dpad_right", "dpad_down", "dpad_left", "start", "profile", "g1", "g2", "g3", "g4", "g5",
+    ]
+
+    /// Controls on which `ControlOutput.builtIn` (the volume function) is valid.
+    private static let builtInIDs: Set<String> = ["g2", "g3", "g4"]
+
+    func defaultOutput(_ id: String) -> ControlOutput {
+        switch id {
+        case "start": return .pad(.guide)
+        case "g2", "g3", "g4": return .builtIn
+        case "guide": return .nothing
+        default:
+            if Self.remappableIDs.contains(id), let p = PadOutput(rawValue: id) { return .pad(p) }
+            return .nothing
+        }
+    }
+
+    func effectiveOutput(_ id: String) -> ControlOutput {
+        guard Self.remappableIDs.contains(id) else { return defaultOutput(id) }
+        return outputs[id] ?? defaultOutput(id)
+    }
+
+    func isRemapped(_ id: String) -> Bool { outputs[id] != nil }
+
+    mutating func setOutput(_ output: ControlOutput, for id: String) {
+        guard Self.remappableIDs.contains(id) else { return }
+        if output == .builtIn && !Self.builtInIDs.contains(id) { return }
+        outputs[id] = output == defaultOutput(id) ? nil : output
+    }
+
+    mutating func resetAllOutputs() { outputs = [:] }
+
+    /// Controls that currently send `item`: the default owner first (for Guide that is "start"), then the rest in
+    /// `remappableIDs` order. The single source of truth for the mapper, the encoder, the menu and the lighting.
+    func sources(of item: PadOutput) -> [String] {
+        let all = Self.remappableIDs.filter { effectiveOutput($0) == .pad(item) }
+        guard let owner = all.first(where: { defaultOutput($0) == .pad(item) }) else { return all }
+        return [owner] + all.filter { $0 != owner }
+    }
+
+    /// Learn guard (remap plan): in a single-control learn, an assignment of a whole control with a binding and no
+    /// physical bits is refused when another control already has that binding and no physical bits of its own
+    /// (paddles and SAX carry bits, so they never count as owners). Returns the lowest such control id.
+    /// Guided "Learn all" simply does not call this.
+    func learnConflict(_ a: LearnAssignment) -> String? {
+        guard a.target == .whole, let binding = a.binding, a.physicalBits == 0 else { return nil }
+        return buttons.filter { id, b in
+            id != a.controlId && b == binding && (physicalBits[id] ?? 0) == 0
+        }.keys.min()
+    }
+}
+
+// MARK: Codable
+
+extension ControlMapping: Codable {
+    private enum CodingKeys: String, CodingKey { case buttons, sticks, physicalBits, outputs }
+
+    private struct AnyKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        buttons = try c.decodeIfPresent([String: Binding].self, forKey: .buttons) ?? [:]
+        sticks = try c.decodeIfPresent([String: StickBinding].self, forKey: .sticks) ?? [:]
+        physicalBits = try c.decodeIfPresent([String: UInt16].self, forKey: .physicalBits) ?? [:]
+        guard c.contains(.outputs), (try? c.decodeNil(forKey: .outputs)) == false else { return }
+        guard let o = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: .outputs) else {
+            print("ControlMapping: \"outputs\" is not an object; ignoring it.")
+            return
+        }
+        for key in o.allKeys {
+            guard Self.remappableIDs.contains(key.stringValue) else {
+                print("ControlMapping: dropped output for unknown control \"\(key.stringValue)\".")
+                continue
+            }
+            guard let text = try? o.decode(String.self, forKey: key), let value = ControlOutput(string: text) else {
+                print("ControlMapping: dropped output for \"\(key.stringValue)\": not a known value.")
+                continue
+            }
+            if value == .builtIn && !Self.builtInIDs.contains(key.stringValue) {
+                print("ControlMapping: dropped built_in for \"\(key.stringValue)\": only valid on g2, g3, g4.")
+                continue
+            }
+            setOutput(value, for: key.stringValue)   // also drops entries equal to the default
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(buttons, forKey: .buttons)
+        try c.encode(sticks, forKey: .sticks)
+        try c.encode(physicalBits, forKey: .physicalBits)
+        if !outputs.isEmpty {
+            try c.encode(outputs.mapValues(\.string), forKey: .outputs)
         }
     }
 }
