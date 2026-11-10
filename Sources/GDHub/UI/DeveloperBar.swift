@@ -107,10 +107,11 @@ struct DeveloperBar: View {
         HStack(spacing: 6) {
             Text("Template").foregroundStyle(.secondary)
             Picker("Template", selection: $session.selectedTemplateID) {
+                let numbers = Self.numbers(session.templates)
                 ForEach(Self.groups(session.templates), id: \.source) { group in
                     Section(group.source.tag) {
                         ForEach(group.entries) { e in
-                            Text(e.isRunnable ? e.title : e.title + " (problem)").tag(Optional(e.id))
+                            Text(Self.rowLabel(e, number: numbers[e.id])).tag(Optional(e.id))
                         }
                     }
                 }
@@ -122,6 +123,20 @@ struct DeveloperBar: View {
                 .disabled(session.isRunning)
                 .help("Read the templates again (dev-scripts folder)")
         }
+    }
+
+    /// The number each template shows in the picker: 1, 2, 3… down the list as it is drawn (built-in, local override,
+    /// local), so "template 7" in a message is row 7 on screen.
+    static func numbers(_ entries: [DevTemplateEntry]) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for (i, e) in groups(entries).flatMap(\.entries).enumerated() { out[e.id] = i + 1 }
+        return out
+    }
+
+    /// One picker row: "7. Volume keys under a remap: …", with " (problem)" when the template cannot run.
+    static func rowLabel(_ e: DevTemplateEntry, number: Int?) -> String {
+        let name = e.isRunnable ? e.title : e.title + " (problem)"
+        return number.map { "\($0). \(name)" } ?? name
     }
 
     /// Entries grouped by where they come from, in the order built-in, local override, local.

@@ -44,6 +44,16 @@ final class DeveloperViewsTests: XCTestCase {
         XCTAssertEqual(groups.map(\.source.tag), ["built-in", "local override", "local"])
     }
 
+    func testTemplateRowsAreNumberedDownTheListAsDrawn() {
+        func entry(_ id: String, _ s: DevTemplateSource) -> DevTemplateEntry {
+            DevTemplateEntry(id: id, template: nil, source: s, url: URL(fileURLWithPath: "/tmp/\(id).json"))
+        }
+        let entries = [entry("l", .local), entry("b1", .builtIn), entry("b2", .builtIn), entry("o", .localOverride)]
+        let numbers = DeveloperBar.numbers(entries)
+        XCTAssertEqual(numbers, ["b1": 1, "b2": 2, "o": 3, "l": 4])
+        XCTAssertEqual(DeveloperBar.rowLabel(entries[1], number: numbers["b1"]), "1. b1 (problem)")
+    }
+
     func testVerdictLabelsAndChipRerun() {
         XCTAssertEqual(DevVerdict.fail("x").label, "Fail")
         XCTAssertTrue(DevChip.Status.failed.canRerun)
