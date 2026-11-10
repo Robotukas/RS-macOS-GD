@@ -87,7 +87,8 @@ final class ControlMappingTests: XCTestCase {
         XCTAssertEqual(m.buttons["a"], .button(1))
         XCTAssertTrue(m.physicalBits.isEmpty)
         XCTAssertTrue(m.outputs.isEmpty)
-        XCTAssertEqual(try decode("{}"), ControlMapping())
+        XCTAssertEqual(try decode(#"{"buttons":{}}"#), ControlMapping())
+        XCTAssertThrowsError(try decode("{}"), "no buttons key: unreadable, not an empty mapping that leaves the pad dead")
     }
 
     func testRoundTripWithOutputsAndEmptyOmitted() throws {
@@ -125,8 +126,8 @@ final class ControlMappingTests: XCTestCase {
         cleanOnlyOutputs.outputs = clean.outputs
         XCTAssertEqual(try encoded(dirty), try encoded(cleanOnlyOutputs))
         // outputs of the wrong shape does not fail the file either.
-        XCTAssertEqual(try decode(#"{"outputs":["a"]}"#), ControlMapping())
-        XCTAssertEqual(try decode(#"{"outputs":null}"#), ControlMapping())
+        XCTAssertEqual(try decode(#"{"buttons":{},"outputs":["a"]}"#), ControlMapping())
+        XCTAssertEqual(try decode(#"{"buttons":{},"outputs":null}"#), ControlMapping())
     }
 
     func testBuiltInOnlyOnG2ToG4() {

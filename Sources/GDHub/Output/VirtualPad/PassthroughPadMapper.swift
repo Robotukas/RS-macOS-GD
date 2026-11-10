@@ -14,9 +14,14 @@ import Foundation
 /// - Opposite D-pad directions are both reported here; the report builders cancel them (`GDX_ENC_HAT8`).
 enum PassthroughPadMapper {
     static func padState(_ f: GamepadFrame, _ m: ControlMapping) -> PadState {
+        padState(f, m, sources: m.sourcesByOutput())
+    }
+
+    /// The same with the sources table handed in: with remaps `sourcesByOutput()` builds a dictionary, so a caller on
+    /// the per-frame path keeps it for as long as `m.outputs` stays the same (see `VirtualPadSink`).
+    static func padState(_ f: GamepadFrame, _ m: ControlMapping, sources: [PadOutput: [String]]) -> PadState {
         var s = PadState()
         var b: PadButtons = []
-        let sources = m.sourcesByOutput()
         for output in PadOutput.allCases {
             guard let bit = buttons(of: output) else { continue }
             if sources[output]?.contains(where: { m.isActive($0, f) }) == true { b.insert(bit) }

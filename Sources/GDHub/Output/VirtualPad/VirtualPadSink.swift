@@ -195,6 +195,8 @@ final class VirtualPadSink: @unchecked Sendable {
     // or device change; `xlateCache.core == nil` means the Swift path runs for that mapping.
     private struct XlateCache { var mapping: ControlMapping; var identityID: String; var core: XlateCore? }
     private var xlateCache: XlateCache?
+    /// Queue-confined: the Swift mapper's sources table for the remaps last seen (`ControlMapping.sourcesByOutput`).
+    private var swiftSources: (outputs: [String: ControlOutput], table: [PadOutput: [String]])?
     private var xlateRevision: UInt32 = 0
     private var xlateNote: String
     private var generation = 0                          // invalidates delayed create/retry closures
@@ -550,7 +552,10 @@ final class VirtualPadSink: @unchecked Sendable {
             let same = lastSentState.map { core.unchanged(pad, XlateCore.pad(from: $0)) } ?? false
             deliver(XlateCore.state(from: pad), unchanged: same, core: core, stamp: stamp)
         } else {
-            submit(state: PassthroughPadMapper.padState(frame, mapping), stamp: stamp)
+            if swiftSources?.outputs != mapping.outputs {      // rebuilt only when the remaps change, not per frame
+                swiftSources = (mapping.outputs, mapping.sourcesByOutput())
+            }
+            submit(state: PassthroughPadMapper.padState(frame, mapping, sources: swiftSources!.table), stamp: stamp)
         }
     }
 

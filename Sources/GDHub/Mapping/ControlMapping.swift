@@ -391,7 +391,9 @@ extension ControlMapping: Codable {
     init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        buttons = try c.decodeIfPresent([String: Binding].self, forKey: .buttons) ?? [:]
+        // `buttons` is required, as it always was: a file without it (`{}`, a truncated edit) is unreadable, not an
+        // empty mapping that would leave the pad dead.
+        buttons = try c.decode([String: Binding].self, forKey: .buttons)
         sticks = try c.decodeIfPresent([String: StickBinding].self, forKey: .sticks) ?? [:]
         physicalBits = try c.decodeIfPresent([String: UInt16].self, forKey: .physicalBits) ?? [:]
         guard c.contains(.outputs), (try? c.decodeNil(forKey: .outputs)) == false else { return }

@@ -95,14 +95,24 @@ struct MappingStore {
             let data = try encoder.encode(mapping)
             // Remaps are new in file format v2; an older app reading it would drop them, so the previous file is kept
             // (timestamped, last `backupsKept`) whenever a save adds or removes `outputs`.
+            // Best effort: a backup that cannot be written must never cost the save itself.
             if let existing = try? Data(contentsOf: url), Self.outputsKeyChanges(existing: existing, saving: mapping) {
-                try fm.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
-                let f = DateFormatter()
-                f.locale = Locale(identifier: "en_US_POSIX")
-                f.dateFormat = "yyyy-MM-dd HH-mm-ss"
-                let backup = backupsDirectory.appendingPathComponent("mapping \(f.string(from: Date())).json")
-                if !fm.fileExists(atPath: backup.path) { try existing.write(to: backup, options: .atomic) }
-                for old in backups().dropFirst(Self.backupsKept) { try? fm.removeItem(at: old) }
+                do {
+                    try fm.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+                    let f = DateFormatter()
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.dateFormat = "yyyy-MM-dd HH-mm-ss"
+                    let stamp = f.string(from: Date())
+                    var backup = backupsDirectory.appendingPathComponent("mapping \(stamp).json")
+                    var n = 2
+                    while fm.fileExists(atPath: backup.path) {      // two changes in one second: keep both
+                        backup = backupsDirectory.appendingPathComponent("mapping \(stamp)-\(n).json"); n += 1
+                    }
+                    try existing.write(to: backup, options: .atomic)
+                    for old in backups().dropFirst(Self.backupsKept) { try? fm.removeItem(at: old) }
+                } catch {
+                    Self.log.error("could not back up \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
             }
             try data.write(to: url, options: .atomic)
         } catch {

@@ -26,6 +26,20 @@ final class MappingStoreTests: XCTestCase {
         XCTAssertEqual(store.load(), .default, "the lenient read still falls back")
     }
 
+    func testASaveSurvivesABackupThatCannotBeWritten() throws {
+        store.save(.default)
+        try Data("in the way".utf8).write(to: store.backupsDirectory)      // a plain file where the folder should be
+        store.save(remapped())
+        XCTAssertEqual(try store.loadStrict(), remapped(), "the remap is saved although the backup failed")
+    }
+
+    func testTwoBackupsInOneSecondAreBothKept() {
+        store.save(.default)
+        store.save(remapped())          // backs up the file without remaps
+        store.save(.default)            // backs up the file with the remap, almost certainly in the same second
+        XCTAssertEqual(store.backups().count, 2)
+    }
+
     func testBackupWhenOutputsAppearsOrDisappearsOnly() {
         store.save(.default)
         store.save(.default)
