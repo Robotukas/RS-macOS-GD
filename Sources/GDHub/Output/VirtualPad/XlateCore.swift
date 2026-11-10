@@ -34,10 +34,9 @@ final class XlateCore {
                 gdx_validate(b.baseAddress, b.count, s.baseAddress, s.count, mapPtr)
             }
         }
-        if rc != 0 {
-            mapPtr.deallocate()
-            throw XlateError(code: rc)
-        }
+        // A throw after every stored property is set still runs `deinit`, which frees the map: deallocating here as well would
+        // free it twice (the abort the local blob check hit the first time a blob was rejected).
+        if rc != 0 { throw XlateError(code: rc) }
     }
 
     deinit { mapPtr.deallocate() }

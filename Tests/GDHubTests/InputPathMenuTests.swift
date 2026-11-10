@@ -98,7 +98,9 @@ final class InputPathMenuTests: XCTestCase {
 
     func testUnsupportedMappingShowsTheReason() {
         XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.mappingNote = "echo suppression" }),
-                       "Driven by: App (mapping needs GDHM v2: echo suppression)")
+                       "Driven by: App (mapping needs a driver update: echo suppression)")
+        XCTAssertEqual(text(report { $0.path = "shadow"; $0.armed = "shadow"; $0.mappingNote = "internal: blob rejected locally (x)" }),
+                       "Driven by: App (internal: blob rejected locally (x))", "a driver update would not fix this one")
         XCTAssertEqual(text(report { $0.mappingNote = "echo suppression" }), "Driven by: App",
                        "on the engine path nobody asked for the driver: no note")
     }

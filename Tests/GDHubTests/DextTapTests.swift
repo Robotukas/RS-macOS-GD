@@ -1315,6 +1315,124 @@ final class TapSupervisorTests: XCTestCase {
         XCTAssertEqual(s.makeReport().armed, "shadow", "and the driver path comes back by itself")
     }
 
+    // MARK: R1d: the local blob check, and an edit that stays unsupported
+
+    private final class Reports: @unchecked Sendable { var all: [TapStatusReport] = [] }
+
+    /// What the engine's `mappingOffer` does for a mapping: the real encoder, for the fixture pad.
+    private func offer(of m: ControlMapping, _ rev: UInt32) -> MappingOffer {
+        switch MapBlobEncoder.encode(m, identity: XlateFixtures.identity, spec: XlateFixtures.spec, revision: rev) {
+        case .blob(let b): return .blob(b, spec: XlateFixtures.spec)
+        case .unsupported(let why): return .unsupported(why)
+        }
+    }
+
+    private func remapped(_ picks: [(String, ControlOutput)]) -> ControlMapping {
+        var m = XlateFixtures.liveShaped
+        for (id, o) in picks { m.setOutput(o, for: id) }
+        return m
+    }
+
+    private final class MappingBox: @unchecked Sendable { var mapping: ControlMapping; init(_ m: ControlMapping) { mapping = m } }
+
+    func testAnEditThatStaysUnsupportedMakesNoDriverCallAndUpdatesTheNote() {
+        let tap = FakeTap(); let s = make(path: "shadow", tap: tap)
+        let box = MappingBox(remapped([("g1", .pad(.y)), ("g2", .pad(.y))]))
+        s.mappingOffer = { [unowned self] rev in self.offer(of: box.mapping, rev) }
+        let reports = Reports()
+        s.statusSink = { reports.all.append($0) }
+        queue.sync { s.connection(up: true) }
+        XCTAssertEqual(s.unsupportedNote, "three buttons send Y: y, g1, g2")
+        XCTAssertEqual(tap.calls, [DextProtocol.Forwarding.shadow, DextProtocol.Forwarding.inert], "SHADOW, then the push finds it unsupported: INERT")
+        XCTAssertTrue(tap.mapCalls.isEmpty)
+        let callsBefore = tap.calls, readsBefore = s.status2Reads
+
+        // Another edit that the driver cannot say either: the hold stays, the note follows, the driver is not touched.
+        box.mapping = remapped([("g1", .pad(.lt))])
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(tap.calls, callsBefore, "no INERT -> SHADOW -> INERT for nothing")
+        XCTAssertTrue(tap.mapCalls.isEmpty)
+        XCTAssertTrue(s.unsupportedHold)
+        XCTAssertEqual(s.unsupportedNote, "g1 sends LT: a button cannot pull a trigger in this driver version")
+        XCTAssertEqual(reports.all.last?.mappingNote, s.unsupportedNote, "the status file follows the new reason")
+        XCTAssertEqual(reports.all.last?.armed, "inert")
+        XCTAssertNil(s.makeReport().fallback, "not a fault"); XCTAssertNil(s.latched); XCTAssertNil(s.fallback)
+
+        // Many edits and ticks: still nothing, and the limiter (3 fallbacks) never sees an entry.
+        for _ in 0..<6 { queue.sync { s.invalidateMapping() } }
+        ticks(s, 40)
+        XCTAssertEqual(tap.calls, callsBefore); XCTAssertTrue(tap.mapCalls.isEmpty); XCTAssertNil(s.latched)
+        XCTAssertEqual(s.status2Reads, readsBefore, "and the driver's status is not read for it either")
+        XCTAssertEqual(s.pushes, 0)
+    }
+
+    func testAnEditThatBecomesExpressibleReleasesTheHoldAsBefore() {
+        let tap = FakeTap(); let s = make(path: "shadow", tap: tap)
+        let box = MappingBox(remapped([("g1", .pad(.y)), ("g2", .pad(.y))]))
+        s.mappingOffer = { [unowned self] rev in self.offer(of: box.mapping, rev) }
+        queue.sync { s.connection(up: true) }
+        XCTAssertTrue(s.unsupportedHold)
+        box.mapping = remapped([("g1", .pad(.y))])                  // two sources on Y: GDHM v1 can say it
+        queue.sync { s.invalidateMapping() }
+        XCTAssertFalse(s.unsupportedHold); XCTAssertNil(s.unsupportedNote); XCTAssertNil(s.makeReport().mappingNote)
+        XCTAssertEqual(tap.calls, [DextProtocol.Forwarding.shadow, DextProtocol.Forwarding.inert, DextProtocol.Forwarding.shadow])
+        XCTAssertEqual(tap.mapCalls.count, 1, "and the blob is pushed at once")
+        XCTAssertEqual(s.makeReport().armed, "shadow")
+        // Back to unsupported through the normal push: the hold is taken again, the driver goes INERT.
+        box.mapping = remapped([("g1", .pad(.lt))])
+        queue.sync { s.invalidateMapping() }
+        XCTAssertTrue(s.unsupportedHold)
+        XCTAssertEqual(tap.calls.last, DextProtocol.Forwarding.inert)
+        XCTAssertEqual(tap.mapCalls.count, 1, "nothing more was pushed")
+    }
+
+    func testABlobTheLocalCheckRejectsIsNeverPushedAndIsNotAFault() {
+        let tap = FakeTap(); let s = make(path: "shadow", tap: tap)
+        let good = offer(1)
+        guard case .blob(let blob, let spec) = good else { return XCTFail("the fixture mapping encodes") }
+        var damaged = spec; damaged[damaged.count - 1] ^= 0xFF      // a valid blob for a different pad
+        var offered: MappingOffer = .blob([1, 2, 3, 4], spec: spec)
+        XCTAssertNotEqual(XlateFixtures.validate([1, 2, 3, 4]), 0)
+        XCTAssertNotEqual(XlateFixtures.validate(blob, spec: damaged), 0)
+        s.mappingOffer = { _ in offered }
+        queue.sync { s.connection(up: true) }
+        XCTAssertTrue(tap.mapCalls.isEmpty, "never offered to the driver")
+        XCTAssertEqual(tap.calls, [DextProtocol.Forwarding.shadow, DextProtocol.Forwarding.inert])
+        XCTAssertTrue(s.unsupportedHold)
+        let note = s.makeReport().mappingNote ?? ""
+        XCTAssertTrue(note.hasPrefix("internal: blob rejected locally (GDHM rejected: "), note)
+        XCTAssertNil(s.fallback, "no fallback trip"); XCTAssertNil(s.latched)
+
+        // Edits that stay rejected: still no driver call and, many times over, no limiter entry (3 would latch).
+        offered = .blob(blob, spec: damaged)
+        for _ in 0..<6 { queue.sync { s.invalidateMapping() } }
+        ticks(s, 40)
+        XCTAssertTrue(tap.mapCalls.isEmpty); XCTAssertEqual(tap.calls, [DextProtocol.Forwarding.shadow, DextProtocol.Forwarding.inert])
+        XCTAssertNil(s.fallback); XCTAssertNil(s.latched); XCTAssertEqual(s.pushes, 0)
+        XCTAssertTrue(s.unsupportedNote?.hasPrefix("internal: blob rejected locally") == true)
+
+        // The next good blob is pushed as usual.
+        offered = good
+        queue.sync { s.invalidateMapping() }
+        XCTAssertEqual(tap.mapCalls.count, 1); XCTAssertFalse(s.unsupportedHold); XCTAssertNil(s.makeReport().mappingNote)
+    }
+
+    func testATwoSourceRemapIsPushedAndStaysOnTheDriverPath() {
+        let tap = FakeTap(); let s = make(path: "driver", tap: tap)
+        let m = remapped([("g1", .pad(.y))])
+        XCTAssertNil(MapBlobEncoder.remapLimit(m))
+        s.mappingOffer = { [unowned self] rev in self.offer(of: m, rev) }
+        queue.sync { s.connection(up: true) }
+        ticks(s, 20)
+        XCTAssertEqual(tap.mapCalls.count, 1, "pushed, once")
+        XCTAssertEqual(XlateFixtures.validate(tap.mapCalls[0]), 0)
+        XCTAssertFalse(s.unsupportedHold)
+        let r = s.makeReport()
+        XCTAssertNil(r.mappingNote); XCTAssertNil(r.fallback); XCTAssertNil(r.latched)
+        XCTAssertEqual(r.armed, "shadow", "this fake driver has no LIVE; the driver path is armed and translating")
+        XCTAssertEqual(tap.calls, [DextProtocol.Forwarding.shadow])
+    }
+
     // MARK: T6 review: the owner's pick reaches the engine every time
 
     private func armCount(_ tap: FakeTap, _ state: UInt64) -> Int { tap.calls.filter { $0 == state }.count }

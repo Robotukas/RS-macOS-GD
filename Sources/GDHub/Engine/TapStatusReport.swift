@@ -149,7 +149,7 @@ final class TapStatusPublisher: @unchecked Sendable {
 }
 
 /// The Driver menu's "who drives the virtual controller" status line as a pure function of what the GUI knows. Every state has its own wording; the
-/// plan's examples are "Driven by: App", "Driven by: App (mapping needs GDHM v2: <reason>)" and "Driven by: Driver (shadow)".
+/// plan's examples are "Driven by: App", "Driven by: App (mapping needs a driver update: <reason>)" and "Driven by: Driver (shadow)".
 enum InputPathMenu {
     /// - Parameters:
     ///   - mode: how this GUI relates to the pad; only `.engine` has an engine to ask.
@@ -176,7 +176,9 @@ enum InputPathMenu {
             return "Driven by: App (fallback: \(fb)\(r.fallbackRetrying ? "; retrying" : "; choose Driver to try again"))"
         }
         if let note = r.mappingNote, r.armed != "inert" || r.path == "shadow" || r.path == "driver" {
-            return "Driven by: App (mapping needs GDHM v2: \(note))"
+            // A blob the engine itself rejected is a bug in GDHub, not something a driver update fixes.
+            if note.hasPrefix("internal:") { return "Driven by: App (\(note))" }
+            return "Driven by: App (mapping needs a driver update: \(note))"
         }
         switch r.armed {
         case "live":

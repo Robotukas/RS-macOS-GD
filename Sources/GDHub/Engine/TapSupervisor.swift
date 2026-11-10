@@ -432,21 +432,52 @@ final class TapSupervisor: @unchecked Sendable {
     }
 
     /// The mapping changed, or the pad was (re)created: the dext needs the blob again.
+    ///
+    /// While the driver path stands down because the mapping needs more than GDHM v1 (`unsupportedHold`), the encoder is asked
+    /// first: if the new mapping is still unsupported (or its blob does not pass the local check) the hold stays, the note takes
+    /// the new reason and the driver is not called at all (releasing the hold would send SHADOW and the push would send INERT
+    /// again for nothing). If it can be expressed now, or there is no pad to ask about, the hold is released as before.
     func invalidateMapping() {
         dispatchPrecondition(condition: .onQueue(queue))
-        mappingDirty = true
         mappingGeneration += 1; pushFailures = 0; lastPushFailedNs = 0
-        unsupportedNote = nil
-        let wasHold = unsupportedHold
-        unsupportedHold = false
         defer { publishIfChanged() }
-        if wasHold { apply() }                                 // the mapping may be expressible now: the driver path comes back
+        let stillUnsupported: String? = {
+            guard unsupportedHold, case .unsupported(let why) = checked(mappingOffer(lastRevision &+ 1)) else { return nil }
+            return why
+        }()
+        if let why = stillUnsupported {
+            standDown(why)                                     // no driver call: the driver is INERT already (apply() only repairs a state that is not)
+        } else {
+            mappingDirty = true
+            unsupportedNote = nil
+            let wasHold = unsupportedHold
+            unsupportedHold = false
+            if wasHold { apply() }                             // the mapping may be expressible now: the driver path comes back
+        }
         if let f = fallback, f.clearOnMapping {
             fallback = nil
             Self.log.notice("fallback cleared: the mapping changed after \(f.reason.text, privacy: .public); arming again")
             apply()
         }
         pushMappingIfNeeded()                                  // a learn edit reaches the dext at once, not at the next 2 Hz read
+    }
+
+    /// An offer after the local check: a blob has been validated against its spec by the same C validator the sink uses, so a blob
+    /// the driver would refuse for its own reasons is found here, before any call, and is treated like an unsupported mapping.
+    private enum CheckedOffer {
+        case none
+        case unsupported(String)
+        case blob([UInt8], XlateCore)
+    }
+
+    private func checked(_ offer: MappingOffer) -> CheckedOffer {
+        switch offer {
+        case .none: return .none
+        case .unsupported(let why): return .unsupported(why)
+        case .blob(let blob, let spec):
+            do { return .blob(blob, try XlateCore(blob: blob, spec: spec)) }
+            catch { return .unsupported("internal: blob rejected locally (\(error))") }
+        }
     }
 
     /// The tap part of the engine's meter line (SHADOW): what the dext translated and how the parity check is going.
@@ -727,18 +758,12 @@ final class TapSupervisor: @unchecked Sendable {
         let backoffNs = min(UInt64(500_000_000) << UInt64(max(pushFailures - 1, 0)), 5_000_000_000)
         guard lastPushFailedNs == 0 || now &- lastPushFailedNs >= backoffNs else { return }
         let rev = lastRevision &+ 1
-        switch mappingOffer(rev) {
+        switch checked(mappingOffer(rev)) {
         case .none:
             return                                                       // no pad yet: asked again at the next tick
         case .unsupported(let why):
-            mappingDirty = false; settledGeneration = mappingGeneration       // not encoded again until the mapping changes
-            pushedRevision = nil; pushCore = nil; parity.ring.enabled = false
-            unsupportedNote = why
-            unsupportedHold = true                      // the driver path goes INERT (its map is cleared there) and the engine path posts
-            liveWatch?.configure(core: nil)
-            note("the mapping needs more than GDHM v1 (\(why)); the driver path stands down and the engine posts")
-            apply()
-        case .blob(let blob, let spec):
+            standDown(why)
+        case .blob(let blob, let core):
             unsupportedNote = nil
             let r = dext.setMapping(blob)
             guard r.kr == KERN_SUCCESS, let res = r.result else {
@@ -756,7 +781,7 @@ final class TapSupervisor: @unchecked Sendable {
             if res.accepted {
                 lastRevision = rev
                 pushedRevision = rev
-                pushCore = try? XlateCore(blob: blob, spec: spec)
+                pushCore = core
                 liveWatch?.configure(core: pushCore)
                 parity.ring.enabled = pushCore != nil
                 mappingDirty = false
@@ -776,6 +801,19 @@ final class TapSupervisor: @unchecked Sendable {
                 enterFallback(.driverRefused("mapping: \(text)"), retry: false, clearOnMapping: true)
             }
         }
+    }
+
+    /// The mapping cannot go to the driver (the encoder says GDHM v1 cannot express it, or its blob failed the local check): the
+    /// driver path is INERT (its map is cleared there) and the engine path posts. Not a fault: no fallback, no limiter entry. The
+    /// answer is final for this generation, so the mapping is not encoded again until it changes.
+    private func standDown(_ why: String) {
+        mappingDirty = false; settledGeneration = mappingGeneration
+        pushedRevision = nil; pushCore = nil; parity.ring.enabled = false
+        unsupportedNote = why
+        unsupportedHold = true
+        liveWatch?.configure(core: nil)
+        note("the mapping cannot go to the driver (\(why)); the driver path stands down and the engine posts")
+        apply()
     }
 
     private func note(_ text: String) {

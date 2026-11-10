@@ -93,7 +93,7 @@ final class LiveLifecycleTests: XCTestCase {
                        "Driven by: App, with driver check (parity not yet checked; live mode not available in this driver)")
         XCTAssertEqual(status(report { $0.path = "driver"; $0.fallback = "tap stalled"; $0.fallbackRetrying = true }), "Driven by: App (fallback: tap stalled; retrying)")
         XCTAssertEqual(status(report { $0.path = "driver"; $0.fallback = "output stalled"; $0.fallbackRetrying = true }), "Driven by: App (fallback: output stalled; retrying)")
-        XCTAssertEqual(status(report { $0.path = "driver"; $0.mappingNote = "echo suppression" }), "Driven by: App (mapping needs GDHM v2: echo suppression)")
+        XCTAssertEqual(status(report { $0.path = "driver"; $0.mappingNote = "echo suppression" }), "Driven by: App (mapping needs a driver update: echo suppression)")
     }
 
     func testMenuHasThreeChoicesAndSelectsTheDriverOne() throws {

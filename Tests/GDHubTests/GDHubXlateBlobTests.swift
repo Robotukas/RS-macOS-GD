@@ -24,6 +24,15 @@ final class GDHubXlateBlobTests: XCTestCase {
         XCTAssertEqual(b[20], 250, "silenceNeutralMs")
     }
 
+    /// The engine builds an `XlateCore` to check a blob before pushing it, so a rejected one must throw without freeing its map twice.
+    func testXlateCoreThrowsOnARejectedBlobAndSurvivesIt() {
+        for _ in 0..<50 {
+            XCTAssertThrowsError(try XlateCore(blob: [1, 2, 3, 4], spec: F.spec)) { XCTAssertTrue($0 is XlateError) }
+            XCTAssertThrowsError(try XlateCore(blob: Array(factoryBlob.dropLast(8)), spec: F.spec))
+        }
+        XCTAssertNoThrow(try XlateCore(blob: factoryBlob, spec: F.spec))
+    }
+
     func testEveryTruncationIsRejected() {
         let b = factoryBlob
         for n in 0..<b.count {
