@@ -1,0 +1,187 @@
+{
+  "buttons" : {
+    "a" : {
+      "button" : {
+        "_0" : 1
+      }
+    },
+    "b" : {
+      "button" : {
+        "_0" : 2
+      }
+    },
+    "dpad_down" : {
+      "hat" : {
+        "_0" : 4
+      }
+    },
+    "dpad_left" : {
+      "hat" : {
+        "_0" : 6
+      }
+    },
+    "dpad_right" : {
+      "hat" : {
+        "_0" : 2
+      }
+    },
+    "dpad_up" : {
+      "hat" : {
+        "_0" : 0
+      }
+    },
+    "g1" : {
+      "button" : {
+        "_0" : 12
+      }
+    },
+    "g2" : {
+      "button" : {
+        "_0" : 13
+      }
+    },
+    "g3" : {
+      "button" : {
+        "_0" : 14
+      }
+    },
+    "g4" : {
+      "button" : {
+        "_0" : 15
+      }
+    },
+    "g5" : {
+      "button" : {
+        "_0" : 16
+      }
+    },
+    "l3" : {
+      "button" : {
+        "_0" : 9
+      }
+    },
+    "lb" : {
+      "button" : {
+        "_0" : 5
+      }
+    },
+    "lt" : {
+      "trigger" : {
+        "_0" : "lt"
+      }
+    },
+    "menu" : {
+      "button" : {
+        "_0" : 8
+      }
+    },
+    "paddle_inner_left" : {
+      "hat" : {
+        "_0" : 0
+      }
+    },
+    "paddle_inner_right" : {
+      "hat" : {
+        "_0" : 4
+      }
+    },
+    "paddle_outer_left" : {
+      "hat" : {
+        "_0" : 6
+      }
+    },
+    "paddle_outer_right" : {
+      "hat" : {
+        "_0" : 2
+      }
+    },
+    "profile" : {
+      "button" : {
+        "_0" : 17
+      }
+    },
+    "r3" : {
+      "button" : {
+        "_0" : 10
+      }
+    },
+    "rb" : {
+      "button" : {
+        "_0" : 6
+      }
+    },
+    "rt" : {
+      "trigger" : {
+        "_0" : "rt"
+      }
+    },
+    "sax_left" : {
+      "button" : {
+        "_0" : 1
+      }
+    },
+    "sax_right" : {
+      "button" : {
+        "_0" : 2
+      }
+    },
+    "start" : {
+      "button" : {
+        "_0" : 11
+      }
+    },
+    "view" : {
+      "button" : {
+        "_0" : 7
+      }
+    },
+    "x" : {
+      "button" : {
+        "_0" : 3
+      }
+    },
+    "y" : {
+      "button" : {
+        "_0" : 4
+      }
+    }
+  },
+  "physicalBits" : {
+    "paddle_inner_left" : 4,
+    "paddle_inner_right" : 2,
+    "paddle_outer_left" : 8,
+    "paddle_outer_right" : 1,
+    "sax_left" : 16,
+    "sax_right" : 32
+  },
+  "sticks" : {
+    "left_stick" : {
+      "horizontal" : {
+        "axis" : {
+          "_0" : "x",
+          "sign" : 1
+        }
+      },
+      "vertical" : {
+        "axis" : {
+          "_0" : "y",
+          "sign" : 1
+        }
+      }
+    },
+    "right_stick" : {
+      "horizontal" : {
+        "axis" : {
+          "_0" : "z",
+          "sign" : 1
+        }
+      },
+      "vertical" : {
+        "axis" : {
+          "_0" : "rz",
+          "sign" : 1
+        }
+      }
+    }
+  }
+}
