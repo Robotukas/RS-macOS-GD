@@ -1115,6 +1115,7 @@ Q9. **Buttons an old learn tied to a paddle's signal** (only if S1 finds any in 
   moved from row 10 to row 11.
 - (d) Mockup v7 `docs/mockups/remap-buttons-v7.html`, drawn from the S1-pre layout copy, sent in chat at 20:45; the
   owner's OK is part of S2. Four wordings are marked as placeholders until the survey.
+  **Approved 2026-11-10 21:56: "v7 OK".** The survey (row 10) is still to be run; it needs the Mac and the controller.
 - Install 21:05: the step-1 app archived as `S1-pre/GDHub.app`; `--same-build` passed the guard (first real use);
   driver still build 24, activated and enabled; layout and mapping equal to the copies after the relaunch; no pre-edit
   snapshot file. Tests: `swift test` 1018, Python 71.
