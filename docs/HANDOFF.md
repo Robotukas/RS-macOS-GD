@@ -1,12 +1,12 @@
 # GDHub handoff — continue from another account
 
-## Start here (written 2026-11-10 08:30 GMT)
+## Start here (written 2026-11-10 08:30 GMT, updated 18:30 GMT)
 
 The owner is moving this work to another Claude account. Everything needed is in this repository; nothing lives only in
 the old chat. Read in this order:
 
 1. This section.
-2. `docs/plans/remap-plan.md` — **the work in progress** (phase ledger R0–R7; R0 is current).
+2. `docs/plans/remap-plan.md` — **the work in progress** (phase ledger R0–R7; step 1 = R0–R5 is done, R6 is next and needs a driver replacement).
 3. `docs/plans/receiver-takeover-plan.md` — done through T8 (ledger near the top; results sections at the end).
 4. `docs/plans/developer-mode-plan.md` and `docs/protocol/developer-mode-files.md` — the test tool.
 5. The conversation itself, if a decision's reason is unclear: `docs/sessions/2026-11-08-to-10-driver-takeover-developer-mode-remap.md`
@@ -15,27 +15,37 @@ the old chat. Read in this order:
 
 ### State of the Mac right now
 
-- `/Applications/GDHub.app` at commit `c990463` or later, driver extension `com.interlinked.gdhub.VirtualHID` **build 24**
+- `/Applications/GDHub.app` at the remap step 1 build (2026-11-10 18:14) or later, driver extension `com.interlinked.gdhub.VirtualHID` **build 24**
   (activated, enabled). The background engine runs as the LaunchAgent `com.interlinked.gdhub.engine`.
 - **The driver drives the virtual pad by default** (no `inputPath` stored = `driver`). First night as default was clean.
   App path back: Driver menu → "Controller driven by" → App, or `defaults write com.interlinked.gdhub inputPath -string engine`.
-- Tests: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` (742) and
-  `python3 -m unittest discover -s scripts/tools` (21) are green at `HEAD`.
+- Tests: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` (992) and
+  `python3 -m unittest discover -s scripts/tools` (27) are green at `HEAD`.
 - App-only change: `osascript -e 'tell application "GDHub" to quit'`, then
   `scripts/build-xcode.sh --no-open --release --same-build` (keeps driver build 24, refreshes the engine), then
   `open /Applications/GDHub.app`. A driver change needs the upgrade procedure in the takeover plan §7.1 — do not improvise it.
-- Rollback app bundles: `~/GDHub-rollback/` (outside the repo). Run reports: `~/Library/Application Support/GDHub/dev-runs/`.
+- Rollback app bundles: `~/GDHub-rollback/` (outside the repo). **A bundle from before remap step 1 does not know
+  remaps:** it ignores the `outputs` of the mapping file and writes the file without them the next time it saves, so the
+  owner's remaps are gone after a rollback (the app keeps copies in `mapping-backups` in its data folder whenever remaps
+  appear or disappear). The volume-key switch-off is not persistent: it ends when the engine quits. Run reports: `~/Library/Application Support/GDHub/dev-runs/`.
 
 ### What is in flight
 
-- **Remap step 1** (the approved mockup `docs/mockups/remap-buttons.html`): plan **v2** (2026-11-10) has the plan review folded in
-  (98 confirmed findings; the main corrections are listed in the plan). Building waits for R0b: mockup v6 and the owner's OK
-  on the plan's "Changes from mockup v5". Phase **R0** needs the owner for a few minutes and is now run as the template
-  `volume-spike` with two halves (see the plan); the `hidutil` half is: controller on, set
-  `hidutil property --matching '{"VendorID":0x1b1c,"ProductID":0x3a08,"PrimaryUsagePage":12}' --set '{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0xC000000E9,"HIDKeyboardModifierMappingDst":0x0}]}'`,
-  owner presses G3 ×3 (volume must not change) and G2 ×3 (must change), read the volume before/after
-  (`osascript -e 'output volume of (get volume settings)'`), check the log for "Insufficient permissions to remap", undo with
-  the same `--matching '{…}'` and `--set '{"UserKeyMapping":[]}'` (never a bare `--set`: it writes to every keyboard). R1 (model + translators) and R2 (UI) do not depend on it.
+- **Remap step 1 is done** (R0–R5, 2026-11-10; results in `docs/plans/remap-plan.md`). Mapping mode (toolbar → Mapping →
+  click a label or a button → menu), 23 remappable controls, a mapped G2–G4 loses its volume function (the engine sets
+  `UserKeyMapping` on the receiver's consumer service only; read it with `scripts/receiver-check.sh`). The templates in
+  picker rows 5, 6 and 7 pass on App and on Driver. No driver replacement was needed. The owner's mapping has no remaps
+  (reset after the tests, equal to the copy from before them).
+  - Not yet seen: the engine applying the volume switch-off after the controller sleeps and wakes with a remap in
+    place (the case that failed before the fresh-client fix). Check the log: category `volume-keys`, reason other
+    than "start".
+  - Known gaps: the status line does not say when the engine started on defaults because the mapping file was
+    unreadable (logged only); the label font setting lost in the layout incident is the owner's to set again.
+  - Undo of a hand-set key mapping is always scoped:
+    `hidutil property --matching '{"VendorID":0x1b1c,"ProductID":0x3a08,"PrimaryUsagePage":12}' --set '{"UserKeyMapping":[]}'`
+    (never a bare `--set`: it writes to every keyboard).
+- **Next: R6** (paddles and SAX by their physical bits, GDHM v2) — needs a plan review and a driver replacement by the
+  takeover plan §7.1.
 - **Carried from T8:** Shadow play test with the Slipstream receiver *not* USB-forwarded by the Shadow client; a 30-flick
   variant of the `t8-latency` template; the owner's verdict on how last night's play on the driver felt (asked, not answered).
   Do **not** delete `PassthroughPadMapper` with the `xlateCore` key: it is the oracle and the fallback (see the remap plan).
@@ -53,6 +63,10 @@ rollback folder under `layout-incident`); its font setting and view arrangement 
 install, copy the layout and mapping files first and compare after the relaunch.
 
 ### How the owner works (standing rules; they are not in the code)
+
+- Added 2026-11-10: name a Developer-mode template by its picker number and the title shown ("7. Volume keys under a
+  remap: …"), never by its id. A mode or function that cannot be used right now is hidden, not greyed. The volume
+  templates need the Mac's own speakers as the sound output (a headset with its own volume wheel cannot be checked).
 
 - **"apprall"** = approve all: work through the phases without asking again; stop only where the owner's hands are needed
   (System Settings approval, controller on/off, reboots, pressing buttons, play tests). The owner decides against a

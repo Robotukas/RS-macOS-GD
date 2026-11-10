@@ -20,7 +20,7 @@ volume"; "Of course light up any linked buttons"; every hands-on test is a Devel
 | R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | ✅ done 2026-11-10 (909 tests; the owner checked the screen: linked lighting made two-way, labels kept in place) |
 | R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | ✅ done 2026-11-10 (see "R3 result"); the wake-after-engine-start case is still to be seen in the engine's log |
 | R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | ✅ three templates pass on App and Driver (2026-11-10); the mapping-file comparison after "Reset all remaps" is open |
-| R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | pending |
+| R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | ✅ committed 2026-11-10 (HANDOFF updated; mapping equal to the copy from before the tests, volume keys back on after "Reset all remaps"); **push waits for the owner's word** |
 | R6 | Step 2: paddles and SAX by their physical bits, echo hidden; GDHM v2 (3+ sources, button → trigger, two triggers) | Yes | — | pending |
 | R7 | Step 3: keyboard keys, mouse buttons, macros in the same menu (with takeover T11) | Yes | — | pending |
 
@@ -270,7 +270,8 @@ Found on the way: the Mapping menu did not open after Developer mode had been vi
 was overwritten and left empty; fixed, every live anchor is kept and a refused pop is logged under `mapping-menu`).
 The owner's rule from this run: the picker rows are numbered, messages name a template by number and title, and a
 toolbar mode that cannot be used is hidden instead of greyed.
-Open: the owner's "Reset all remaps" and the comparison of the mapping file with the copy from before R4; the engine's
+After the run the owner pressed "Reset all remaps" (18:22): the mapping file equals the copy from before R2, the engine
+logged "switched off [] (mapping changed)" and the service's `UserKeyMapping` is empty. Open: the engine's
 apply after a wake that follows its start (R3) has not been seen in its log yet.
 
 ## Tests
