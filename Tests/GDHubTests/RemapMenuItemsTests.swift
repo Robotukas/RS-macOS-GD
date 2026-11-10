@@ -132,4 +132,24 @@ final class RemapMenuItemsTests: XCTestCase {
         XCTAssertTrue(anchor.isFlipped)
         XCTAssertNil(anchor.hitTest(NSPoint(x: 1, y: 1)), "the anchor never takes a click")
     }
+
+    /// The fault of 2026-11-10: a second drawing of the same side (Developer mode's) registered its anchor and went away;
+    /// the first drawing's anchor was forgotten, so no menu opened afterwards.
+    func testPresenterKeepsTheOlderAnchorWhenANewerOneGoesAway() {
+        let presenter = RemapMenuPresenter()
+        let first = RemapAnchorView()
+        presenter.register(first, side: .front)
+        autoreleasepool {
+            let second = RemapAnchorView()
+            presenter.register(second, side: .front)
+            XCTAssertTrue(presenter.anchor(for: .front) === second)
+        }
+        XCTAssertTrue(presenter.anchor(for: .front) === first, "the older drawing's anchor is still known")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 50, height: 50), styleMask: [], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        let third = RemapAnchorView()
+        presenter.register(third, side: .front)
+        window.contentView?.addSubview(first)
+        XCTAssertTrue(presenter.anchor(for: .front) === first, "an anchor in a window wins over a newer one that is not")
+    }
 }

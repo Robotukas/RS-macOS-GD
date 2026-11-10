@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import os
 
 /// Colours of the Mapping UI, from the approved mockup (v6).
 enum RemapColors {
@@ -131,16 +132,25 @@ enum RemapNSMenuBuilder {
 /// pop never re-renders the screen by itself (the device's `remapMenuControl` does that, for the selection outline).
 @MainActor
 final class RemapMenuPresenter: ObservableObject {
-    private var anchors: [ControlLayout.Side: WeakAnchor] = [:]
+    private static let log = Logger(subsystem: GDHubID.subsystem, category: "mapping-menu")
+    /// Every live anchor of a side, oldest first. The same side can be drawn by more than one view over time (the
+    /// normal drawing, the focused one of Developer mode, another view tab); SwiftUI does not call `updateNSView` on
+    /// a view whose inputs did not change, so a single slot was left pointing at a view that had gone away.
+    private var anchors: [ControlLayout.Side: [WeakAnchor]] = [:]
     private var pending = false
     private(set) var isOpen = false
 
     func register(_ view: RemapAnchorView, side: ControlLayout.Side) {
-        if anchors[side]?.view !== view { anchors[side] = WeakAnchor(view) }
+        var list = (anchors[side] ?? []).filter { $0.view != nil && $0.view !== view }
+        list.append(WeakAnchor(view))                // the newest registration is tried first
+        anchors[side] = list
     }
 
-    /// The anchor view of a drawn view, or nil when it is not on screen.
-    func anchor(for side: ControlLayout.Side) -> RemapAnchorView? { anchors[side]?.view }
+    /// The anchor view of a drawn view: the newest one that is in a window, else the newest one alive, else nil.
+    func anchor(for side: ControlLayout.Side) -> RemapAnchorView? {
+        let alive = (anchors[side] ?? []).compactMap(\.view)
+        return alive.last { $0.window != nil } ?? alive.last
+    }
 
     /// Called from a click (or an accessibility action). The menu is popped on the next run-loop turn, in the common
     /// modes, so the tap returns first and the click that opened it is finished; a menu opened inside the click's own
@@ -161,7 +171,11 @@ final class RemapMenuPresenter: ObservableObject {
 
     private func pop(controlID: String, side: ControlLayout.Side, at point: CGPoint, device: EnvisionProDevice) {
         guard device.isRemapping, !isOpen, let anchor = anchor(for: side), anchor.window != nil,
-              let control = device.layout?.control(id: controlID) else { return }
+              let control = device.layout?.control(id: controlID) else {
+            let found = self.anchor(for: side)
+            Self.log.error("no menu for \(controlID, privacy: .public): mapping=\(device.isRemapping) open=\(self.isOpen) anchor=\(found != nil) inWindow=\(found?.window != nil)")
+            return
+        }
         let model = RemapMenuModel(controlID: controlID, label: control.label, kind: control.kind, mapping: device.mapping)
         let specs = model.itemSpecs(relearnEnabled: device.modeGate.canLearn)
         let target = RemapMenuTarget { [weak device] pick in
