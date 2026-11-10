@@ -39,8 +39,8 @@ Evidence tags: **M** = measured on this Mac. **R** = read (file:line, SDK header
 | T5 | Translator inside the dext, SHADOW only; mapping blob | Yes | done (passed 2026-11-09, dext build 23, see "T5 results") |
 | T6 | Engine supervisor in SHADOW; input-path switch | No (app only) | done (passed 2026-11-09, see "T6 results") |
 | T7 | LIVE: pad arbitration, pinning, adopt, neutral paths (dext and engine together) | Yes (+1 fix replacement allowed) | done (passed 2026-11-09, dext build 24, see "T7 results") |
-| T8 | Gate and play test; LIVE becomes the default | No | ▶ current |
-| T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | pending (T3 measured the hop at about 1 µs, so unlikely to be needed) |
+| T8 | Gate and play test; LIVE becomes the default | No | done (2026-11-10: gate passed on every row but the 0.2 ms stick-onset margin, measured 0.14 ms; the owner chose Driver as the default anyway; `xlateCore` removal and the Shadow play test with the receiver un-forwarded are carried as follow-ups) |
+| T9 | Shared Hot queue (only if G11 or G12 fails) | Yes (conditional) | not needed (T8: hop p50 1 µs, occ p99 75 µs) |
 | T10 | Rumble (after the 0x09 capture) | Yes | pending |
 | T11 | Macro overlay (MERGE with TTL) and D8 slots under the root | Yes | pending |
 | T12 | AutoArm: pad with no user process (optional; needs a measured relaunch signal) | Yes | blocked (T0.3: no in-dext relaunch signal) |
@@ -1755,7 +1755,7 @@ Measured with the Developer-mode template `t8-latency` (App pass then Driver pas
 
 Per-step latency (receiver edge → pad report, kernel timestamps), App / Driver p50: flick onsets 0.256 / 0.118 ms; A taps 0.410 / 0.105; B taps 0.412 / 0.132; RT pulls 0.338 / 0.123; circle onset 0.332 / 0.048. p99 App 0.33–0.81 ms, Driver 0.05–0.26 ms. No edge went unanswered on either path.
 
-**Decision (R15):** the driver is faster on every row and every step, but G4b asks for ≥ 0.2 ms on the stick onset too and the measured margin is 0.14 ms over 11 onsets — the App path is already quick there since T1/T3, so the 0.2 ms bar was set against an older baseline. Rule is rule: `inputPath` stays `engine` by default. To settle it: re-run `t8-latency` with a 30-flick step (template variant) for a tighter stick-onset median, then decide; the owner may also simply choose Driver in the menu (it is verified safe by T7).
+**Decision:** the driver is faster on every row and every step; G4b's stick-onset margin came out at 0.14 ms over 11 onsets against the 0.2 ms the plan asked for (the App path is already quick there since T1/T3, so the bar was set against an older baseline). R15 would keep `engine`; **the owner decided on 2026-11-10 00:54 to make Driver the default anyway** (commit `Engine: driver input path is the default (T8)`: no stored `inputPath` = `driver`; an unknown value is still `engine`). Carried as follow-ups: a 30-flick `t8-latency` variant for a tighter stick-onset median, removing `xlateCore` (the Swift mapper stays as the test oracle), and the Shadow play test with the receiver un-forwarded.
 
 **Play test:** not valid yet. The owner played on Shadow PC with the Slipstream receiver on Shadow's USB-forwarding list, so the receiver left the Mac for the whole session (engine: `controller interface down` 23:42:49 → `up` 23:50:55, zero frames) and neither path was in the loop; the lag felt was Shadow's USB tunnel plus streaming. Redo after un-forwarding the receiver in the Shadow client (Shadow then uses GDHub's pad as an "Xbox 360 Controller").
 

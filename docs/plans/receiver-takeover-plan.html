@@ -291,13 +291,13 @@ details.toc a{text-decoration:none}
 <td>T8</td>
 <td>Gate and play test; LIVE becomes the default</td>
 <td>No</td>
-<td>▶ current</td>
+<td>done (2026-11-10: gate passed on every row but the 0.2 ms stick-onset margin, measured 0.14 ms; the owner chose Driver as the default anyway; <code>xlateCore</code> removal and the Shadow play test with the receiver un-forwarded are carried as follow-ups)</td>
 </tr>
 <tr>
 <td>T9</td>
 <td>Shared Hot queue (only if G11 or G12 fails)</td>
 <td>Yes (conditional)</td>
-<td>pending (T3 measured the hop at about 1 µs, so unlikely to be needed)</td>
+<td>not needed (T8: hop p50 1 µs, occ p99 75 µs)</td>
 </tr>
 <tr>
 <td>T10</td>
@@ -3670,7 +3670,7 @@ The last line must be `status is now on` or `Game mode enabled`.
 </tbody>
 </table></div>
 <p>Per-step latency (receiver edge → pad report, kernel timestamps), App / Driver p50: flick onsets 0.256 / 0.118 ms; A taps 0.410 / 0.105; B taps 0.412 / 0.132; RT pulls 0.338 / 0.123; circle onset 0.332 / 0.048. p99 App 0.33–0.81 ms, Driver 0.05–0.26 ms. No edge went unanswered on either path.</p>
-<p><strong>Decision (R15):</strong> the driver is faster on every row and every step, but G4b asks for ≥ 0.2 ms on the stick onset too and the measured margin is 0.14 ms over 11 onsets — the App path is already quick there since T1/T3, so the 0.2 ms bar was set against an older baseline. Rule is rule: <code>inputPath</code> stays <code>engine</code> by default. To settle it: re-run <code>t8-latency</code> with a 30-flick step (template variant) for a tighter stick-onset median, then decide; the owner may also simply choose Driver in the menu (it is verified safe by T7).</p>
+<p><strong>Decision:</strong> the driver is faster on every row and every step; G4b's stick-onset margin came out at 0.14 ms over 11 onsets against the 0.2 ms the plan asked for (the App path is already quick there since T1/T3, so the bar was set against an older baseline). R15 would keep <code>engine</code>; <strong>the owner decided on 2026-11-10 00:54 to make Driver the default anyway</strong> (commit <code>Engine: driver input path is the default (T8)</code>: no stored <code>inputPath</code> = <code>driver</code>; an unknown value is still <code>engine</code>). Carried as follow-ups: a 30-flick <code>t8-latency</code> variant for a tighter stick-onset median, removing <code>xlateCore</code> (the Swift mapper stays as the test oracle), and the Shadow play test with the receiver un-forwarded.</p>
 <p><strong>Play test:</strong> not valid yet. The owner played on Shadow PC with the Slipstream receiver on Shadow's USB-forwarding list, so the receiver left the Mac for the whole session (engine: <code>controller interface down</code> 23:42:49 → <code>up</code> 23:50:55, zero frames) and neither path was in the loop; the lag felt was Shadow's USB tunnel plus streaming. Redo after un-forwarding the receiver in the Shadow client (Shadow then uses GDHub's pad as an "Xbox 360 Controller").</p>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
