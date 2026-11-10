@@ -42,6 +42,16 @@ the old chat. Read in this order:
 - **Blocked:** T10 rumble needs a USB capture of report 0x09 on an x64 Windows with iCUE (the Shadow PC; ask before
   installing anything there). The Parallels VM is ARM64 and cannot load Corsair's drivers.
 
+### Layout incident of 2026-11-10 (read before running tests or installing)
+
+Tests added for Mapping mode called `beginEditingLayout()` and left a pre-edit snapshot in the owner's real data folder; at
+the next app start `recoverInterruptedEditIfNeeded()` replaced the owner's layout with the built-in default. Fixed: under
+XCTest every user-data path resolves to a throw-away folder (`MappingStore.testSupportDirectory`, pinned by
+`RealSupportFolderTests`). The layout of 9 November was rebuilt from a session record and sits in the app's
+"Restore layout from backup" list as "layout 2026-11-10 12-15-00 from 9 Nov" (master copies are outside the repo, in the
+rollback folder under `layout-incident`); its font setting and view arrangement could not be recovered. Before every
+install, copy the layout and mapping files first and compare after the relaunch.
+
 ### How the owner works (standing rules; they are not in the code)
 
 - **"apprall"** = approve all: work through the phases without asking again; stop only where the owner's hands are needed
