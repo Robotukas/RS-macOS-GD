@@ -52,7 +52,7 @@ During R6 the progress line counts this S0–S9 ledger (Phase n/10); S2b, if it 
 |---|---|---|---|---|
 | S0 | Plan review and the owner's answers to "Questions for the owner" | No | Review folded in (plan v2, 2026-11-10): done. Outstanding: the owner's answers to Q1–Q9, quoted in "S0 answers"; then plan v2 committed, the remap-plan R6 row and HANDOFF point here | ✅ done 2026-11-10: "OK all" (see "S0 answers") |
 | S1 | Safety net, build guard, receiver recorder, survey template, mockup v7 (app-only install) | No | Pins committed; build-24 source hash seeded; `--check` works; v7 approved (quoted) before the `record` display was coded; `swift test` + Python green; installed with `--same-build`; layout and mapping equal to their copies | ✅ done 2026-11-10 21:05 (see "S1 notes") |
-| S2 | Owner sitting 1: run row 10 (survey) | No | "S2 result" written: echoes and light colour per profile, each key's bit, lags, leads, hat behaviour, Profile during a hold; W, G and row 11's probe and picks fixed; gate passed, or the Q8 answer applied (S2b opened when needed) | ▶ current |
+| S2 | Owner sitting 1: run row 10 (survey) | No | "S2 result" written: echoes and light colour per profile, each key's bit, lags, leads, hat behaviour, Profile during a hold; W, G and row 11's probe and picks fixed; gate passed, or the Q8 answer applied (S2b opened when needed) | ▶ current: survey run 2026-11-10 23:14, **gate fails on one real point** (see "S2 result"); stopped for the owner |
 | S2b | Re-plan after a failed gate (only if the S2 gate fails) | No | Q8 = (b): the (b) changes applied and v7b approved; any other case: plan v3 written, reviewed against the code, owner's OK quoted. "skipped" when the gate passes | pending |
 | S3 | Model, Swift echo filter, menus, labels, lighting (App path only) | No | Tests green; S1 pins byte-identical; echo cases E1–E29 pass in Swift | pending |
 | S4 | Developer mode judges triggers, `builtInEcho`, "cannot judge"; rows 11 and 12; app-only install; owner runs them on App | No | Rows 11 and 12 pass on App with a conclusive hiding verdict per remapped key; their Driver pass stands down quietly on build 24; rows 4, 1 and 7 pass on App and Driver; layout and mapping equal to their copies; no before-edit file | pending |
@@ -1121,4 +1121,42 @@ Q9. **Buttons an old learn tied to a paddle's signal** (only if S1 finds any in 
   snapshot file. Tests: `swift test` 1018, Python 71.
 - Not yet verified: row 10 on the real controller; the "Recorded" display in the running app; `--check` on the real
   project.
+
+## S2 result (2026-11-10, survey run 23:14–23:22, App path, 41 steps, no reports lost)
+
+Read with `scripts/tools/echo-survey.py`; a copy of the run report is in the rollback folder under `S1-pre`.
+Mockup v7 was approved at 21:56 ("v7 OK").
+
+**What the controller does (measured)**
+- The extra button of each key, in the starting profile and after each of the three Profile presses (four states, all
+  the same): paddle outer right → D-pad right, inner right → D-pad down, inner left → D-pad up, outer left → D-pad
+  left, SAX left → A, SAX right → B. Each key raises exactly its table bit (0, 1, 2, 3, 4, 5).
+- Timing: in every press of a key alone (about 180 presses) the extra button comes on in the **same report** as the
+  key's own bit and goes off in the same report as the release. No lag in either direction.
+- Profile pressed and let go while paddle outer right is held (three times): nothing else changes until the key is
+  let go.
+- The D-pad is a hat that the controller combines itself: a held direction plus a paddle's neighbouring direction
+  gives the diagonal (up + right → up-right, up + left → up-left); the **same** direction changes nothing; the
+  **opposite** direction cancels to "no direction" (D-pad up held + paddle inner right → neutral; D-pad left held +
+  paddle outer right → neutral; paddles outer left + outer right → neutral; inner left + inner right → neutral).
+  Two paddles on neighbouring directions give the diagonal (outer right + inner right → down-right).
+- A and B are plain bits: SAX left with A held changes nothing.
+
+**The gate: FAIL**, and what each failed line is worth
+- Real: "the hat never drops a real direction while a paddle is held". With D-pad up held, pressing the paddle whose
+  extra button is D-pad down makes the controller report no direction at all. The plan's rule (learn the extra button
+  from the change at the press) cannot handle this case: at that press nothing comes on, a direction goes off.
+- Not real, the reader's attribution: "an echo comes 5 reports after its bit" (together-sax) is SAX left's own A,
+  pressed 5 reports after SAX right; the "lead 1" in together-outer is the same kind. So W = 6 is not a measured need.
+- Not real, the pressing: three "alone" steps saw a second paddle bit (a neighbouring paddle was touched), and two
+  steps were done the other way round (D-pad held, paddle pressed, instead of the paddle held). They still gave the
+  hat facts above.
+
+**What follows**
+The plan's stop rule applies: no S3 code until the owner decides. The facts are better than the plan assumed in two
+ways (no lag at all; the same extra button in every profile) and worse in one (the opposite-direction cancel). A rule
+that uses them — remove a remapped key's known extra button in the same report, and work out the real D-pad direction
+per axis (extra "down" present and no vertical direction reported means "up" is really held) — is a different design
+from the reviewed latch and needs its own review before any code. The owner's standing answer for a failed gate is
+Q8 (b).
 
