@@ -1,0 +1,220 @@
+{
+  "complete" : true,
+  "effectivePath" : "inert",
+  "endedAt" : "2026-11-10T20:03:00+01:00",
+  "header" : {
+    "appBuild" : "41",
+    "decodeTable" : {
+      "placements" : [
+
+      ],
+      "reports" : [
+
+      ]
+    },
+    "guiMode" : "engine",
+    "mapping" : {
+      "buttons" : {
+
+      },
+      "physicalBits" : {
+
+      },
+      "sticks" : {
+
+      }
+    },
+    "mappingHash" : "",
+    "padIdentity" : "xbox-bt16-02e0",
+    "readerMatched" : 1,
+    "templateId" : "echo-survey",
+    "templateSha256" : "",
+    "templateVersion" : 1,
+    "vpadMaxRateHz" : 0,
+    "xlateCore" : "c"
+  },
+  "notes" : [
+
+  ],
+  "pathEvents" : [
+
+  ],
+  "requestedPath" : "engine",
+  "schema" : 1,
+  "startedAt" : "2026-11-10T20:00:00+01:00",
+  "steps" : [
+    {
+      "attempts" : [
+        {
+          "effectivePath" : {
+
+          },
+          "entryRaw" : [
+
+          ],
+          "metrics" : {
+            "detail" : "Recorded 7 receiver reports that changed, over 1.3 s; nothing was judged.",
+            "framesPerSecond" : 0,
+            "framesSeen" : 0,
+            "movingMs" : 0,
+            "padChanged" : 0,
+            "padReports" : 0,
+            "rawDropped" : 0,
+            "values" : {
+
+            }
+          },
+          "pathUnconfirmed" : false,
+          "raw" : [
+
+          ],
+          "readyNs" : 3000000000,
+          "receiver" : [
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 100,
+              "t" : -400
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 01 00 80 00",
+              "n" : 500,
+              "t" : 0
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 600,
+              "t" : 100
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 01 00 80 00",
+              "n" : 900,
+              "t" : 400
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 1000,
+              "t" : 500
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 01 00 80 00",
+              "n" : 1300,
+              "t" : 800
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 1400,
+              "t" : 900
+            }
+          ],
+          "startedNs" : 1000000000,
+          "superseded" : false,
+          "verdict" : {
+            "reason" : "Recorded 7 receiver reports that changed, over 1.3 s; nothing was judged.",
+            "verdict" : "recorded"
+          },
+          "windowEndNs" : 6500000000,
+          "windowStartNs" : 3500000000
+        }
+      ],
+      "controls" : [
+        "sax_left"
+      ],
+      "expected" : {
+        "buttons" : [
+
+        ],
+        "guide" : false
+      },
+      "index" : 0,
+      "kind" : "record",
+      "stepId" : "alone-sax_left"
+    },
+    {
+      "attempts" : [
+        {
+          "effectivePath" : {
+
+          },
+          "entryRaw" : [
+
+          ],
+          "metrics" : {
+            "detail" : "Recorded 7 receiver reports that changed, over 1.3 s; nothing was judged.",
+            "framesPerSecond" : 0,
+            "framesSeen" : 0,
+            "movingMs" : 0,
+            "padChanged" : 0,
+            "padReports" : 0,
+            "rawDropped" : 0,
+            "values" : {
+
+            }
+          },
+          "pathUnconfirmed" : false,
+          "raw" : [
+
+          ],
+          "readyNs" : 3000000000,
+          "receiver" : [
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 100,
+              "t" : -400
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 20 00 00 08 00",
+              "n" : 500,
+              "t" : 0
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 600,
+              "t" : 100
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 20 00 00 08 00",
+              "n" : 900,
+              "t" : 400
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 1000,
+              "t" : 500
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 20 00 00 08 00",
+              "n" : 1300,
+              "t" : 800
+            },
+            {
+              "hex" : "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00",
+              "n" : 1400,
+              "t" : 900
+            }
+          ],
+          "startedNs" : 1000000000,
+          "superseded" : false,
+          "verdict" : {
+            "reason" : "Recorded 7 receiver reports that changed, over 1.3 s; nothing was judged.",
+            "verdict" : "recorded"
+          },
+          "windowEndNs" : 6500000000,
+          "windowStartNs" : 3500000000
+        }
+      ],
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "expected" : {
+        "buttons" : [
+
+        ],
+        "guide" : false
+      },
+      "index" : 1,
+      "kind" : "record",
+      "stepId" : "alone-paddle_outer_right"
+    }
+  ],
+  "t0Ns" : 1000000000
+}

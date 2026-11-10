@@ -1,0 +1,556 @@
+{
+  "id" : "echo-survey",
+  "notes" : "This only watches and writes down what the controller's receiver sends when you press each paddle and SAX key, alone and in pairs, so we learn what extra button the controller adds next to each one. Nothing passes or fails: every step ends with \"Recorded\". Before you start: the controller on and awake, Mapping off, the Parallels VM not running, Shadow not forwarding the receiver, and look at the light colour on the controller and remember it. Run it on the App path. Do not press Profile except where a step says so. For each step: let go of everything and wait for Go, then do what the step says at an easy pace (about one press a second, letting go completely each time); the step ends by itself a moment after you are done. \"Hold X, press Y\" means keep X held down while you press Y, and let go of X last. The last three blocks press Profile once while a paddle is held: after each one, look at the light colour and write it down. After the last block, press Profile until your starting colour is back. Afterwards the run file in the dev-runs folder is read with scripts/tools/echo-survey.py.",
+  "recordReceiver" : true,
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+        "paddle_outer_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 10
+      },
+      "id" : "alone-paddle_outer_left",
+      "kind" : "record",
+      "seconds" : 30,
+      "title" : "Press Paddle outer left ten times"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 10
+      },
+      "id" : "alone-paddle_inner_left",
+      "kind" : "record",
+      "seconds" : 30,
+      "title" : "Press Paddle inner left ten times"
+    },
+    {
+      "controls" : [
+        "paddle_inner_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 10
+      },
+      "id" : "alone-paddle_inner_right",
+      "kind" : "record",
+      "seconds" : 30,
+      "title" : "Press Paddle inner right ten times"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 10
+      },
+      "id" : "alone-paddle_outer_right",
+      "kind" : "record",
+      "seconds" : 30,
+      "title" : "Press Paddle outer right ten times"
+    },
+    {
+      "controls" : [
+        "sax_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 10
+      },
+      "id" : "alone-sax_left",
+      "kind" : "record",
+      "seconds" : 30,
+      "title" : "Press SAX left ten times"
+    },
+    {
+      "controls" : [
+        "sax_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 10
+      },
+      "id" : "alone-sax_right",
+      "kind" : "record",
+      "seconds" : 30,
+      "title" : "Press SAX right ten times"
+    },
+    {
+      "controls" : [
+        "dpad_up",
+        "paddle_inner_left"
+      ],
+      "detail" : "Press and hold D-pad up. While you hold it, press Paddle inner left once and let go of it. Then let go of D-pad up.",
+      "expect" : {
+        "rises" : 2
+      },
+      "id" : "up-held-paddle_inner_left",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold D-pad up, press Paddle inner left once"
+    },
+    {
+      "controls" : [
+        "dpad_up",
+        "paddle_outer_right"
+      ],
+      "detail" : "Press and hold D-pad up. While you hold it, press Paddle outer right once and let go of it. Then let go of D-pad up.",
+      "expect" : {
+        "rises" : 2
+      },
+      "id" : "up-held-paddle_outer_right",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold D-pad up, press Paddle outer right once"
+    },
+    {
+      "controls" : [
+        "dpad_up",
+        "paddle_inner_right"
+      ],
+      "detail" : "Press and hold D-pad up. While you hold it, press Paddle inner right once and let go of it. Then let go of D-pad up.",
+      "expect" : {
+        "rises" : 2
+      },
+      "id" : "up-held-paddle_inner_right",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold D-pad up, press Paddle inner right once"
+    },
+    {
+      "controls" : [
+        "dpad_up",
+        "paddle_outer_left"
+      ],
+      "detail" : "Press and hold D-pad up. While you hold it, press Paddle outer left once and let go of it. Then let go of D-pad up.",
+      "expect" : {
+        "rises" : 2
+      },
+      "id" : "up-held-paddle_outer_left",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold D-pad up, press Paddle outer left once"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "dpad_up"
+      ],
+      "detail" : "Press and hold Paddle outer right. While you hold it, press D-pad up twice, letting go in between, to see which of the two the controller shows. Then let go of Paddle outer right.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "outer-right-dpad-up",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold Paddle outer right, press D-pad up twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "dpad_left"
+      ],
+      "detail" : "Press and hold Paddle outer right. While you hold it, press D-pad left twice, letting go in between, to see which of the two the controller shows. Then let go of Paddle outer right.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "outer-right-dpad-left",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold Paddle outer right, press D-pad left twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "paddle_outer_left"
+      ],
+      "detail" : "Press and hold Paddle outer right. While you hold it, press Paddle outer left twice, letting go in between, to see how two keys behave together. Then let go of Paddle outer right.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "outer-right-outer-left",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold Paddle outer right, press Paddle outer left twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "paddle_inner_right"
+      ],
+      "detail" : "Press and hold Paddle outer right. While you hold it, press Paddle inner right twice, letting go in between, to see how two keys behave together. Then let go of Paddle outer right.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "outer-right-inner-right",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold Paddle outer right, press Paddle inner right twice"
+    },
+    {
+      "controls" : [
+        "a",
+        "sax_left"
+      ],
+      "detail" : "Press and hold A. While you hold it, press SAX left twice, letting go in between, to see how the controller's A and SAX left behave together. Then let go of A.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "a-held-sax-left",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold A, press SAX left twice"
+    },
+    {
+      "controls" : [
+        "sax_left",
+        "a"
+      ],
+      "detail" : "Press and hold SAX left. While you hold it, press A twice, letting go in between, to see how SAX left and the controller's A behave together. Then let go of SAX left.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "sax-left-held-a",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Hold SAX left, press A twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_left",
+        "paddle_outer_right"
+      ],
+      "detail" : "Press both at the same moment, let go of both, wait a moment, and again. Twice in all.",
+      "expect" : {
+        "rises" : 4
+      },
+      "id" : "together-outer",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Press Paddle outer left and Paddle outer right together, twice"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left",
+        "paddle_inner_right"
+      ],
+      "detail" : "Press both at the same moment, let go of both, wait a moment, and again. Twice in all.",
+      "expect" : {
+        "rises" : 4
+      },
+      "id" : "together-inner",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Press Paddle inner left and Paddle inner right together, twice"
+    },
+    {
+      "controls" : [
+        "sax_left",
+        "sax_right"
+      ],
+      "detail" : "Press both at the same moment, let go of both, wait a moment, and again. Twice in all.",
+      "expect" : {
+        "rises" : 4
+      },
+      "id" : "together-sax",
+      "kind" : "record",
+      "seconds" : 15,
+      "title" : "Press SAX left and SAX right together, twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "profile"
+      ],
+      "detail" : "Press and hold Paddle outer right. While you hold it, press Profile once. Let go of Profile, then let go of the paddle. Then look at the light colour on the controller and make a note of it (block 1 of 3).",
+      "expect" : {
+        "rises" : 2
+      },
+      "id" : "profile-block-1",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Hold Paddle outer right, press Profile once"
+    },
+    {
+      "controls" : [
+        "paddle_outer_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-1-paddle_outer_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle outer left three times (block 1 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-1-paddle_inner_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle inner left three times (block 1 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_inner_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-1-paddle_inner_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle inner right three times (block 1 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-1-paddle_outer_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle outer right three times (block 1 of 3)"
+    },
+    {
+      "controls" : [
+        "sax_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-1-sax_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press SAX left three times (block 1 of 3)"
+    },
+    {
+      "controls" : [
+        "sax_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-1-sax_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press SAX right three times (block 1 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "profile"
+      ],
+      "detail" : "Press and hold Paddle outer right. While you hold it, press Profile once. Let go of Profile, then let go of the paddle. Then look at the light colour on the controller and make a note of it (block 2 of 3).",
+      "expect" : {
+        "rises" : 2
+      },
+      "id" : "profile-block-2",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Hold Paddle outer right, press Profile once"
+    },
+    {
+      "controls" : [
+        "paddle_outer_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-2-paddle_outer_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle outer left three times (block 2 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-2-paddle_inner_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle inner left three times (block 2 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_inner_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-2-paddle_inner_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle inner right three times (block 2 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-2-paddle_outer_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle outer right three times (block 2 of 3)"
+    },
+    {
+      "controls" : [
+        "sax_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-2-sax_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press SAX left three times (block 2 of 3)"
+    },
+    {
+      "controls" : [
+        "sax_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-2-sax_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press SAX right three times (block 2 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "profile"
+      ],
+      "detail" : "Press and hold Paddle outer right. While you hold it, press Profile once. Let go of Profile, then let go of the paddle. Then look at the light colour on the controller and make a note of it (block 3 of 3).",
+      "expect" : {
+        "rises" : 2
+      },
+      "id" : "profile-block-3",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Hold Paddle outer right, press Profile once"
+    },
+    {
+      "controls" : [
+        "paddle_outer_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-3-paddle_outer_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle outer left three times (block 3 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-3-paddle_inner_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle inner left three times (block 3 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_inner_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-3-paddle_inner_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle inner right three times (block 3 of 3)"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-3-paddle_outer_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press Paddle outer right three times (block 3 of 3)"
+    },
+    {
+      "controls" : [
+        "sax_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-3-sax_left",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press SAX left three times (block 3 of 3)"
+    },
+    {
+      "controls" : [
+        "sax_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "rises" : 3
+      },
+      "id" : "profile-3-sax_right",
+      "kind" : "record",
+      "seconds" : 20,
+      "title" : "Press SAX right three times (block 3 of 3)"
+    },
+    {
+      "controls" : [
+
+      ],
+      "detail" : "Put the controller down and let go of every stick, trigger and button. The receiver has to stay still.",
+      "id" : "rest",
+      "kind" : "rest",
+      "seconds" : 3,
+      "title" : "Hands off everything"
+    }
+  ],
+  "title" : "Paddles and SAX: what the controller adds (survey)",
+  "version" : 1
+}

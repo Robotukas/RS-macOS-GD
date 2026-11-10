@@ -9,6 +9,8 @@ enum DevPalette {
     static let fail = Color.red
     static let inconclusive = Color(red: 1.0, green: 0.72, blue: 0.2)
     static let skipped = Color.gray
+    /// A record step: it stored what the receiver sent and judged nothing, so no verdict colour (a calm blue-grey).
+    static let recorded = Color(red: 0.55, green: 0.65, blue: 0.80)
 
     static func color(for highlight: DevHighlight) -> Color {
         switch highlight {
@@ -17,6 +19,7 @@ enum DevPalette {
         case .failed: return fail
         case .skipped: return skipped
         case .inconclusive: return inconclusive
+        case .recorded: return recorded
         }
     }
 
@@ -26,6 +29,7 @@ enum DevPalette {
         case .fail?, .invalid?: return fail
         case .inconclusive?: return inconclusive
         case .skipped?, nil: return skipped
+        case .recorded?: return recorded
         }
     }
 
@@ -37,6 +41,7 @@ enum DevPalette {
         case .failed: return fail
         case .skipped: return skipped
         case .inconclusive: return inconclusive
+        case .recorded: return recorded
         }
     }
 }

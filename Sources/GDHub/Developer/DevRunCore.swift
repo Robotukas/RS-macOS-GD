@@ -67,6 +67,8 @@ enum DevTarget: String, CaseIterable, Identifiable, Codable {
 /// How the drawing shows a control during a run.
 enum DevHighlight: String, Equatable, Codable {
     case wanted, linked, passed, failed, skipped, inconclusive, restOutline
+    /// A `record` step that stored its frames: no verdict colour.
+    case recorded
 }
 
 /// Numbers for the live strip, refreshed at most 4 times a second.
@@ -423,6 +425,28 @@ struct DevRunCore {
         var schedule: [ScheduledWrite] = []
         var nextWrite = 0
         var handOvers: [HandOver] = []
+        /// A step that records the receiver: the reports whose non-stick bytes changed (and the first of the step), the
+        /// ones left out over the cap, the non-stick bytes of the previous report and of the report at Go, and since
+        /// when the receiver has shown the bytes it showed at Go.
+        var receiver: [ReceiverSample] = []
+        var receiverDropped = 0
+        var lastNonStick: [UInt8]?
+        var baselineNonStick: [UInt8]?
+        var quietSinceNs: UInt64?
+        /// A `record` step: for each of its controls, how often it came down and whether it has gone back up.
+        var recordControls: [String: RecordedControl] = [:]
+    }
+
+    private struct ReceiverSample: Equatable {
+        var n: Int
+        var tNs: UInt64
+        var bytes: [UInt8]
+    }
+
+    private struct RecordedControl: Equatable {
+        var active = false
+        var rises = 0
+        var fell = false
     }
 
     // MARK: Read-only views for the shell
@@ -953,6 +977,11 @@ struct DevRunCore {
         att.verdict = o.verdict
         att.metrics = o.metrics
         att.volume = o.volume
+        if r.step.devKind == .record {
+            let text = DevRecorder.summary(frames: c.receiver.count, dropped: c.receiverDropped, seconds: Double(end - ws) / 1e9)
+            att.verdict = .recorded(text)
+            att.metrics.detail = text
+        }
         if !c.handOvers.isEmpty {
             att.metrics.values["held.handOvers"] = Double(c.handOvers.count)
             att.metrics.values["held.handOversConfirmed"] = Double(c.handOvers.filter(\.confirmed).count)
@@ -981,6 +1010,13 @@ struct DevRunCore {
         att.entryRaw = c.entryRaw.keys.sorted().map { DevRawReport.hex(c.entryRaw[$0] ?? []) }
         att.effectivePath = DevEffectivePath(atReady: c.pathAtReady, atStart: c.pathAtStart, atEnd: c.pathAtEnd)
         att.raw = raw
+        if let s = setup, s.template.recordsReceiver(stepAt: c.idx) {
+            let base = c.windowStartNs ?? c.startedNs
+            att.receiver = c.receiver.map {
+                DevReceiverFrame(n: $0.n, t: ($0.tNs >= base ? Double($0.tNs - base) : -Double(base - $0.tNs)) / 1e6, bytes: $0.bytes)
+            }
+            if c.receiverDropped > 0 { att.receiverDropped = c.receiverDropped }
+        }
         return att
     }
 
@@ -1064,6 +1100,8 @@ struct DevRunCore {
             }
         case .digital?:
             return r.step.controls.contains { m.isActive($0, f) }
+        case .record?:
+            return r.step.controls.contains { DevRecorder.isActive($0, f, mapping: m) }
         default:
             return false
         }
@@ -1091,6 +1129,7 @@ struct DevRunCore {
         }
 
         guard case .step(_, let phase) = state, cur != nil, let r = rs else { return }
+        if setup!.template.recordsReceiver(stepAt: cur!.idx) { noteReceiverFrame(f, tNs: t) }
         if phase == .ready {
             // The window starts on the frame that first moves a wanted control.
             if cur!.goNs != nil, r.step.devKind != .rest, wantedActive(r, f, sum.pad) {
@@ -1110,6 +1149,7 @@ struct DevRunCore {
             cur!.controlActivity.append(.init(tNs: t, active: Set(Set(ids).union(r.step.controls).filter { m.isActive($0, f) })))
         }
         if changed { cur!.refChanges.append(t) }
+        if r.step.devKind == .record, phase2 == .window { noteRecordedControls(r, f) }
         // Tracked in the release phase too: the tail ends when the control has come back to rest.
         let act = wantedActive(r, f, sum.pad)
         if act {
@@ -1121,6 +1161,51 @@ struct DevRunCore {
             cur!.lastWantedActiveNs = t
         }
         cur!.wantedNowActive = act
+    }
+
+    // MARK: Receiver recording
+
+    /// Keeps `f` when its non-stick bytes differ from the report before (and always the step's first report), up to the
+    /// cap, and tracks how long the receiver has shown what it showed at Go.
+    private mutating func noteReceiverFrame(_ f: GamepadFrame, tNs t: UInt64) {
+        let bytes = f.nonStickBytes
+        if cur!.goNs == nil { cur!.baselineNonStick = bytes }
+        if cur!.lastNonStick != bytes {
+            if cur!.receiver.count < DevRecorder.maxFramesPerStep {
+                cur!.receiver.append(ReceiverSample(n: framesTotal, tNs: t, bytes: f.rawBytes))
+            } else {
+                cur!.receiverDropped += 1
+            }
+            cur!.lastNonStick = bytes
+        }
+        if let base = cur!.baselineNonStick, base == bytes {
+            if cur!.quietSinceNs == nil { cur!.quietSinceNs = t }
+        } else {
+            cur!.quietSinceNs = nil
+        }
+    }
+
+    /// A record step counts how often each of its controls comes down and whether it has gone back up.
+    private mutating func noteRecordedControls(_ r: DevResolvedStep, _ f: GamepadFrame) {
+        let m = setup!.mapping
+        for cid in r.step.controls {
+            var s = cur!.recordControls[cid] ?? RecordedControl()
+            let on = DevRecorder.isActive(cid, f, mapping: m)
+            if on && !s.active { s.rises += 1 }
+            if !on && s.active { s.fell = true }
+            s.active = on
+            cur!.recordControls[cid] = s
+        }
+    }
+
+    /// A record step may end early once every one of its controls has gone down and up, the presses asked for (`rises`)
+    /// are in, and the receiver has shown what it showed at Go for `restForEarlyEnd` (so a late echo release is seen).
+    private func recordIsDone(_ c: Cur, _ r: DevResolvedStep, now: UInt64) -> Bool {
+        guard !r.step.controls.isEmpty,
+              r.step.controls.allSatisfy({ c.recordControls[$0].map { $0.rises >= 1 && $0.fell } ?? false }),
+              c.recordControls.values.reduce(0, { $0 + $1.rises }) >= (r.step.expect?.rises ?? 0),
+              let quiet = c.quietSinceNs, now >= quiet, now - quiet >= Timing.restForEarlyEnd else { return false }
+        return true
     }
 
     // MARK: Volume
@@ -1214,6 +1299,13 @@ struct DevRunCore {
         // Early end: the judge would pass on what has been seen and the control has been at rest long enough. A held
         // step never ends early: it is about the whole window.
         let kind = r.step.devKind
+        if kind == .record {
+            if recordIsDone(c, r, now: now) {
+                endWindow(at: now, a: &a)
+                finalizeIfDue(now: now, a: &a)
+            }
+            return
+        }
         guard kind != .rest, kind != .held, c.wantedActiveSeen, !c.wantedNowActive, let lastAct = c.lastWantedActiveNs,
               now >= lastAct, now - lastAct >= Timing.restForEarlyEnd,
               kind != .digital || c.wantedRises >= rules(for: r).digitalTimes,
@@ -1435,7 +1527,7 @@ struct DevRunCore {
             guard setup?.steps[i].skipReason == nil, let v = Self.latestVerdict(r) else { return nil }
             switch v {
             case .fail, .inconclusive, .invalid: return i
-            case .pass, .skipped: return nil
+            case .pass, .skipped, .recorded: return nil
             }
         }
         rerun(idx, pass: p, a: &a)
@@ -1483,6 +1575,7 @@ struct DevRunCore {
             case .fail: h = .failed
             case .skipped: h = .skipped
             case .inconclusive, .invalid: h = .inconclusive
+            case .recorded: h = .recorded
             }
             for cid in st.step.controls { map[cid] = h }
         }
@@ -1559,19 +1652,22 @@ struct DevRunCore {
     }
 
     private var lastFinishedText: (title: String, detail: String, total: UInt64?, ringStart: UInt64?) {
-        var pass_ = 0, fail = 0, other = 0
+        var pass_ = 0, fail = 0, other = 0, recorded = 0
         if results.indices.contains(pass) {
             for r in results[pass] {
                 guard let v = Self.latestVerdict(r) else { continue }
                 switch v {
                 case .pass: pass_ += 1
                 case .fail: fail += 1
+                case .recorded: recorded += 1
                 default: other += 1
                 }
             }
         }
         let title = finishedComplete ? "Run complete" : "Run stopped"
-        return (title, "\(pass_) passed, \(fail) failed, \(other) skipped or unclear.", nil, nil)
+        var text = "\(pass_) passed, \(fail) failed, \(other) skipped or unclear."
+        if recorded > 0 { text += " \(recorded) recorded." }
+        return (title, text, nil, nil)
     }
 
     private var finishedComplete: Bool {

@@ -33,6 +33,7 @@ extension DevVerdict {
         case .skipped: return "Skipped"
         case .inconclusive: return "Inconclusive"
         case .invalid: return "Invalid"
+        case .recorded: return "Recorded"
         }
     }
 }
@@ -46,6 +47,7 @@ extension DevChip.Status {
         case .failed: return "✗ "
         case .skipped: return "– "
         case .inconclusive: return "? "
+        case .recorded: return "○ "
         }
     }
 

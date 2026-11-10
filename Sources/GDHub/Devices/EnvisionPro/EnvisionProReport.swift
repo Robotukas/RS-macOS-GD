@@ -48,6 +48,25 @@ struct GamepadFrame: Equatable {
         return f
     }
 
+    /// The 16 bytes of report 0x06 this frame was parsed from (`parse` read back: every bit of the report is a field).
+    var rawBytes: [UInt8] {
+        var b = [UInt8](repeating: 0, count: 16)
+        b[0] = 6
+        for (i, v) in [x, y, z, rz].enumerated() {
+            let u = UInt16(bitPattern: v)
+            b[1 + 2 * i] = UInt8(u & 0xff)
+            b[2 + 2 * i] = UInt8(u >> 8)
+        }
+        let t = UInt32(lt & 0x3ff) | UInt32(rt & 0x3ff) << 10 | UInt32(hat & 0xf) << 20
+        b[9] = UInt8(t & 0xff); b[10] = UInt8((t >> 8) & 0xff); b[11] = UInt8((t >> 16) & 0xff)
+        let btn = (buttons & 0x7ffff) | UInt32(extra & 0x1fff) << 19
+        b[12] = UInt8(btn & 0xff); b[13] = UInt8((btn >> 8) & 0xff); b[14] = UInt8((btn >> 16) & 0xff); b[15] = UInt8(btn >> 24)
+        return b
+    }
+
+    /// Bytes 9 to 15 of `rawBytes`: triggers, hat, buttons and the extra bits, everything but the sticks.
+    var nonStickBytes: [UInt8] { Array(rawBytes[9...]) }
+
     /// Value of a named int16 axis ("x", "y", "z", "rz").
     func axis(_ name: String) -> Int? {
         switch name {

@@ -128,8 +128,8 @@ private final class Rig {
     var answered = 0
 
     func setup(_ target: DevTarget = .engine, steps: [DevStep] = [Rig.restStep, Rig.aStep, Rig.bStep],
-               paths: [String]? = nil) -> DevRunSetup {
-        let t = DevTemplate(id: "test", title: "Test", paths: paths, steps: steps)
+               paths: [String]? = nil, recordReceiver: Bool? = nil) -> DevRunSetup {
+        let t = DevTemplate(id: "test", title: "Test", paths: paths, recordReceiver: recordReceiver, steps: steps)
         let resolved = DevResolvedStep.resolve(template: t, mapping: mapping, layout: Rig.layout)
         return DevRunSetup(target: target, template: t, steps: resolved, mapping: mapping,
                            allControlIDs: Rig.layout.controlsByOrder.map(\.id), startedAt: Date(timeIntervalSince1970: 1_700_000_000),
@@ -145,8 +145,9 @@ private final class Rig {
         advance(400)
     }
 
-    func start(_ target: DevTarget = .engine, steps: [DevStep] = [Rig.restStep, Rig.aStep, Rig.bStep], paths: [String]? = nil) {
-        send(.start(setup(target, steps: steps, paths: paths)))
+    func start(_ target: DevTarget = .engine, steps: [DevStep] = [Rig.restStep, Rig.aStep, Rig.bStep], paths: [String]? = nil,
+               recordReceiver: Bool? = nil) {
+        send(.start(setup(target, steps: steps, paths: paths, recordReceiver: recordReceiver)))
     }
 
     /// Runs the clock until the step is in its Go state (hands still, ready time over).
@@ -1482,5 +1483,227 @@ extension DevRunCoreTests {
         XCTAssertTrue(report.steps.allSatisfy { $0.attempts.allSatisfy { $0.volume == nil } })
         let json = String(decoding: (try? report.encoded()) ?? Data(), as: UTF8.self)
         XCTAssertFalse(json.contains("\"volume\""), "such a report is byte for byte what it was")
+    }
+}
+
+
+// MARK: - Record steps and the receiver recording (remap step 2, S1(e))
+
+final class DevRecordTests: XCTestCase {
+    private func recordStep(_ controls: [String], rises: Int? = nil, seconds: Double = 6) -> DevStep {
+        var s = DevStep(id: "survey", kind: .record, controls: controls, title: "Press it", seconds: seconds, readySeconds: 1)
+        if let rises { var e = DevExpect(); e.rises = rises; s.expect = e }
+        return s
+    }
+
+    /// Outer right paddle: its own extra bit and, in the factory profile, D-pad right (hat 2) in the same report.
+    private func paddleFrame(echo: Bool = true, extra: UInt16 = 1) -> GamepadFrame {
+        var f = GamepadFrame.idle
+        f.extra = extra
+        if echo { f.hat = 2 }
+        return f
+    }
+
+    private func attempt(_ r: Rig, _ index: Int = 0) -> DevAttempt? { r.core.results[0][index]?.attempts.last }
+
+    func testTheWindowOpensOnAListedControlAndTheChangedReportsAreStored() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 2)])
+        r.untilGo()
+        for _ in 0..<2 {
+            r.frame = paddleFrame(); r.advance(100)
+            r.frame = .idle; r.advance(100)
+        }
+        r.advance(500)
+        guard case .recorded(let text)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertTrue(text.hasPrefix("Recorded 5 receiver reports that changed"), text)
+        XCTAssertTrue(text.hasSuffix("nothing was judged."), text)
+        let att = attempt(r)!
+        let rec = att.receiver ?? []
+        XCTAssertEqual(rec.count, 5, "the first report of the step, then press, release, press, release")
+        XCTAssertTrue(rec.allSatisfy { $0.byteValues.count == 16 && $0.byteValues[0] == 6 })
+        XCTAssertEqual(rec.map(\.n), rec.map(\.n).sorted())
+        XCTAssertEqual(Set(rec.map(\.n)).count, 5)
+        let frames = rec.compactMap { GamepadFrame.parse($0.byteValues) }
+        XCTAssertEqual(frames.map(\.extra), [0, 1, 0, 1, 0])
+        XCTAssertEqual(frames.map(\.hat), [8, 2, 8, 2, 8], "the echo and the bit change in the same report")
+        XCTAssertLessThan(rec[0].t, 0, "before the window")
+        XCTAssertEqual(rec[1].t, 0, accuracy: 1e-9, "the report that opens the window is time zero")
+        XCTAssertGreaterThan(rec[2].t, 90)
+        XCTAssertNil(att.receiverDropped)
+        XCTAssertEqual(att.metrics.detail, text)
+        XCTAssertEqual(r.core.state, .finished)
+    }
+
+    func testStickMovesAndUnchangedReportsAreNotStored() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 1)])
+        r.untilGo()
+        var press = paddleFrame(); press.x = 12000; press.y = -9000
+        r.frame = press; r.advance(200)
+        var moved = press; moved.x = -5000; moved.rz = 3000       // sticks only: the non-stick bytes are the same
+        r.frame = moved; r.advance(200)
+        r.frame = .idle; r.advance(900)
+        let frames = (attempt(r)?.receiver ?? []).compactMap { GamepadFrame.parse($0.byteValues) }
+        XCTAssertEqual(frames.map(\.extra), [0, 1, 0], "baseline, press, release: stick movement adds nothing")
+        XCTAssertEqual(frames[1].x, 12000, "the stored report is the whole 16 bytes, sticks included")
+    }
+
+    func testAWrongStoredBitDoesNotStopTheWindowFromOpening() {
+        let r = Rig()
+        r.mapping.physicalBits["paddle_outer_right"] = 8          // a mis-learn: the table says bit 0
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 1)])
+        r.untilGo()
+        r.frame = paddleFrame(); r.advance(120)
+        r.frame = .idle; r.advance(800)
+        guard case .recorded? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+    }
+
+    func testNoEarlyEndWhileAnEchoIsStillShownThenEarlyEndAfterTheRestTime() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 1)])
+        r.untilGo()
+        r.frame = paddleFrame(); r.advance(100)
+        // The key is up but the echo (hat 2) is still on: the receiver is not at rest, the step goes on.
+        r.frame = paddleFrame(echo: true, extra: 0); r.advance(900)
+        guard case .step(0, .window) = r.core.state else { return XCTFail("ended while the echo was still set: \(r.core.state)") }
+        r.frame = .idle; r.advance(300)
+        guard case .step(0, .window) = r.core.state else { return XCTFail("ended before the rest time: \(r.core.state)") }
+        r.advance(150)
+        guard case .recorded? = r.verdict(0) else { return XCTFail("\(r.core.state)") }
+        let frames = (attempt(r)?.receiver ?? []).compactMap { GamepadFrame.parse($0.byteValues) }
+        XCTAssertEqual(frames.map(\.hat), [8, 2, 2, 8])
+        XCTAssertEqual(frames.map(\.extra), [0, 1, 0, 0], "the late echo release is in the file")
+    }
+
+    func testTheStepRunsToItsSecondsWhenTheAskedForPressesAreNotAllIn() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 3, seconds: 4)])
+        r.untilGo()
+        for _ in 0..<2 {
+            r.frame = paddleFrame(); r.advance(100)
+            r.frame = .idle; r.advance(100)
+        }
+        r.advance(1500)
+        guard case .step(0, .window) = r.core.state else { return XCTFail("ended early with two of three presses: \(r.core.state)") }
+        r.advance(3000)
+        guard case .recorded? = r.verdict(0) else { return XCTFail("\(r.core.state)") }
+    }
+
+    func testEveryListedControlMustGoDownAndUpBeforeAnEarlyEnd() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right", "paddle_inner_left"], rises: 2)])
+        r.untilGo()
+        // Two presses of the first key only: the count is reached but the second key never moved.
+        for _ in 0..<2 {
+            r.frame = paddleFrame(); r.advance(100)
+            r.frame = .idle; r.advance(100)
+        }
+        r.advance(1000)
+        guard case .step(0, .window) = r.core.state else { return XCTFail("ended with one key unpressed: \(r.core.state)") }
+        var inner = GamepadFrame.idle; inner.extra = 4; inner.hat = 0
+        r.frame = inner; r.advance(100)
+        r.frame = .idle; r.advance(600)
+        guard case .recorded? = r.verdict(0) else { return XCTFail("\(r.core.state)") }
+    }
+
+    func testNoMovementStillFailsAndKeepsWhatWasRecorded() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 1), Rig.aStep])
+        r.untilGo()
+        r.advance(5100)
+        guard case .fail(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
+        XCTAssertTrue(why.hasPrefix("no movement"), why)
+        XCTAssertEqual(attempt(r)?.receiver?.count, 1, "the baseline report is kept")
+        XCTAssertEqual(r.core.state, .step(index: 1, phase: .ready))
+    }
+
+    func testOtherStepsStoreNothingUnlessTheTemplateAsks() {
+        let plain = Rig()
+        plain.prepare()
+        plain.start(steps: [Rig.aStep])
+        plain.untilGo(); plain.pressA(); plain.advance(500)
+        XCTAssertEqual(plain.verdict(0), .pass)
+        XCTAssertNil(plain.core.results[0][0]?.attempts.last?.receiver)
+
+        let rec = Rig()
+        rec.prepare()
+        rec.start(steps: [Rig.aStep], recordReceiver: true)
+        rec.untilGo(); rec.pressA(); rec.advance(500)
+        XCTAssertEqual(rec.verdict(0), .pass, "recording does not change the verdict of an ordinary step")
+        let frames = (rec.core.results[0][0]?.attempts.last?.receiver ?? []).compactMap { GamepadFrame.parse($0.byteValues) }
+        XCTAssertEqual(frames.map(\.buttons), [0, 1, 0, 1, 0])
+    }
+
+    func testTheRecordingIsCappedPerStep() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 1, seconds: 100)])
+        r.untilGo()
+        r.frame = paddleFrame(); r.advance(50)
+        for i in 0..<(DevRecorder.maxFramesPerStep + 150) {
+            var f = paddleFrame()
+            f.lt = UInt16(i % 2 == 0 ? 500 : 600)                  // an analog field moving: every report differs
+            r.frame = f
+            r.advance(5)
+        }
+        r.frame = .idle; r.advance(2000)
+        let att = attempt(r)
+        XCTAssertEqual(att?.receiver?.count, DevRecorder.maxFramesPerStep)
+        XCTAssertGreaterThan(att?.receiverDropped ?? 0, 100)
+    }
+
+    func testAFinishedRunSaysHowManyStepsWereRecorded() {
+        let r = Rig()
+        r.prepare()
+        r.start(steps: [recordStep(["paddle_outer_right"], rises: 1)])
+        r.untilGo()
+        r.frame = paddleFrame(); r.advance(100)
+        r.frame = .idle; r.advance(800)
+        XCTAssertEqual(r.core.state, .finished)
+        XCTAssertEqual(r.lastInstruction?.detail, "0 passed, 0 failed, 0 skipped or unclear. 1 recorded.")
+        XCTAssertEqual(r.core.results[0][0]?.attempts.last?.verdict.tag, "recorded")
+    }
+
+    func testARecordStepHasNothingToJudge() {
+        var input = DevJudge.Input(step: recordStep(["paddle_outer_right"]), entryState: nil, reports: [],
+                                   windowStartNs: 0, windowEndNs: 1, endNs: 1, matchedCount: 7)
+        input.expected = DevExpectedItems()
+        let out = DevJudge.judge(input)
+        XCTAssertEqual(out.verdict, .recorded("recording only"), "not inconclusive for a missing pad state or a wrong reader count")
+    }
+
+    func testTheReceiverReportReadsBackFromItsFrame() {
+        var rng = SplitMix64(seed: 0x5EC7)
+        for _ in 0..<2000 {
+            var raw = XlateFixtures.randomRaw(&rng)
+            raw[0] = 6
+            // bits above bit 31 do not exist; byte 15 is fully used (bits 24..31 = extra bits 5..12)
+            guard let f = GamepadFrame.parse(raw) else { continue }
+            XCTAssertEqual(f.rawBytes, raw)
+            XCTAssertEqual(f.nonStickBytes, Array(raw[9...]))
+        }
+    }
+
+    func testPaddleAndSAXKeysOpenByTheTableNotByTheStoredBits() {
+        var wrong = ControlMapping.default
+        wrong.physicalBits["sax_left"] = 2
+        for (id, bit) in DevRecorder.keyBits {
+            var f = GamepadFrame.idle
+            f.extra = bit
+            XCTAssertTrue(DevRecorder.isActive(id, f, mapping: wrong), id)
+            f.extra = ~bit & 0x3f
+            XCTAssertFalse(DevRecorder.isActive(id, f, mapping: wrong), id)
+        }
+        XCTAssertEqual(Set(DevRecorder.keyBits.values), [1, 2, 4, 8, 16, 32])
+        var a = GamepadFrame.idle; a.buttons = 1
+        XCTAssertTrue(DevRecorder.isActive("a", a, mapping: wrong), "another control is read the way the mapping reads it")
     }
 }

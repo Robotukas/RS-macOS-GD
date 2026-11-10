@@ -19,7 +19,7 @@ struct DevInstruction: Equatable {
 
 /// One step in the chip strip.
 struct DevChip: Identifiable, Equatable {
-    enum Status: Equatable { case pending, current, passed, failed, skipped, inconclusive }
+    enum Status: Equatable { case pending, current, passed, failed, skipped, inconclusive, recorded }
     var index: Int
     var stepId: String
     var title: String
@@ -575,6 +575,7 @@ final class DevSession: ObservableObject {
                     case .fail: status = .failed
                     case .skipped: status = .skipped
                     case .inconclusive, .invalid: status = .inconclusive
+                    case .recorded: status = .recorded
                     }
                 } else if p == core.pass, core.currentStepIndex == i, core.isRunning {
                     status = .current
@@ -600,6 +601,7 @@ final class DevSession: ObservableObject {
             if steps.indices.contains(r.index), steps[r.index].step.devKind == .held {
                 expectedText = DevJudge.heldSummary(step: steps[r.index].step, expected: r.expected)
             }
+            if steps.indices.contains(r.index), steps[r.index].step.devKind == .record { expectedText = "recording only" }
             return DevResultRow(index: r.index, title: title, expected: expectedText, seen: seen,
                                 loss: pct(m?.lossRatio),
                                 onset: m?.onsetMs.map { String(format: "%.1f ms", $0) } ?? "–",

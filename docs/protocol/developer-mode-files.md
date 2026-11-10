@@ -22,7 +22,7 @@ compare tool (exit 2).
 ## Template format
 
 ```
-{ schema, id, version, title, notes, paths?, steps: [ step ] }
+{ schema, id, version, title, notes, paths?, recordReceiver?, steps: [ step ] }
 ```
 
 | Field | Type | Default | Meaning |
@@ -33,6 +33,7 @@ compare tool (exit 2).
 | `title` | string | "" | Shown in the picker. |
 | `notes` | string | "" | When to use this template. Every template devised for a test is committed with one. |
 | `paths` | [string]? | absent | One pass per entry, in order, each of `engine`, `shadow`, `driver`. Absent = run once on the target chosen in the bar. See "paths" below. |
+| `recordReceiver` | bool? | absent | `true` = every step stores the receiver's reports under `receiver` (see "Recording the receiver" below). Absent = only `record` steps do. Left out of the file when absent, so a template without it keeps its bytes. |
 | `steps` | [step] | [] | At least one. |
 
 ### Step
@@ -40,11 +41,11 @@ compare tool (exit 2).
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `id` | string | required | Unique in the template. Reports pair steps by this id, so keep it stable. |
-| `kind` | string | required | `rest`, `stick`, `trigger`, `digital` or `held` (an item that must stay held for the whole window; see "held steps" below). |
-| `controls` | [string] | [] | Ids from the control layout (`layout.controlsByOrder`). At least one, except for `rest`, which takes none. The control's layout kind must fit: `stick` needs a stick, `trigger` a trigger, `digital` a button (D-pad, paddles, SAX, G keys, Profile and Start count as buttons), `held` a button or a trigger. |
+| `kind` | string | required | `rest`, `stick`, `trigger`, `digital`, `held` (an item that must stay held for the whole window; see "held steps" below) or `record` (no verdict; see "Recording the receiver" below). A build that does not know a kind refuses the template visibly ("unknown kind"). |
+| `controls` | [string] | [] | Ids from the control layout (`layout.controlsByOrder`). At least one, except for `rest`, which takes none. The control's layout kind must fit: `stick` needs a stick, `trigger` a trigger, `digital` a button (D-pad, paddles, SAX, G keys, Profile and Start count as buttons), `held` and `record` a button or a trigger. |
 | `title` | string | "" | The instruction headline. |
 | `detail` | string | "" | The line under it. |
-| `seconds` | number | by kind | Length of the capture window. Range 1...120; outside is clamped with a warning. Defaults: rest 3, stick 5, trigger 3, digital 3, held 5. The ring shows it; a step may end earlier when its goal is reached. |
+| `seconds` | number | by kind | Length of the capture window. Range 1...120; outside is clamped with a warning. Defaults: rest 3, stick 5, trigger 3, digital 3, held 5, record 20. The ring shows it; a step may end earlier when its goal is reached. |
 | `readySeconds` | number | 2 | Minimum "hands off" time before Go. Range 0...30. The hands-still gate can extend it. |
 | `releaseSeconds` | number | 0.5 for stick, trigger and held, else 0 | Tail after the window where the owner lets go. Range 0...10. |
 | `expect` | object? | by kind | Overrides of the judge. Flat; only keys that fit the step's kind apply, the rest are ignored. |
@@ -58,7 +59,7 @@ empty means "nothing on the pad"), `times` (2) and `volume` (absent; `"unchanged
 checks" below); held `item` (`RT`, `LT`, a button name such as `A`, `D-pad left`,
 or a hat direction `N`…`NW`; absent = derived from the control), `minLevel` (0.5, the trigger value that counts as
 held) and `releases` (absent; a list of the step's own controls that must be let go while the item stays held, see "Held
-steps" below).
+steps" below); record `rises` (absent; how many presses in all the step asks for, see "Recording the receiver" below).
 
 - `times` (digital) is how many times every expected item must go down and up ("Tap A 10 times" = 10). On a trigger
   step it is the number of **full pulls**: the pad's value reaches `peak` and is then released to `release` or less,
@@ -235,11 +236,51 @@ style `<id>.json step <n>: ...`:
 
 A complete real template is `Sources/GDHub/Resources/dev-script-full.json`.
 
+### Recording the receiver (`record` steps, `recordReceiver`)
+
+Added for the paddle and SAX survey (remap step 2). A **`record`** step has no verdict: it stores what the receiver sends
+and its verdict is `recorded` (the picker and the chips say "Recorded"). A step of any kind in a template with
+`"recordReceiver": true` stores the same data and is judged as usual; a `record` step stores it whatever the template says.
+
+- The window opens on the first receiver report where **any** listed control is active, with today's "no movement within
+  5 s of Go" failure when none is. A paddle or SAX key counts as active by the **fixed table of extra bits** (outer right 1,
+  inner right 2, inner left 4, outer left 8, SAX left 16, SAX right 32), not by what the mapping stores, so the survey
+  that checks the table can still start when a stored bit is wrong. Every other control is read the way the mapping reads it.
+- It ends early once **all** of these hold: every listed control has gone down and up during the window; the total of the
+  controls' presses reaches `expect.rises` (absent = no count condition); and the receiver's non-stick bytes (9 to 15)
+  have equalled the report at Go for 350 ms, so a late echo release is still seen. `seconds` stays the upper limit.
+- `expect.rises` is for record steps only and must be 1 or more.
+- No verdict means no pad judging either: the pad reader, the entry state and the pad's report count do not matter.
+
+What is stored (per attempt, next to `raw`): `receiver` = `[{n, t, hex}]` and, when some did not fit, `receiverDropped`.
+Both keys are absent for a step that does not record.
+
+| Key | Meaning |
+|---|---|
+| `n` | Index of the report: every report 0x06 the app received since the run started, counted from 1. |
+| `t` | Milliseconds from the step's window start (negative before it; from the step's start when the window never opened). |
+| `hex` | The 16 bytes of the report, space-separated lowercase hex, report ID first (`06 00 00 ...`), sticks included. |
+
+A report is stored when its non-stick bytes (9 to 15: triggers, hat, buttons, extra bits) differ from the report before,
+and always for the first report of the step, which is the baseline. The reports in between are equal to the one before the
+gap. At most **4000** are kept per step; `receiverDropped` counts the ones left out. The reports start at the step's start
+(the ready phase included), so an echo that comes a report before its bit is still in the file. `scripts/tools/echo-survey.py`
+reads these files.
+
 ### Built-in templates
 
 `full`, `sticks`, `gkeys` (generated from the layout), `paddles-sax-echo`, `remap-g1-as-y`, `remap-swap-a-b`,
-`gkeys-volume`, `t7-rt-hold-toggle` and `t8-latency`. The bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
+`gkeys-volume`, `t7-rt-hold-toggle`, `t8-latency` and `echo-survey` (picker row 10, appended so rows 1 to 9 keep their numbers). The bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
 `GDHUB_WRITE_DEV_TEMPLATES=1 swift test --filter DevTemplateTests/testWriteBundledTemplates` rewrites them.
+
+**`echo-survey`** ("Paddles and SAX: what the controller adds (survey)", no `paths`, `recordReceiver: true`, no `requires`)
+has `record` steps only, apart from a closing `rest` step (a rest step is judged against the pad's state, which is known
+only after the pad has posted once): each of the six keys alone ten times (`alone-<id>`), D-pad up held with each paddle
+once (`up-held-<id>`), a paddle held with D-pad up, D-pad left, the opposite-echo paddle and a cross-pair paddle pressed
+twice (`outer-right-…`), A held with SAX left and SAX left held with A (`a-held-sax-left`, `sax-left-held-a`), pairs
+together twice (`together-outer`, `together-inner`, `together-sax`), then three Profile blocks (`profile-block-N`: hold
+paddle outer right, press Profile once) each followed by the six keys three times (`profile-N-<id>`). Read the run file with
+`python3 scripts/tools/echo-survey.py <run.json>`.
 
 **`remap-g1-as-y`** ("Remap check: G1 sent to Y (App, then Driver)", `paths: ["engine","driver"]`) and
 **`remap-swap-a-b`** ("Remap check: A and B swapped (App, then Driver)", same `paths`) check remapping end to end. The
@@ -301,7 +342,8 @@ one). **The last attempt that is not `superseded` carries the result**; if all a
 An attempt: `startedNs`, `readyNs`, `windowStartNs`, `windowEndNs`, `superseded`, `pathUnconfirmed` ("Run anyway" after
 a path confirmation timed out), `verdict`, `metrics`, `entryState` (pad state the judge started from; absent = no report
 seen yet), `entryRaw` (last report of each ID before the step, hex), `effectivePath` (`{atReady, atStart, atEnd}`), `raw`,
-and, only for a step with `expect.volume`, `volume`.
+and, only for a step with `expect.volume`, `volume`, and, only for a step that records the receiver, `receiver` and
+`receiverDropped` (see "Recording the receiver").
 
 `volume`: `{expect, verdict, consumerReports, keyReports, volumeEvents, muteEvents, deviceEvents, startScalar?,
 endScalar?, startMuted?, endMuted?, hasVolume, hasMute}`. `expect` is the step's word; `verdict` has the same shape as the
@@ -311,7 +353,8 @@ by kind (volume, mute, output device) in that span; `startScalar` / `endScalar` 
 output device's state at Go and at the end (absent when the device has no such control); `hasVolume` / `hasMute` say
 whether it has them. A report whose steps have no `expect.volume` carries no `volume` key at all.
 
-`verdict` is `{"verdict": "pass" | "fail" | "skipped" | "inconclusive" | "invalid", "reason": "..."}`; `pass` has no
+`verdict` is `{"verdict": "pass" | "fail" | "skipped" | "inconclusive" | "invalid" | "recorded", "reason": "..."}`
+(`recorded`: a `record` step, nothing judged; the reason says how much was recorded); `pass` has no
 reason. A verdict word from a newer build reads as `inconclusive` with the word in the reason.
 
 `metrics`:

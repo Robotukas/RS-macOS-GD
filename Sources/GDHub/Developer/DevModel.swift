@@ -23,6 +23,9 @@ struct DevSchemaError: Error, CustomStringConvertible, Equatable {
 
 enum DevKind: String, Codable, CaseIterable {
     case rest, stick, trigger, digital, held
+    /// No verdict: the step only records what the receiver sends while the owner works through it ("recorded"). It
+    /// needs `recordReceiver` frames, so it always stores them. See `DevRecorder`.
+    case record
 
     /// Whether a control of this layout kind fits a step of this kind; `rest` takes no control. A held step watches
     /// one pad item: a button, or a trigger held down.
@@ -33,6 +36,7 @@ enum DevKind: String, Codable, CaseIterable {
         case .trigger: return control == .trigger
         case .digital: return control == .button
         case .held: return control == .button || control == .trigger
+        case .record: return control == .button || control == .trigger
         }
     }
 
@@ -44,6 +48,7 @@ enum DevKind: String, Codable, CaseIterable {
         case .trigger: return "a trigger"
         case .digital: return "a button"
         case .held: return "a button or a trigger"
+        case .record: return "a button or a trigger"
         }
     }
 
@@ -54,6 +59,7 @@ enum DevKind: String, Codable, CaseIterable {
         case .trigger: return 3
         case .digital: return 3
         case .held: return 5
+        case .record: return 20
         }
     }
 
@@ -93,6 +99,10 @@ struct DevExpect: Codable, Equatable {
     /// text so a word from a newer build still loads; `DevTemplate.validate` rejects what this build does not know).
     /// Judged from CoreAudio change events and the receiver's 0x11 reports, see `DevVolume.swift`.
     var volume: String?
+    /// Record steps only: how many presses in all (the sum over the step's controls of how often each came down) the
+    /// owner is asked for. The step may end early once it is reached, every control has gone down and up, and the
+    /// receiver has been quiet; nil = no count condition.
+    var rises: Int?
 
     init() {}
 
@@ -114,6 +124,7 @@ struct DevExpect: Codable, Equatable {
         seconds = try c.decodeIfPresent(Double.self, forKey: .seconds)
         releases = try c.decodeIfPresent([String].self, forKey: .releases)
         volume = try c.decodeIfPresent(String.self, forKey: .volume)
+        rises = try c.decodeIfPresent(Int.self, forKey: .rises)
     }
 
     /// `volume` as a value; nil when absent or not a word this build knows.
@@ -309,14 +320,19 @@ struct DevTemplate: Codable, Equatable {
     var notes = ""
     /// Input paths to run the template on, one pass each; nil = the user's chosen target.
     var paths: [String]?
+    /// true = every step stores the receiver frames whose non-stick bytes changed (`DevAttempt.receiver`); nil = only
+    /// `record` steps do. Left out of the file when nil, so existing templates keep their bytes.
+    var recordReceiver: Bool?
     var steps: [DevStep] = []
 
-    init(id: String, version: Int = 1, title: String, notes: String = "", paths: [String]? = nil, steps: [DevStep]) {
+    init(id: String, version: Int = 1, title: String, notes: String = "", paths: [String]? = nil,
+         recordReceiver: Bool? = nil, steps: [DevStep]) {
         self.id = id
         self.version = version
         self.title = title
         self.notes = notes
         self.paths = paths
+        self.recordReceiver = recordReceiver
         self.steps = steps
     }
 
@@ -329,7 +345,13 @@ struct DevTemplate: Codable, Equatable {
         title = try c.value(.title, "")
         notes = try c.value(.notes, "")
         paths = try c.decodeIfPresent([String].self, forKey: .paths)
+        recordReceiver = try c.decodeIfPresent(Bool.self, forKey: .recordReceiver)
         steps = try c.value(.steps, [])
+    }
+
+    /// Whether the step at `index` stores receiver frames.
+    func recordsReceiver(stepAt index: Int) -> Bool {
+        recordReceiver == true || (steps.indices.contains(index) && steps[index].devKind == .record)
     }
 
     static func decode(_ data: Data) throws -> DevTemplate { try JSONDecoder().decode(DevTemplate.self, from: data) }
@@ -457,6 +479,13 @@ struct DevTemplate: Codable, Equatable {
                     }
                 }
             }
+            if let rises = step.expect?.rises {
+                if kind != nil, kind != .record {
+                    v.errors.append("\(at): expect rises only applies to record steps")
+                } else if rises < 1 {
+                    v.errors.append("\(at): expect rises \(rises) must be 1 or more")
+                }
+            }
             if let volume = step.expect?.volume {
                 if DevVolumeExpectation(rawValue: volume) == nil {
                     v.errors.append("\(at): expect volume \"\(volume)\" must be \(DevVolumeExpectation.words)")
@@ -498,6 +527,8 @@ enum DevVerdict: Equatable, Codable {
     case skipped(String)
     case inconclusive(String)
     case invalid(String)
+    /// A `record` step: nothing was judged, the receiver's frames were stored. The reason says what was recorded.
+    case recorded(String)
 
     var tag: String {
         switch self {
@@ -506,13 +537,14 @@ enum DevVerdict: Equatable, Codable {
         case .skipped: return "skipped"
         case .inconclusive: return "inconclusive"
         case .invalid: return "invalid"
+        case .recorded: return "recorded"
         }
     }
 
     var reason: String? {
         switch self {
         case .pass: return nil
-        case .fail(let r), .skipped(let r), .inconclusive(let r), .invalid(let r): return r
+        case .fail(let r), .skipped(let r), .inconclusive(let r), .invalid(let r), .recorded(let r): return r
         }
     }
 
@@ -530,6 +562,7 @@ enum DevVerdict: Equatable, Codable {
         case "skipped": self = .skipped(reason)
         case "inconclusive": self = .inconclusive(reason)
         case "invalid": self = .invalid(reason)
+        case "recorded": self = .recorded(reason)
         // A verdict from a newer build is shown, not guessed at.
         default: self = .inconclusive("unknown verdict \"\(tag)\"" + (reason.isEmpty ? "" : ": \(reason)"))
         }
@@ -573,6 +606,31 @@ struct DevRawReport: Codable, Equatable {
     static func hex(_ bytes: [UInt8]) -> String { bytes.map { String(format: "%02x", $0) }.joined(separator: " ") }
 
     var byteValues: [UInt8] { bytes.split(separator: " ").compactMap { UInt8($0, radix: 16) } }
+}
+
+/// One receiver report (0x06) stored by a step that records the receiver: `n` counts every report 0x06 the app received
+/// since the run started, `t` is milliseconds from the step's window start (negative before it), `hex` the 16 bytes,
+/// space-separated like `DevRawReport.bytes`. Only a report whose non-stick bytes (9 to 15) differ from the previous
+/// report is stored, plus the first report of the step, so the reports in between are equal to the one before the gap.
+struct DevReceiverFrame: Codable, Equatable {
+    var n: Int
+    var t: Double
+    var hex: String
+
+    init(n: Int, t: Double, bytes: [UInt8]) {
+        self.n = n
+        self.t = t
+        self.hex = DevRawReport.hex(bytes)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        n = try c.value(.n, 0)
+        t = try c.value(.t, 0)
+        hex = try c.value(.hex, "")
+    }
+
+    var byteValues: [UInt8] { hex.split(separator: " ").compactMap { UInt8($0, radix: 16) } }
 }
 
 struct DevMetrics: Codable, Equatable {
@@ -640,6 +698,10 @@ struct DevAttempt: Codable, Equatable {
     var raw: [DevRawReport] = []
     /// What the Mac's volume did, for a step with `expect.volume`; absent otherwise.
     var volume: DevVolumeResult?
+    /// The receiver's reports during the step, for a `record` step or a template with `recordReceiver`; absent otherwise.
+    var receiver: [DevReceiverFrame]?
+    /// How many changed reports did not fit under `DevRecorder.maxFramesPerStep`; absent when none were left out.
+    var receiverDropped: Int?
 
     init() {}
 
@@ -658,6 +720,8 @@ struct DevAttempt: Codable, Equatable {
         effectivePath = try c.value(.effectivePath, DevEffectivePath())
         raw = try c.value(.raw, [])
         volume = try c.decodeIfPresent(DevVolumeResult.self, forKey: .volume)
+        receiver = try c.decodeIfPresent([DevReceiverFrame].self, forKey: .receiver)
+        receiverDropped = try c.decodeIfPresent(Int.self, forKey: .receiverDropped)
     }
 }
 

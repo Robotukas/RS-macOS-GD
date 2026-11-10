@@ -449,6 +449,8 @@ private struct HotspotView: View {
             shape.stroke(DevPalette.fail, lineWidth: 2.5)
         case .inconclusive?:
             shape.stroke(DevPalette.inconclusive, lineWidth: 2.5)
+        case .recorded?:
+            shape.stroke(DevPalette.recorded, lineWidth: 2.5)
         case .skipped?:
             shape.stroke(DevPalette.skipped, lineWidth: 2)
             Path { p in
@@ -699,6 +701,7 @@ private struct CalloutLayer: View {
         case .passed?: return " ✓"
         case .failed?: return " ✗"
         case .inconclusive?: return " ?"
+        case .recorded?: return " ○"
         default: return ""
         }
     }

@@ -176,6 +176,8 @@ enum DevJudge {
         }
 
         guard let kind = step.devKind else { return done(.inconclusive("unknown kind \"\(step.kind)\""), "The step has a kind this build cannot judge.") }
+        // A record step has nothing to judge: the runner stores the receiver's reports and says so.
+        if kind == .record { return done(.recorded("recording only"), "Recorded; nothing was judged.") }
         if input.matchedCount != 1 {
             return done(.inconclusive("reader matched \(input.matchedCount) pads"),
                         "The pad reader must see exactly one GDHub pad to judge a step; it saw \(input.matchedCount).")
@@ -200,6 +202,7 @@ enum DevJudge {
             outcome = tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
             if let want = step.expect?.volumeExpectation { outcome = applyVolume(want, to: outcome, input: input) }
         case .held: outcome = tl.judgeHeld(input, rules: rules, metrics: &metrics)
+        case .record: return done(.recorded("recording only"), "Recorded; nothing was judged.")
         }
 
         // Per-event latency: every kind but rest, when the receiver frames are known. The pad side is read from a
@@ -244,7 +247,7 @@ enum DevJudge {
     private static func latencyWatch(_ input: Input, kind: DevKind) -> DevLatency.Watch? {
         let step = input.step
         switch kind {
-        case .rest:
+        case .rest, .record:
             return nil
         case .stick:
             switch step.controls.first {

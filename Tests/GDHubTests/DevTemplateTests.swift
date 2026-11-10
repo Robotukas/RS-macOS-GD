@@ -194,7 +194,7 @@ final class DevTemplateTests: XCTestCase {
     func testBundledFilesAreTheGeneratorsOutputAndValidate() throws {
         let entries = DevTemplates.load(folder: fresh(), layout: layout)
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, remap-g1-as-y, remap-swap-a-b, gkeys-volume, t7-rt-hold-toggle, t8-latency, in that order")
+        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, remap-g1-as-y, remap-swap-a-b, gkeys-volume, t7-rt-hold-toggle, t8-latency, echo-survey, in that order")
         for (entry, want) in zip(entries, generated) {
             XCTAssertEqual(entry.source, .builtIn)
             XCTAssertEqual(entry.url.lastPathComponent, DevBuiltins.fileName(for: want))
@@ -522,13 +522,13 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(entry("wrong")?.errors, ["wrong.json step 1: unknown control g6"])
         XCTAssertEqual(entry("wrong")?.isRunnable, false, "Start stays disabled while an error stands")
         XCTAssertNil(entry("notes"))
-        XCTAssertEqual(entries.prefix(9).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b", "gkeys-volume", "t7-rt-hold-toggle", "t8-latency"], "built-ins and overrides first, in their order")
+        XCTAssertEqual(entries.prefix(10).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b", "gkeys-volume", "t7-rt-hold-toggle", "t8-latency", "echo-survey"], "built-ins and overrides first, in their order")
         XCTAssertEqual(entries.last?.source, .local)
     }
 
     func testAMissingFolderIsFine() {
         let entries = DevTemplates.load(folder: fresh().appendingPathComponent("nope"), layout: layout)
-        XCTAssertEqual(entries.count, 9)
+        XCTAssertEqual(entries.count, 10)
     }
 
     func testWarningsKeepATemplateRunnable() throws {
@@ -634,9 +634,128 @@ final class DevTemplateTests: XCTestCase {
             "t8-latency": "d5b889447f85385d388a08729da1b30e12c5dc81377379caadff72fb4b5f25d7",
         ]
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(Set(generated.map(\.id)), Set(pinned.keys).union(["gkeys-volume"]))
-        for t in generated where t.id != "gkeys-volume" {
+        XCTAssertEqual(Set(generated.map(\.id)), Set(pinned.keys).union(["gkeys-volume", "echo-survey"]))
+        for t in generated where t.id != "gkeys-volume" && t.id != "echo-survey" {
             XCTAssertEqual(DevRunReportStore.templateSha256(t), pinned[t.id], "\(t.id) changed")
         }
+    }
+
+    // MARK: echo survey (picker row 10) and the record kind
+
+    func testTheEchoSurveyIsRowTenAmongTheBuiltInsAndAfterNineExistingOnes() {
+        XCTAssertEqual(DevTemplates.builtInOrder.count, 10)
+        XCTAssertEqual(DevTemplates.builtInOrder[9], "echo-survey", "appended: rows 1 to 9 keep their numbers")
+        XCTAssertEqual(Array(DevTemplates.builtInOrder.prefix(9)), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y",
+                                                                   "remap-swap-a-b", "gkeys-volume", "t7-rt-hold-toggle", "t8-latency"])
+        // A local file that used to be row 10 is row 11 now.
+        let dir = fresh()
+        let mine = DevTemplate(id: "volume-spike", title: "Mine", steps: [digital("a", ["a"])])
+        try? mine.encoded().write(to: dir.appendingPathComponent("volume-spike.json"))
+        let ids = DevTemplates.load(folder: dir, layout: layout).map(\.id)
+        XCTAssertEqual(ids.firstIndex(of: "echo-survey"), 9)
+        XCTAssertEqual(ids.firstIndex(of: "volume-spike"), 10)
+    }
+
+    func testEchoSurveyTemplateIsAsSpecifiedAndValidates() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "echo-survey" })
+        XCTAssertEqual(t.title, "Paddles and SAX: what the controller adds (survey)")
+        XCTAssertEqual(t.validation(layout: layout), DevTemplate.Validation())
+        XCTAssertEqual(t.recordReceiver, true)
+        XCTAssertNil(t.paths, "runs on the chosen path")
+        XCTAssertTrue(t.steps.allSatisfy { $0.requires == nil }, "no requires: it runs on any mapping")
+        XCTAssertEqual(Set(t.steps.map(\.id)).count, t.steps.count)
+        let record = t.steps.filter { $0.devKind == .record }
+        XCTAssertEqual(t.steps.filter { $0.devKind != .record }.map(\.id), ["rest"], "only the closing rest step is not a record step")
+        XCTAssertEqual(t.steps.last?.id, "rest")
+        // each of the six keys alone, ten times
+        let six = ["paddle_outer_right", "paddle_inner_right", "paddle_inner_left", "paddle_outer_left", "sax_left", "sax_right"]
+        for id in six {
+            let s = try XCTUnwrap(t.steps.first { $0.id == "alone-\(id)" }, id)
+            XCTAssertEqual(s.controls, [id]); XCTAssertEqual(s.expect?.rises, 10)
+        }
+        // D-pad up held with each paddle, the paddle-held blocks, A and SAX left, pairs
+        for id in ["paddle_inner_left", "paddle_outer_right", "paddle_inner_right", "paddle_outer_left"] {
+            XCTAssertEqual(t.steps.first { $0.id == "up-held-\(id)" }?.controls, ["dpad_up", id])
+        }
+        XCTAssertEqual(t.steps.first { $0.id == "outer-right-dpad-up" }?.controls, ["paddle_outer_right", "dpad_up"])
+        XCTAssertEqual(t.steps.first { $0.id == "outer-right-dpad-left" }?.controls, ["paddle_outer_right", "dpad_left"])
+        XCTAssertEqual(t.steps.first { $0.id == "outer-right-outer-left" }?.controls, ["paddle_outer_right", "paddle_outer_left"])
+        XCTAssertEqual(t.steps.first { $0.id == "outer-right-inner-right" }?.controls, ["paddle_outer_right", "paddle_inner_right"])
+        XCTAssertEqual(t.steps.first { $0.id == "a-held-sax-left" }?.controls, ["a", "sax_left"])
+        XCTAssertEqual(t.steps.first { $0.id == "sax-left-held-a" }?.controls, ["sax_left", "a"])
+        XCTAssertEqual(t.steps.first { $0.id == "together-outer" }?.controls, ["paddle_outer_left", "paddle_outer_right"])
+        XCTAssertEqual(t.steps.first { $0.id == "together-inner" }?.controls, ["paddle_inner_left", "paddle_inner_right"])
+        XCTAssertEqual(t.steps.first { $0.id == "together-sax" }?.controls, ["sax_left", "sax_right"])
+        // Q4 = yes: three Profile blocks, each followed by the six keys three times
+        for block in 1...3 {
+            XCTAssertEqual(t.steps.first { $0.id == "profile-block-\(block)" }?.controls, ["paddle_outer_right", "profile"])
+            for id in six { XCTAssertEqual(t.steps.first { $0.id == "profile-\(block)-\(id)" }?.expect?.rises, 3, "\(block) \(id)") }
+        }
+        XCTAssertEqual(record.count, 6 + 4 + 6 + 3 + 3 * 7)
+        for s in record { XCTAssertNotNil(s.expect?.rises, s.id) }
+        XCTAssertTrue(t.notes.contains("Do not press Profile except where a step says so."))
+        XCTAssertTrue(t.notes.contains("After the last block, press Profile until your starting colour is back."))
+        // plain words: no code names in what the owner reads
+        for text in t.steps.flatMap({ [$0.title, $0.detail] }) + [t.notes] {
+            for word in ["paddle_", "sax_", "dpad_", "physicalBits", "extra bit", "hex", "0x06"] {
+                XCTAssertFalse(text.contains(word), "\"\(word)\" in: \(text)")
+            }
+        }
+        XCTAssertEqual(try DevTemplate.decode(try t.encoded()), t)
+        XCTAssertEqual(DevRunReportStore.templateSha256(t), "c5018ca6cba3fdbd31f668bd14db83e3d5d3b0e314a7485324382dde99746364", "pinned; update only with the template")
+    }
+
+    func testRecordStepsFitButtonsAndTriggersAndTheRisesAreValidated() {
+        func record(_ controls: [String], rises: Int? = nil) -> DevStep {
+            var s = DevStep(id: "r", kind: .record, controls: controls, title: "t")
+            if let rises { var e = DevExpect(); e.rises = rises; s.expect = e }
+            return s
+        }
+        func errors(_ s: DevStep) -> [String] { template(steps: [s]).validation(layout: layout).errors }
+        XCTAssertEqual(errors(record(["paddle_outer_right", "dpad_up", "rt"], rises: 3)), [])
+        XCTAssertEqual(errors(record(["left_stick"])), ["full.json step 1: a record step does not fit control left_stick (a stick)"])
+        XCTAssertEqual(errors(record([])), ["full.json step 1: needs at least one control"])
+        XCTAssertEqual(errors(record(["a"], rises: 0)), ["full.json step 1: expect rises 0 must be 1 or more"])
+        var other = digital("d", ["a"]); var e = DevExpect(); e.rises = 2; other.expect = e
+        XCTAssertEqual(errors(other), ["full.json step 1: expect rises only applies to record steps"])
+    }
+
+    func testRecordReceiverAndRisesAreOmittedWhenAbsentAndRoundTripWhenSet() throws {
+        let plain = template(steps: [digital("a", ["a"])])
+        let json = String(decoding: try plain.encoded(), as: UTF8.self)
+        XCTAssertFalse(json.contains("recordReceiver"), "an existing template keeps its bytes")
+        XCTAssertFalse(json.contains("rises"))
+        var withIt = plain; withIt.recordReceiver = true
+        withIt.steps[0].kind = DevKind.record.rawValue
+        var e = DevExpect(); e.rises = 4; withIt.steps[0].expect = e
+        let back = try DevTemplate.decode(try withIt.encoded())
+        XCTAssertEqual(back, withIt)
+        XCTAssertEqual(back.recordReceiver, true); XCTAssertEqual(back.steps[0].expect?.rises, 4)
+        XCTAssertTrue(back.recordsReceiver(stepAt: 0))
+        XCTAssertFalse(plain.recordsReceiver(stepAt: 0))
+        XCTAssertTrue(withIt.recordsReceiver(stepAt: 0))
+        var kindOnly = plain; kindOnly.steps[0].kind = "record"
+        XCTAssertTrue(kindOnly.recordsReceiver(stepAt: 0), "a record step stores the frames whatever the template says")
+    }
+
+    func testTheRecordedVerdictAndTheReceiverKeyRoundTripAndOlderFilesStillDecode() throws {
+        let v = DevVerdict.recorded("Recorded 3 receiver reports")
+        XCTAssertEqual(v.tag, "recorded")
+        XCTAssertEqual(v.reason, "Recorded 3 receiver reports")
+        XCTAssertEqual(v.label, "Recorded")
+        XCTAssertFalse(v.isPass)
+        XCTAssertEqual(try JSONDecoder().decode(DevVerdict.self, from: try JSONEncoder().encode(v)), v)
+        var att = DevAttempt()
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(att), as: UTF8.self).contains("receiver"), "absent when not recorded")
+        att.receiver = [DevReceiverFrame(n: 7, t: -1.5, bytes: [6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0, 8, 0]), DevReceiverFrame(n: 9, t: 0, bytes: [UInt8](repeating: 6, count: 16))]
+        att.receiverDropped = 3
+        let back = try JSONDecoder().decode(DevAttempt.self, from: try JSONEncoder().encode(att))
+        XCTAssertEqual(back.receiver, att.receiver)
+        XCTAssertEqual(back.receiverDropped, 3)
+        XCTAssertEqual(back.receiver?[0].hex, "06 00 00 00 00 00 00 00 00 00 00 80 01 00 08 00")
+        XCTAssertEqual(back.receiver?[0].byteValues.count, 16)
+        // a verdict word from a newer build is still shown, not guessed at
+        XCTAssertEqual(try JSONDecoder().decode(DevVerdict.self, from: Data(#"{"verdict":"surveyed","reason":"x"}"#.utf8)),
+                       .inconclusive("unknown verdict \"surveyed\": x"))
     }
 }

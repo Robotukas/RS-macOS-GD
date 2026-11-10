@@ -38,7 +38,7 @@ enum DevTemplates {
     static let filePrefix = "dev-script-"
     /// The picker order of the built-ins; anything else follows in id order, local files last.
     static let builtInOrder = ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b",
-                               "gkeys-volume", "t7-rt-hold-toggle", "t8-latency"]
+                               "gkeys-volume", "t7-rt-hold-toggle", "t8-latency", "echo-survey"]
 
     /// `~/Library/Application Support/GDHub/dev-scripts/` (or under `GDHUB_SUPPORT_DIR`).
     static var folderURL: URL { MappingStore.defaultURL(fileName: "dev-scripts") }
@@ -155,7 +155,92 @@ enum DevBuiltins {
                 + "profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
             steps: echoIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
         echo.paths = ["engine", "driver"]
-        return [full, sticks, gkeys, echo, remapG1AsY(), remapSwapAB(), gkeysVolume(), t7RTHoldToggle(), t8Latency(layout: layout)]
+        return [full, sticks, gkeys, echo, remapG1AsY(), remapSwapAB(), gkeysVolume(), t7RTHoldToggle(), t8Latency(layout: layout),
+                echoSurvey(layout: layout)]
+    }
+
+    // MARK: Echo survey
+
+    /// Picker row 10: what the controller adds next to each paddle and SAX key (remap step 2, survey S2). Steps of kind
+    /// `record`: nothing is judged, the receiver's reports are stored in the run file and `scripts/tools/echo-survey.py`
+    /// reads them. No `requires`: it runs on any mapping, because a record step opens by the fixed table of extra bits.
+    static func echoSurvey(layout: ControlLayout) -> DevTemplate {
+        func name(_ id: String) -> String { layout.control(id: id)?.label ?? id }
+        func record(_ id: String, _ controls: [String], _ title: String, _ detail: String, rises: Int, seconds: Double) -> DevStep {
+            var step = DevStep(id: id, kind: .record, controls: controls, title: title, detail: detail, seconds: seconds)
+            var e = DevExpect()
+            e.rises = rises
+            step.expect = e
+            return step
+        }
+        let keys = ["paddle_outer_left", "paddle_inner_left", "paddle_inner_right", "paddle_outer_right", "sax_left", "sax_right"]
+        let ending = " Then let go of everything and keep your hands off until the screen moves on."
+        var steps: [DevStep] = []
+
+        // Each key alone.
+        for id in keys {
+            steps.append(record("alone-\(id)", [id], "Press \(name(id)) ten times",
+                                "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else." + ending,
+                                rises: 10, seconds: 30))
+        }
+        // One real D-pad direction held, one key pressed once: the same, the next and the opposite direction.
+        for id in ["paddle_inner_left", "paddle_outer_right", "paddle_inner_right", "paddle_outer_left"] {
+            steps.append(record("up-held-\(id)", ["dpad_up", id], "Hold D-pad up, press \(name(id)) once",
+                                "Press and hold D-pad up. While you hold it, press \(name(id)) once and let go of it. Then let go of D-pad up.",
+                                rises: 2, seconds: 15))
+        }
+        // A key held, something else pressed twice.
+        func held(_ id: String, _ heldID: String, _ pressedID: String, _ what: String, rises: Int = 3) {
+            steps.append(record(id, [heldID, pressedID], "Hold \(name(heldID)), press \(name(pressedID)) twice",
+                                "Press and hold \(name(heldID)). While you hold it, press \(name(pressedID)) twice, letting go in between, \(what) Then let go of \(name(heldID)).",
+                                rises: rises, seconds: 15))
+        }
+        held("outer-right-dpad-up", "paddle_outer_right", "dpad_up", "to see which of the two the controller shows.")
+        held("outer-right-dpad-left", "paddle_outer_right", "dpad_left", "to see which of the two the controller shows.")
+        held("outer-right-outer-left", "paddle_outer_right", "paddle_outer_left", "to see how two keys behave together.")
+        held("outer-right-inner-right", "paddle_outer_right", "paddle_inner_right", "to see how two keys behave together.")
+        held("a-held-sax-left", "a", "sax_left", "to see how the controller's A and SAX left behave together.")
+        held("sax-left-held-a", "sax_left", "a", "to see how SAX left and the controller's A behave together.")
+        // Two keys together.
+        func together(_ id: String, _ a: String, _ b: String) {
+            steps.append(record(id, [a, b], "Press \(name(a)) and \(name(b)) together, twice",
+                                "Press both at the same moment, let go of both, wait a moment, and again. Twice in all.",
+                                rises: 4, seconds: 15))
+        }
+        together("together-outer", "paddle_outer_left", "paddle_outer_right")
+        together("together-inner", "paddle_inner_left", "paddle_inner_right")
+        together("together-sax", "sax_left", "sax_right")
+        // Profile blocks: another profile may add something else, and Profile during a hold is the odd case.
+        for block in 1...3 {
+            steps.append(record("profile-block-\(block)", ["paddle_outer_right", "profile"],
+                                "Hold \(name("paddle_outer_right")), press Profile once",
+                                "Press and hold \(name("paddle_outer_right")). While you hold it, press Profile once. Let go of Profile, then let go of the paddle. Then look at the light colour on the controller and make a note of it (block \(block) of 3).",
+                                rises: 2, seconds: 20))
+            for id in keys {
+                steps.append(record("profile-\(block)-\(id)", [id], "Press \(name(id)) three times (block \(block) of 3)",
+                                    "Press it, let go completely, wait a moment, and again, three times in all. Touch nothing else." + ending,
+                                    rises: 3, seconds: 20))
+            }
+        }
+        // Last, because a rest step is judged against the pad's state, which is only known once the pad has posted.
+        steps.append(DevStep(id: "rest", kind: .rest, title: "Hands off everything",
+                             detail: "Put the controller down and let go of every stick, trigger and button. The receiver has to stay still.",
+                             seconds: 3))
+
+        return DevTemplate(
+            id: "echo-survey", title: "Paddles and SAX: what the controller adds (survey)",
+            notes: "This only watches and writes down what the controller's receiver sends when you press each paddle and SAX key, alone and "
+                + "in pairs, so we learn what extra button the controller adds next to each one. Nothing passes or fails: every step ends "
+                + "with \"Recorded\". Before you start: the controller on and awake, Mapping off, the Parallels VM not running, Shadow not "
+                + "forwarding the receiver, and look at the light colour on the controller and remember it. Run it on the App path. "
+                + "Do not press Profile except where a step says so. For each step: let go of everything and wait for Go, then do what the "
+                + "step says at an easy pace (about one press a second, letting go completely each time); the step ends by itself a moment "
+                + "after you are done. \"Hold X, press Y\" means keep X held down while you press Y, and let go of X last. The last three "
+                + "blocks press Profile once while a paddle is held: after each one, look at the light colour and write it down. After the "
+                + "last block, press Profile until your starting colour is back. Afterwards the run file in the dev-runs folder is read "
+                + "with scripts/tools/echo-survey.py.",
+            recordReceiver: true,
+            steps: steps)
     }
 
     // MARK: Remap checks

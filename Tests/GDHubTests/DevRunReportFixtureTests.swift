@@ -81,4 +81,58 @@ final class DevRunReportFixtureTests: XCTestCase {
             XCTAssertEqual(DevRunReport.decode(data), r, name)
         }
     }
+
+    /// A survey report (receiver reports under `receiver`) as the real encoder writes it: scripts/tools/test_echo_survey.py
+    /// reads it, so the tool and the app share one format. Same-report echoes in the factory profile, three presses each.
+    private func surveyReport() -> DevRunReport {
+        var r = DevRunReport()
+        r.startedAt = "2026-11-10T20:00:00+01:00"
+        r.endedAt = "2026-11-10T20:03:00+01:00"
+        r.t0Ns = 1_000_000_000
+        r.complete = true
+        r.requestedPath = "engine"; r.effectivePath = "inert"
+        r.header.appBuild = "41"; r.header.guiMode = "engine"; r.header.padIdentity = "xbox-bt16-02e0"; r.header.readerMatched = 1
+        r.header.templateId = "echo-survey"; r.header.xlateCore = "c"
+        func step(_ index: Int, _ key: String, extra: UInt16, echo: (inout GamepadFrame) -> Void) -> DevStepResult {
+            var s = DevStepResult(index: index, stepId: "alone-\(key)", kind: "record", controls: [key], expected: DevExpectedItems())
+            var a = DevAttempt()
+            a.startedNs = 1_000_000_000; a.readyNs = 3_000_000_000; a.windowStartNs = 3_500_000_000; a.windowEndNs = 6_500_000_000
+            var frames = [DevReceiverFrame(n: 100, t: -400, bytes: GamepadFrame.idle.rawBytes)]
+            for press in 0..<3 {
+                var down = GamepadFrame.idle
+                down.extra = extra
+                echo(&down)
+                frames.append(DevReceiverFrame(n: 500 + 400 * press, t: Double(400 * press), bytes: down.rawBytes))
+                frames.append(DevReceiverFrame(n: 600 + 400 * press, t: Double(400 * press + 100), bytes: GamepadFrame.idle.rawBytes))
+            }
+            a.receiver = frames
+            a.verdict = .recorded("Recorded \(frames.count) receiver reports that changed, over 1.3 s; nothing was judged.")
+            a.metrics.detail = a.verdict.reason ?? ""
+            s.attempts = [a]
+            return s
+        }
+        r.steps = [step(0, "sax_left", extra: 16) { $0.buttons = 1 },
+                   step(1, "paddle_outer_right", extra: 1) { $0.hat = 2 }]
+        return r
+    }
+
+    func testSurveyFixtureMatchesTheEncoder() throws {
+        let report = surveyReport()
+        let name = "sample-survey.json"
+        if ProcessInfo.processInfo.environment["GDHUB_WRITE_DEV_FIXTURES"] == "1" {
+            try FileManager.default.createDirectory(at: Self.dir, withIntermediateDirectories: true)
+            try report.encoded().write(to: Self.dir.appendingPathComponent(name), options: .atomic)
+        }
+        let data = try Data(contentsOf: Self.dir.appendingPathComponent(name))
+        XCTAssertEqual(DevRunReport.decode(data), report)
+        // The keys the Python reader depends on.
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let step = try XCTUnwrap((json["steps"] as? [[String: Any]])?.first)
+        let attempt = try XCTUnwrap((step["attempts"] as? [[String: Any]])?.first)
+        let receiver = try XCTUnwrap(attempt["receiver"] as? [[String: Any]])
+        XCTAssertEqual(Set(receiver[0].keys), ["n", "t", "hex"])
+        XCTAssertEqual(receiver[0]["hex"] as? String, "06 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00")
+        XCTAssertEqual((attempt["verdict"] as? [String: Any])?["verdict"] as? String, "recorded")
+        XCTAssertNil(attempt["receiverDropped"])
+    }
 }
