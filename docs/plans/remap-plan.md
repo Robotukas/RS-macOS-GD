@@ -19,7 +19,7 @@ volume"; "Of course light up any linked buttons"; every hands-on test is a Devel
 | R1 | Model and translators: `outputs` in the mapping, mapper OR, encoder limits, strict reload, learn guard, Developer mode under remaps | No | Listed tests green; factory blob, checked-in header, default JSON and `mappingHash` byte-identical; `swift test` + Python green | ✅ done 2026-11-10 (813 tests; independent review folded in) |
 | R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | ✅ done 2026-11-10 (909 tests; the owner checked the screen: linked lighting made two-way, labels kept in place) |
 | R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | ✅ done 2026-11-10 (see "R3 result"); the wake-after-engine-start case is still to be seen in the engine's log |
-| R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | ▶ current: `remap-g1-as-y` and `remap-swap-a-b` pass on both paths; `gkeys-volume` to build |
+| R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | ✅ three templates pass on App and Driver (2026-11-10); the mapping-file comparison after "Reset all remaps" is open |
 | R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | pending |
 | R6 | Step 2: paddles and SAX by their physical bits, echo hidden; GDHM v2 (3+ sources, button → trigger, two triggers) | Yes | — | pending |
 | R7 | Step 3: keyboard keys, mouse buttons, macros in the same menu (with takeover T11) | Yes | — | pending |
@@ -257,7 +257,21 @@ expectations (they must not check the mapper against itself). `requires` is step
 flickered at the hand-over). Controller → pad p50: 0.43–0.55 ms on App, 0.09–0.18 ms on Driver. The first run (13:51)
 failed only the hold step, because Y was let go 0.25–0.45 s before the window ended; the judge now treats the owner
 letting go of everything after the hand-over as the end of the step (read from the receiver).
-`remap-swap-a-b`: passes on App and on Driver (owner's run, 2026-11-10). Still to run: `gkeys-volume`.
+`remap-swap-a-b`: passes on App and on Driver (owner's run, 2026-11-10).
+
+`gkeys-volume` (picker row 7, "Volume keys under a remap: G2, G3, G4"), owner's run of 18:20 with G3 → RB, G4 built in,
+G2 → Nothing, output MacBook Pro Speakers at 56 %, unmuted: **all five steps pass on App and on Driver.** G3 twice: RB on
+the pad, 2 key reports, no volume or mute change. G4: one key report and one mute change in each of the two steps
+(muted, then unmuted). G2 twice: nothing on the pad, 2 key reports, no change. The 0x11 key bits (01 up, 02 down,
+04 mute) are as documented.
+The first run (18:07) had a USB headset as the output: it has a mute but no volume the Mac can change, so "unchanged"
+passed without proving anything. The judge now answers "cannot judge" for a volume-up or -down key on such an output.
+Found on the way: the Mapping menu did not open after Developer mode had been visited (one anchor slot per drawn side
+was overwritten and left empty; fixed, every live anchor is kept and a refused pop is logged under `mapping-menu`).
+The owner's rule from this run: the picker rows are numbered, messages name a template by number and title, and a
+toolbar mode that cannot be used is hidden instead of greyed.
+Open: the owner's "Reset all remaps" and the comparison of the mapping file with the copy from before R4; the engine's
+apply after a wake that follows its start (R3) has not been seen in its log yet.
 
 ## Tests
 
