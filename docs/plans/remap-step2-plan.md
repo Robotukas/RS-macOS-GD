@@ -51,8 +51,8 @@ During R6 the progress line counts this S0–S9 ledger (Phase n/10); S2b, if it 
 | Phase | Title | Driver replacement? | Exit | Status |
 |---|---|---|---|---|
 | S0 | Plan review and the owner's answers to "Questions for the owner" | No | Review folded in (plan v2, 2026-11-10): done. Outstanding: the owner's answers to Q1–Q9, quoted in "S0 answers"; then plan v2 committed, the remap-plan R6 row and HANDOFF point here | ✅ done 2026-11-10: "OK all" (see "S0 answers") |
-| S1 | Safety net, build guard, receiver recorder, survey template, mockup v7 (app-only install) | No | Pins committed; build-24 source hash seeded; `--check` works; v7 approved (quoted) before the `record` display was coded; `swift test` + Python green; installed with `--same-build`; layout and mapping equal to their copies | ▶ current |
-| S2 | Owner sitting 1: run row 10 (survey) | No | "S2 result" written: echoes and light colour per profile, each key's bit, lags, leads, hat behaviour, Profile during a hold; W, G and row 11's probe and picks fixed; gate passed, or the Q8 answer applied (S2b opened when needed) | pending |
+| S1 | Safety net, build guard, receiver recorder, survey template, mockup v7 (app-only install) | No | Pins committed; build-24 source hash seeded; `--check` works; v7 approved (quoted) before the `record` display was coded; `swift test` + Python green; installed with `--same-build`; layout and mapping equal to their copies | ✅ done 2026-11-10 21:05 (see "S1 notes") |
+| S2 | Owner sitting 1: run row 10 (survey) | No | "S2 result" written: echoes and light colour per profile, each key's bit, lags, leads, hat behaviour, Profile during a hold; W, G and row 11's probe and picks fixed; gate passed, or the Q8 answer applied (S2b opened when needed) | ▶ current |
 | S2b | Re-plan after a failed gate (only if the S2 gate fails) | No | Q8 = (b): the (b) changes applied and v7b approved; any other case: plan v3 written, reviewed against the code, owner's OK quoted. "skipped" when the gate passes | pending |
 | S3 | Model, Swift echo filter, menus, labels, lighting (App path only) | No | Tests green; S1 pins byte-identical; echo cases E1–E29 pass in Swift | pending |
 | S4 | Developer mode judges triggers, `builtInEcho`, "cannot judge"; rows 11 and 12; app-only install; owner runs them on App | No | Rows 11 and 12 pass on App with a conclusive hiding verdict per remapped key; their Driver pass stands down quietly on build 24; rows 4, 1 and 7 pass on App and Driver; layout and mapping equal to their copies; no before-edit file | pending |
@@ -1097,3 +1097,27 @@ Q9. **Buttons an old learn tied to a paddle's signal** (only if S1 finds any in 
   wording; Q2 hide only for remapped keys; Q3 the limits; Q4 the survey presses Profile three times; Q5 two stages;
   Q6 "apprall" for step 2 and a push to `main` after each phase's commit; Q7 nothing else in this driver replacement;
   Q8 (b) if the survey gate fails; Q9 the owner re-learns the listed buttons, if any are found.
+
+## S1 notes (2026-11-10)
+
+- (a) Layout and mapping copied to the rollback folder under `S1-pre`. In the copy only the six keys carry
+  `physicalBits`, with the table's values (paddle outer right 1, inner right 2, inner left 4, outer left 8, SAX left 16,
+  SAX right 32). No other control has any, so Q9 does not apply: nothing to re-learn.
+- (b) `339354f`: today's GDHM v1 bytes pinned (`gdhm-v1-pins.json`): factory blob, learned sets A and B, 200 seeded
+  remapped mappings, the step-1 limit messages; stray trigger bits encode byte-identical.
+- (c) `62426ae`: build guard. `Xcode/dext-source.hash` seeded for build 24 after `Dext/`, `Shared/` and the driver's
+  block of `project.yml` were shown equal to `1fabee0`. Deviation: the hash is recorded in the **app's** Info.plist as
+  `GDHubDextSourceHash` (a key in the dext's plist would have changed `Dext/`). New `--check` (compile only) and
+  `--seed-source-hash`.
+- (e) `fb83ebd`: receiver recorder, `record` step kind, row 10 "Paddles and SAX: what the controller adds (survey)"
+  (41 steps; the rest step is last, because a first rest step cannot know the pad's state), `scripts/tools/echo-survey.py`
+  (on the committed capture it finds 16 of 16 key edges with the echo in the same report). The owner's local template
+  moved from row 10 to row 11.
+- (d) Mockup v7 `docs/mockups/remap-buttons-v7.html`, drawn from the S1-pre layout copy, sent in chat at 20:45; the
+  owner's OK is part of S2. Four wordings are marked as placeholders until the survey.
+- Install 21:05: the step-1 app archived as `S1-pre/GDHub.app`; `--same-build` passed the guard (first real use);
+  driver still build 24, activated and enabled; layout and mapping equal to the copies after the relaunch; no pre-edit
+  snapshot file. Tests: `swift test` 1018, Python 71.
+- Not yet verified: row 10 on the real controller; the "Recorded" display in the running app; `--check` on the real
+  project.
+

@@ -16,15 +16,16 @@ the old chat. Read in this order:
 
 ### State of the Mac right now
 
-- `/Applications/GDHub.app` at the remap step 1 build (2026-11-10 18:14) or later, driver extension `com.interlinked.gdhub.VirtualHID` **build 24**
+- `/Applications/GDHub.app` at the remap step 2 S1 build (2026-11-10 21:05) or later; the step-1 app is archived in the rollback folder as `S1-pre/GDHub.app`, driver extension `com.interlinked.gdhub.VirtualHID` **build 24**
   (activated, enabled). The background engine runs as the LaunchAgent `com.interlinked.gdhub.engine`.
 - **The driver drives the virtual pad by default** (no `inputPath` stored = `driver`). First night as default was clean.
   App path back: Driver menu → "Controller driven by" → App, or `defaults write com.interlinked.gdhub inputPath -string engine`.
-- Tests: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` (992) and
-  `python3 -m unittest discover -s scripts/tools` (27) are green at `HEAD`.
+- Tests: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` (1018) and
+  `python3 -m unittest discover -s scripts/tools` (71) are green at `HEAD`.
 - App-only change: `osascript -e 'tell application "GDHub" to quit'`, then
   `scripts/build-xcode.sh --no-open --release --same-build` (keeps driver build 24, refreshes the engine), then
-  `open /Applications/GDHub.app`. A driver change needs the upgrade procedure in the takeover plan §7.1 — do not improvise it.
+  `open /Applications/GDHub.app`. Since S1 `--same-build` is guarded: it refuses when `Dext/`, `Shared/` or the
+  driver's block of `project.yml` differ from what build 24 was built from (`Xcode/dext-source.hash`). A driver change needs the upgrade procedure in the takeover plan §7.1 — do not improvise it.
 - Rollback app bundles: `~/GDHub-rollback/` (outside the repo). **A bundle from before remap step 1 does not know
   remaps:** it ignores the `outputs` of the mapping file and writes the file without them the next time it saves, so the
   owner's remaps are gone after a rollback (the app keeps copies in `mapping-backups` in its data folder whenever remaps
@@ -45,7 +46,7 @@ the old chat. Read in this order:
   - Undo of a hand-set key mapping is always scoped:
     `hidutil property --matching '{"VendorID":0x1b1c,"ProductID":0x3a08,"PrimaryUsagePage":12}' --set '{"UserKeyMapping":[]}'`
     (never a bare `--set`: it writes to every keyboard).
-- **R6 (remap step 2) in progress, phase S1**; see `docs/plans/remap-step2-plan.md` (ledger S0–S9; the owner's answers
+- **R6 (remap step 2) in progress, phase S2 (the owner runs picker row 10 and answers on mockup v7)**; see `docs/plans/remap-step2-plan.md` (ledger S0–S9; the owner's answers
   are in its "S0 answers": "OK all", which includes "apprall" and a push after each phase). During R6 the progress
   line counts that ledger. One driver replacement (24 → 25) comes in S7, by the takeover plan §7.1.
 - **Carried from T8:** Shadow play test with the Slipstream receiver *not* USB-forwarded by the Shadow client; a 30-flick
