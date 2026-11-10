@@ -201,9 +201,12 @@ final class HIDConsumerServiceAccess: ConsumerServiceAccess, @unchecked Sendable
         (IOHIDServiceClientGetRegistryID(s) as? NSNumber)?.uint64Value
     }
 
-    /// Fresh list each call: the services come and go with the receiver.
+    /// Fresh client each call: a simple client that is not scheduled keeps the service list it had when it was created, so
+    /// one made while the controller slept never sees the receiver's consumer service (measured 2026-11-10: a client made
+    /// before the wake still listed 148 services and no match 3 s after a new client listed 149 and one match). The newest
+    /// client is kept so the services it returned stay valid until the next call.
     private func matching() -> [(id: UInt64, service: IOHIDServiceClient)] {
-        if client == nil { client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault) }
+        client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
         guard let client else { return [] }
         let all = (IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient]) ?? []
         return all.compactMap { s in
