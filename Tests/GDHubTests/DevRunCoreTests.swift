@@ -762,7 +762,7 @@ final class DevRunCoreTests: XCTestCase {
         XCTAssertEqual(r.core.state, .step(index: 0, phase: .window), "G1 opens the window")
         r.move(both, padY, hold: 500)
         r.move(letGoG1 ? y : both, padY, hold: 1000)
-        if dropY { r.move(.idle, PadState(), hold: 300) }
+        if dropY { r.move(y, PadState(), hold: 300) }          // the pad loses Y while the button is still down: a real drop
         r.advance(dropY ? 950 : 1250)
         r.releaseAll(hold: 100)
         r.advance(1500)

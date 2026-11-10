@@ -1085,7 +1085,9 @@ struct DevRunCore {
         cur!.frameStates.append(sum.snapped)
         if r.step.devKind == .held, let ids = r.step.expect?.releases, !ids.isEmpty {
             let m = setup!.mapping
-            cur!.controlActivity.append(.init(tNs: t, active: Set(ids.filter { m.isActive($0, f) })))
+            // Every control of the step, not only the listed ones: the judge also needs to know when the owner let go of
+            // the held item's own button (the end of the step, as opposed to the pad dropping it).
+            cur!.controlActivity.append(.init(tNs: t, active: Set(Set(ids).union(r.step.controls).filter { m.isActive($0, f) })))
         }
         if changed { cur!.refChanges.append(t) }
         // Tracked in the release phase too: the tail ends when the control has come back to rest.

@@ -523,6 +523,7 @@ enum DevJudge {
             // longer one, or one that lasts to the end of the window, is a drop.
             var drops = 0, blips = 0
             var firstDropNs: UInt64?
+            var finalDropNs: UInt64?                // a let-go that never comes back before the window ends
             var longestMs = 0.0
             for i in (engage + 1)..<max(count, engage + 1) where held(states[i - 1]) && !held(states[i]) {
                 let back = states.indices.first { $0 > i && held(states[$0]) }
@@ -531,6 +532,7 @@ enum DevJudge {
                 if back != nil && lengthMs <= rules.heldMaxBlipMs { blips += 1; continue }
                 drops += 1
                 if firstDropNs == nil { firstDropNs = times[i] }
+                if back == nil { finalDropNs = times[i] }
             }
             let engageMs = Double(times[engage] - times[0]) / 1e6
             let heldMs = Double(endNs &- times[engage]) / 1e6
@@ -539,7 +541,9 @@ enum DevJudge {
                         "held.longestReleaseMs": longestMs, "held.padReports": Double(m.padReports), "held.ms": heldMs]
 
             var fails: [String] = []
+            var dropFailIndex: Int?
             if drops > 0 {
+                dropFailIndex = 0
                 let first = firstDropNs.map { String(format: ", first at %.2f s", Double($0 - times[0]) / 1e6 / 1000) } ?? ""
                 fails.append("\(label) did not stay held: drops \(drops)\(first)" + (low.map { ", lowest \(DevJudge.fmt($0))" } ?? ""))
             } else if !held(last) {
@@ -557,6 +561,7 @@ enum DevJudge {
                     .filter { $0.tNs <= input.windowEndNs }
                 var released: [String] = []
                 var releaseFails: [String] = []
+                var lastLetGoNs: UInt64 = 0
                 for id in wanted {
                     let who = DevJudge.controlWord(id)
                     let engageNs = times[engage]
@@ -564,7 +569,7 @@ enum DevJudge {
                     var armed = samples.last { $0.tNs <= engageNs }?.active.contains(id) ?? false
                     var done = false
                     for s in samples where s.tNs > engageNs {
-                        if s.active.contains(id) { armed = true } else if armed { done = true; break }
+                        if s.active.contains(id) { armed = true } else if armed { done = true; lastLetGoNs = max(lastLetGoNs, s.tNs); break }
                     }
                     if done { released.append(who); continue }
                     releaseFails.append(samples.contains { $0.active.contains(id) }
@@ -575,6 +580,19 @@ enum DevJudge {
                 if samples.isEmpty && fails.isEmpty {
                     return Outcome(verdict: .inconclusive("cannot tell when \(wanted.map(DevJudge.controlWord).joined(separator: ", ")) was let go: no receiver frames"),
                                    metrics: with(&m, "The run has no receiver frames for this window, so the let-go of \(wanted.map(DevJudge.controlWord).joined(separator: ", ")) cannot be judged."))
+                }
+                // The step's goal is the hand-over: once every listed control has been let go and the item stayed held for
+                // `heldAfterReleaseMs` more, the owner letting go of everything before the window runs out is the end of the
+                // step, not a drop. "The owner let go" is read from the receiver: no control of the step is down in the
+                // last frame before the pad dropped the item (a pad that drops it while a button is still down stays a drop).
+                let handsOff: (UInt64) -> Bool = { t in
+                    guard let s = samples.last(where: { $0.tNs <= t &+ 2_000_000 }) else { return false }
+                    return s.active.isDisjoint(with: Set(input.step.controls).union(wanted))
+                }
+                if releaseFails.isEmpty, released.count == wanted.count, drops == 1, let end = finalDropNs,
+                   end >= lastLetGoNs &+ UInt64(DevJudge.heldAfterReleaseMs * 1e6), handsOff(end), let i = dropFailIndex {
+                    fails.remove(at: i)
+                    m.values["held.endedEarlyMs"] = Double(endNs &- end) / 1e6
                 }
                 if !samples.isEmpty { fails += releaseFails }
                 if !released.isEmpty { releasedText = "; \(released.joined(separator: ", ")) let go while \(label) stayed held" }
@@ -614,6 +632,9 @@ enum DevJudge {
     }
 
     static func fmt(_ v: Double) -> String { String(format: "%.2f", v) }
+
+    /// With `expect.releases`: how long the item must stay held after the last listed control was let go.
+    static let heldAfterReleaseMs = 500.0
 
     /// A control id as the owner says it in a verdict: "g1" → "G1", "paddle_outer_left" → "paddle outer left".
     static func controlWord(_ id: String) -> String {

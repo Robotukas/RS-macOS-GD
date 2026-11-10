@@ -121,7 +121,7 @@ for any held step, so a template can say "hold G1 (sent to Y), also hold Y, let 
 pass unless G1 really was let go. A listed control that was never let go fails the attempt with a plain reason (`G1 was
 never let go while Y stayed held`; `G1 was never seen pressed while Y stayed held` when it was never active). Without any
 receiver frames for the window the attempt is `inconclusive` (`cannot tell when G1 was let go: no receiver frames`), never
-a pass.
+a pass. Once every listed control has been let go and the item stayed held for 0.5 s more, the owner letting go of everything before the window runs out ends the step and is not a drop; this is read from the receiver (no control of the step is down in the last frame before the pad dropped the item), so a pad that drops the item while a button is still down stays a failure.
 
 Without `actions` the window runs the full `seconds` and never ends early. With `toggleInputPath` actions the window
 ends 1.5 s after the last action has completed (`count` × `intervalMs`; `seconds` is not used then, and a warning says so

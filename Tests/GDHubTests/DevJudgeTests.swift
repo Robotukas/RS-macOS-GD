@@ -530,6 +530,31 @@ final class DevJudgeTests: XCTestCase {
         XCTAssertEqual(o.metrics.values["held.released"], 1)
     }
 
+    func testLettingGoOfEverythingAfterTheHandOverEndsTheStep() {
+        // The owner's run of 2026-11-10: G1 let go at 2000, Y kept, then Y let go a little before the window ran out.
+        func frames(yUpAt: Double) -> [DevJudge.ControlSample] {
+            (0...50).map { i in
+                let t = Double(i) * 100
+                var a: Set<String> = []
+                if t < 2000 { a.insert("g1") }
+                if t >= 800 && t < yUpAt { a.insert("y") }
+                return sample(t, a)
+            }
+        }
+        var rig = Rig()
+        rig.set(state { $0.buttons = [.y] }, at: 20)
+        rig.set(PadState(), at: 4701)                           // the pad follows the physical let-go at 4700
+        let o = run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: rig, activity: frames(yUpAt: 4700))
+        assertPass(o)
+        XCTAssertNotNil(o.metrics.values["held.endedEarlyMs"])
+        // Let go of Y only 300 ms after G1: too soon to show that Y held on by itself.
+        var soon = Rig()
+        soon.set(state { $0.buttons = [.y] }, at: 20)
+        soon.set(PadState(), at: 2301)
+        assertFail(run(g1ThenY, expected: DevExpectedItems(buttons: ["Y"]), rig: soon, activity: frames(yUpAt: 2300)),
+                   containing: "Y did not stay held")
+    }
+
     func testHeldReleasesCountsOnlyALetGoWhileTheItemIsHeldAndInsideTheWindow() {
         // Y reaches the pad only at 1000; G1 was let go at 500, before that: not a hand-over.
         var late = Rig()
