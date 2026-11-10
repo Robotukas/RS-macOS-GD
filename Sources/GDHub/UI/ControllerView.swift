@@ -18,9 +18,14 @@ private enum ControllerImages {
 struct ControllerView: View {
     @ObservedObject var device: EnvisionProDevice
     @ObservedObject var control: EnvisionProControl
+    @StateObject private var menuPresenter = RemapMenuPresenter()
+    @AppStorage("controllerViewTab") private var savedTab = ViewTab.all.rawValue
 
     var body: some View {
         if let layout = device.layout {
+            // Which drawings light this frame, computed once for all views (pressed = as before remaps, linked = fed by a
+            // remap). Developer mode keeps its own overlay and draws no linked.
+            let levels = lightLevels(layout: layout)
             // Pinned to the top: when the content is taller than the window the bottom is what gets cut off,
             // never the Developer panel (a plain VStack inside `frame(maxHeight: .infinity)` is centred, which
             // pushed the top of an overflowing run above the window edge).
@@ -32,8 +37,14 @@ struct ControllerView: View {
                 // One scale factor for all four views: each gets a width proportional to its image,
                 // so resizing the window grows or shrinks every view by the same amount.
                 DevObserved(session: device.dev) { dev in
+                VStack(spacing: 6) {
+                viewTabPicker(dev: dev)
                 GeometryReader { geo in
-                    let columns = layout.columns
+                    let focus = device.editor.isEditing ? [] : DevFocus.sides(overlay: dev, layout: layout)
+                    let columns = ViewTab.visibleColumns(
+                        tab: ViewTab(rawValue: savedTab) ?? .all, editing: device.editor.isEditing,
+                        devRunning: dev?.isRunning ?? false, devFocus: focus,
+                        guidedLearn: device.learn?.mode == .guided, allColumns: layout.columns)
                     let spacing: CGFloat = 16
                     // Title above each view, plus the sliders / arrows while the layout is being edited.
                     let titleHeight: CGFloat = 18 + (device.editor.isEditing ? 50 : 0)
@@ -47,10 +58,9 @@ struct ControllerView: View {
                     let availHeight = max(geo.size.height - CGFloat(maxRows) * titleHeight - spacing * CGFloat(maxRows - 1), 1)
                     let zoom = device.editor.isEditing ? CGFloat(device.editor.zoom) : 1
                     let scale = min(availWidth / totalWidth, availHeight / totalHeight) * zoom
-                    let focus = device.editor.isEditing ? [] : DevFocus.sides(overlay: dev, layout: layout)
                     Group {
                     if !focus.isEmpty {
-                        focusedViews(focus, layout: layout, dev: dev, size: geo.size)
+                        focusedViews(focus, layout: layout, dev: dev, levels: levels, size: geo.size)
                             .transition(.opacity)
                     } else {
                         let grid = HStack(alignment: .bottom, spacing: spacing) {
@@ -58,7 +68,8 @@ struct ControllerView: View {
                                 VStack(spacing: spacing) {
                                     ForEach(columns[ci], id: \.self) { side in
                                         let info = layout.images.info(for: side)
-                                        ControllerSideView(device: device, layout: layout, side: side, dev: dev)
+                                        ControllerSideView(device: device, layout: layout, side: side, dev: dev,
+                                                           levels: levels, presenter: menuPresenter)
                                             .frame(width: layout.framedWidth(for: side) * scale, height: info.height * scale + titleHeight)
                                     }
                                 }
@@ -82,6 +93,7 @@ struct ControllerView: View {
                     .animation(.easeInOut(duration: 0.2), value: focus)
                 }
                 .padding(.horizontal)
+                }
                 .frame(minHeight: device.dev == nil ? 0 : 140, maxHeight: .infinity)
                 }
                 if let dev = device.dev, dev.finishedWithResults || !dev.rows.isEmpty {
@@ -116,11 +128,40 @@ struct ControllerView: View {
 }
 
 extension ControllerView {
+    /// `RemapLighting.levels` for every control, once per frame; the sources table is cached on the device.
+    fileprivate func lightLevels(layout: ControlLayout) -> [String: RemapLighting.Level] {
+        let all = RemapLighting.levels(frame: device.frame, mapping: device.mapping, controls: layout.controls,
+                                       sources: device.remapSources)
+        // While Developer mode is on its own overlay says what is linked.
+        return device.dev == nil ? all : all.filter { $0.value == .pressed }
+    }
+
+    /// The tabs above the drawing: All / Front / Back / Sides. Disabled while something else decides the views (Edit layout
+    /// and a guided Learn all show All, a Developer run shows its focus); the saved tab comes back afterwards.
+    @ViewBuilder
+    fileprivate func viewTabPicker(dev: DevOverlay?) -> some View {
+        let guided = device.learn?.mode == .guided
+        let editing = device.editor.isEditing
+        let enabled = ViewTab.tabPickerEnabled(editing: editing, devRunning: dev?.isRunning ?? false, guidedLearn: guided)
+        let shown: ViewTab = (editing || guided) ? .all : (ViewTab(rawValue: savedTab) ?? .all)
+        Picker("Views", selection: SwiftUI.Binding<ViewTab>(get: { shown }, set: { savedTab = $0.rawValue })) {
+            ForEach(ViewTab.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .disabled(!enabled)
+        .accessibilityIdentifier("viewTabs")
+        .help(enabled ? "Which views of the controller to draw" : "Edit layout, Learn all and Developer runs choose the views")
+        .frame(maxWidth: .infinity)
+    }
+
     /// Developer mode, active step: only the view(s) holding the wanted control, as large as the area allows.
     /// One view fills the area (capped at 900 pt wide); two views (wanted + its linked output) share the width
     /// 62 / 38. Each view gets its own scale.
     @ViewBuilder
-    fileprivate func focusedViews(_ sides: [ControlLayout.Side], layout: ControlLayout, dev: DevOverlay?, size: CGSize) -> some View {
+    fileprivate func focusedViews(_ sides: [ControlLayout.Side], layout: ControlLayout, dev: DevOverlay?,
+                                  levels: [String: RemapLighting.Level], size: CGSize) -> some View {
         let spacing: CGFloat = 16
         let titleHeight: CGFloat = 18
         let share: [CGFloat] = sides.count == 1 ? [1] : [0.62, 0.38]
@@ -131,7 +172,8 @@ extension ControllerView {
                 let fw = layout.framedWidth(for: side)
                 let w = min(usable * share[i], 900)
                 let scale = max(min(w / fw, (size.height - titleHeight) / info.height), 0.01)
-                ControllerSideView(device: device, layout: layout, side: side, dev: dev)
+                ControllerSideView(device: device, layout: layout, side: side, dev: dev,
+                                   levels: levels, presenter: menuPresenter)
                     .frame(width: fw * scale, height: info.height * scale + titleHeight)
             }
         }
@@ -145,9 +187,24 @@ private struct ControllerSideView: View {
     let layout: ControlLayout
     let side: ControlLayout.Side
     let dev: DevOverlay?
+    let levels: [String: RemapLighting.Level]
+    let presenter: RemapMenuPresenter
+
+    /// A click (or an accessibility press) on a drawn button. `point` is where the menu's top left goes.
+    private func hotspotClick(_ c: ControlLayout.Control, at point: CGPoint) {
+        device.handleClick(on: .hotspot, controlID: c.id) {
+            presenter.present(controlID: c.id, side: side, at: point, device: device)
+        }
+    }
+
+    private func hotspotHelp(_ c: ControlLayout.Control) -> String {
+        if device.dev != nil || device.editor.isEditing { return c.label }
+        return device.isRemapping ? "Click to choose what \(c.label) sends" : "Switch Mapping on to change what \(c.label) sends"
+    }
 
     var body: some View {
         let info = layout.images.info(for: side)
+        let labelMode: RemapLabel.Mode = device.editor.isEditing ? .editLayout : (device.isRemapping ? .mapping : .live)
         // Larger hotspots first so small ones on top of them (L3 over the left stick) stay clickable.
         let controls = layout.controls
             .filter { $0.view == side }
@@ -163,6 +220,11 @@ private struct ControllerSideView: View {
                 let originX = gutters.left * imgW
                 let imgSize = CGSize(width: imgW, height: imgH)
                 ZStack(alignment: .topLeading) {
+                    // The menu pops up from here: one invisible view over the whole drawn view, never takes a click.
+                    RemapAnchor(presenter: presenter, side: side)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                     if let img = ControllerImages.image(file: info.file) {
                         Image(nsImage: img).resizable().frame(width: imgW, height: imgH).offset(x: originX)
                     } else {
@@ -170,24 +232,31 @@ private struct ControllerSideView: View {
                     }
                     ForEach(controls) { c in
                         let d = 2 * layout.radius(of: c) * imgW
+                        let hotspotW = c.isPill ? d * 2 : d
+                        let centre = CGPoint(x: originX + c.x * imgW, y: c.y * imgH)
                         HotspotView(
                             control: c,
                             diameter: d,
-                            active: device.mapping.isActive(c.id, device.frame),
+                            level: levels[c.id],
+                            selected: device.remapMenuControl == c.id,
                             mapped: device.mapping.isMapped(c.id),
                             learning: learningId == c.id,
                             stick: c.kind == .stick ? device.mapping.stickPosition(c.id, device.frame) : nil,
                             trigger: c.kind == .trigger ? device.mapping.triggerValue(c.id, device.frame) : nil,
                             coverage: learningId == c.id ? device.learn?.circleCovered : nil,
                             dev: dev?.control(c),
-                            onTap: { if !device.editor.isEditing && device.dev == nil { device.startLearn(controlId: c.id) } }
+                            help: hotspotHelp(c),
+                            accessibilityText: RemapLabel(label: c.label, id: c.id, mapping: device.mapping, mode: labelMode).fullText,
+                            accessibilityID: "remap.hotspot.\(c.id)",
+                            onTap: { hotspotClick(c, at: CGPoint(x: centre.x - hotspotW / 2, y: centre.y + d / 2 + 4)) }
                         )
                         .allowsHitTesting(device.dev == nil)
-                        .position(x: originX + c.x * imgW, y: c.y * imgH)
+                        .position(x: centre.x, y: centre.y)
                     }
                     CalloutLayer(controls: controls, layout: layout, size: imgSize, origin: CGPoint(x: originX, y: 0),
-                                 frameSize: geo.size, device: device, editor: device.editor, learningId: learningId, dev: dev)
-                        .allowsHitTesting(device.editor.isEditing)
+                                 frameSize: geo.size, device: device, editor: device.editor, learningId: learningId, dev: dev,
+                                 presenter: presenter)
+                        .allowsHitTesting(device.modeGate.labelsHitTestable)
                 }
             }
             .aspectRatio(info.aspectRatio * framedFraction, contentMode: .fit)
@@ -235,13 +304,17 @@ private struct MagnifierView: View {
                 HotspotView(
                     control: control,
                     diameter: diameter,
-                    active: device.mapping.isActive(control.id, device.frame),
+                    level: device.mapping.isActive(control.id, device.frame) ? .pressed : nil,
+                    selected: false,
                     mapped: device.mapping.isMapped(control.id),
                     learning: dev == nil,
                     stick: control.kind == .stick ? device.mapping.stickPosition(control.id, device.frame) : nil,
                     trigger: control.kind == .trigger ? device.mapping.triggerValue(control.id, device.frame) : nil,
                     coverage: dev == nil ? device.learn?.circleCovered : nil,
                     dev: dev?.control(control),
+                    help: control.label,
+                    accessibilityText: control.label,
+                    accessibilityID: nil,
                     onTap: {}
                 )
                 .allowsHitTesting(false)
@@ -260,7 +333,10 @@ private struct MagnifierView: View {
 private struct HotspotView: View {
     let control: ControlLayout.Control
     let diameter: CGFloat
-    let active: Bool
+    /// Pressed: orange as before remaps. Linked: a dimmer orange (the pad is sending the item this drawing stands for).
+    let level: RemapLighting.Level?
+    /// The menu of this control is open: outline.
+    let selected: Bool
     let mapped: Bool
     let learning: Bool
     let stick: CGPoint?
@@ -268,13 +344,23 @@ private struct HotspotView: View {
     /// Circle-capture sectors while this stick is being learned (nil otherwise).
     let coverage: [Bool]?
     var dev: DevControlOverlay?
+    let help: String
+    let accessibilityText: String
+    /// nil for the loupe, which is a copy of a button that already has its element.
+    let accessibilityID: String?
     let onTap: () -> Void
+
+    private var active: Bool { level == .pressed }
 
     private var width: CGFloat { control.isPill ? diameter * 2 : diameter }
     private var shape: AnyShape { control.isPill ? AnyShape(Capsule()) : AnyShape(Circle()) }
 
     var body: some View {
         ZStack {
+            if level == .linked {
+                shape.fill(Color.orange.opacity(0.2))
+                shape.stroke(Color.orange.opacity(0.55), lineWidth: 1)
+            }
             if control.kind == .trigger, let t = trigger {
                 if t > 0.02 {
                     ZStack(alignment: .bottom) {
@@ -311,11 +397,16 @@ private struct HotspotView: View {
                     .frame(width: diameter * 1.25, height: diameter * 1.25)
                     .allowsHitTesting(false)
             }
+
+            if selected {
+                shape.stroke(RemapColors.selection, lineWidth: 2).padding(-2)
+            }
         }
         .frame(width: width, height: diameter)
         .contentShape(shape)
         .onTapGesture(perform: onTap)
-        .help(dev == nil ? "Click to learn \(control.label)" : control.label)
+        .help(help)
+        .modifier(HotspotAccessibility(text: accessibilityText, id: accessibilityID, action: onTap))
     }
 
     /// Developer mode: the purple pad state, then the ring that says what the step wants or how it ended.
@@ -374,6 +465,26 @@ private struct HotspotView: View {
     }
 }
 
+/// A hotspot has no element of its own by default: give it one (a button that does what a click does).
+private struct HotspotAccessibility: ViewModifier {
+    let text: String
+    let id: String?
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        if let id {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(text)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier(id)
+                .accessibilityAction(.default, action)
+        } else {
+            content.accessibilityHidden(true)
+        }
+    }
+}
+
 /// The purple pulse of the control a step asks for.
 private struct DevPulse: View {
     let shape: AnyShape
@@ -405,6 +516,7 @@ private struct CalloutLayer: View {
     @ObservedObject var editor: LayoutEditor
     let learningId: String?
     var dev: DevOverlay?
+    let presenter: RemapMenuPresenter
 
     /// Where a label's anchor point is (frame coordinates) and which pill edge the anchor refers to.
     struct Placed {
@@ -762,7 +874,9 @@ private struct CalloutLayer: View {
                 }
                 ForEach(controls) { c in
                     if let pl = placed[c.id] {
+                        // A label with "→ Y" is longer than its neighbours (the G1…G5 row): it draws above them, nothing moves.
                         labelView(c, pl, placed)
+                            .zIndex(device.remapMenuControl == c.id ? 2 : (device.mapping.isRemapped(c.id) && !editor.isEditing ? 1 : 0))
                     }
                 }
                 if let m = editor.marquee, m.view == viewKey {
@@ -777,7 +891,7 @@ private struct CalloutLayer: View {
             .frame(width: frameSize.width, height: frameSize.height)
             .coordinateSpace(name: "callouts")
             .onContinuousHover { phase in
-                if case .active(let loc) = phase { editor.hoverPoint[viewKey] = loc }
+                if editor.isEditing, case .active(let loc) = phase { editor.hoverPoint[viewKey] = loc }
             }
             .onPreferenceChange(PillSizeKey.self) { frames in
                 editor.pillFrames.merge(frames) { $1 }
@@ -944,27 +1058,65 @@ private struct CalloutLayer: View {
         }
     }
 
+    /// The label, then (once remapped) the arrow and what it sends: orange, or grey for Nothing.
+    private func labelText(_ rl: RemapLabel, mark: String, color: Color) -> Text {
+        var t = Text(rl.text).foregroundColor(color)
+        if let s = rl.suffix {
+            t = t + Text(" " + s.text).foregroundColor(s.style == .nothing ? RemapColors.off : RemapColors.accent)
+        }
+        return t + Text(mark).foregroundColor(color)
+    }
+
+    /// Edit layout: dashed in the label's colour. Remapped: 1 pt orange. Mapping: dashed blue-grey. Otherwise as before.
+    @ViewBuilder
+    private func labelBorder(col: Color, remapped: Bool, mapping: Bool) -> some View {
+        if editor.isEditing {
+            Capsule().stroke(col.opacity(0.9), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+        } else if remapped {
+            Capsule().stroke(RemapColors.accent, lineWidth: 1)
+        } else if mapping {
+            Capsule().stroke(RemapColors.mappingBorder, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+        } else {
+            Capsule().stroke(col.opacity(0.5), lineWidth: 0.5)
+        }
+    }
+
+    /// A click or accessibility press on a label: select it (Edit layout), open its menu (Mapping) or flash the hint (live view).
+    private func labelClick(_ c: ControlLayout.Control, _ pl: Placed) {
+        device.handleClick(on: .label, controlID: c.id, extendSelection: NSEvent.modifierFlags.contains(.shift)) {
+            let r = pillRect(c.id, pl)
+            presenter.present(controlID: c.id, side: c.view, at: CGPoint(x: r.minX, y: r.maxY + 4), device: device)
+        }
+    }
+
     @ViewBuilder
     private func labelView(_ c: ControlLayout.Control, _ pl: Placed, _ placed: [String: Placed]) -> some View {
         let col = color(c)
         let fs = fontSize
         let mark = devMark(c)
         let dimmed = dev.map { $0.isRunning && $0.highlights[c.id] == nil } ?? false
-        let pill = Text(c.label + mark)
+        let mode: RemapLabel.Mode = editor.isEditing ? .editLayout : (device.isRemapping ? .mapping : .live)
+        let rl = RemapLabel(label: c.label, id: c.id, mapping: device.mapping, mode: mode)
+        let remapped = rl.isRemapped
+        let selected = device.remapMenuControl == c.id
+        let pill = labelText(rl, mark: mark, color: col)
             .font(.system(size: fs, weight: .medium))
-            .foregroundStyle(col)
             .padding(.horizontal, fs * 0.5)
             .padding(.vertical, fs * 0.2)
-            .background(Color.black.opacity(0.6), in: Capsule())
-            .overlay(Capsule().stroke(col.opacity(editor.isEditing ? 0.9 : 0.5),
-                                      style: StrokeStyle(lineWidth: editor.isEditing ? 1 : 0.5, dash: editor.isEditing ? [3, 2] : [])))
+            .background(remapped ? RemapColors.accentSoft.opacity(0.95) : Color.black.opacity(0.6), in: Capsule())
+            .overlay(labelBorder(col: col, remapped: remapped, mapping: mode == .mapping))
+            .overlay {
+                if selected { Capsule().inset(by: -2).stroke(RemapColors.selection, lineWidth: 2) }
+            }
             .opacity(dimmed ? 0.45 : 1)
             .fixedSize()
             .background(GeometryReader { g in Color.clear.preference(key: PillSizeKey.self, value: [c.id: g.frame(in: .named("grid"))]) })
-            .onTapGesture {
-                guard editor.isEditing else { return }
-                editor.toggleSelection(c.id, extend: NSEvent.modifierFlags.contains(.shift))
-            }
+            .onTapGesture { labelClick(c, pl) }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(rl.fullText)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("remap.label.\(c.id)")
+            .accessibilityAction(.default) { labelClick(c, pl) }
             .contextMenu {
                 if editor.isEditing {
                     Menu("Align") {
@@ -998,7 +1150,7 @@ private struct CalloutLayer: View {
                     guard editor.isEditing else { return }
                     dragLabels(c, pl, placed, translation: v.translation)
                 }
-                .onEnded { _ in commitDrag(placed) })
+                .onEnded { _ in if editor.isEditing { commitDrag(placed) } })
         switch pl.kind {
         case .center:
             pill.position(pl.anchor).transaction { $0.animation = nil }
@@ -1057,8 +1209,6 @@ private struct LearnToolbar: View {
         let learn = device.learn
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                Button("Learn all (guided)") { device.startGuidedLearn() }
-                    .disabled(learn != nil && learn?.mode == .guided)
                 Button("Back") { device.backLearn() }.disabled(learn?.canGoBack != true)
                 Button("Skip") { device.skipLearn() }.disabled(learn == nil)
                 Button("Cancel") { device.cancelLearn() }.disabled(learn == nil)
@@ -1074,7 +1224,7 @@ private struct LearnToolbar: View {
                     Text("Last: \(learn.lastResult)").font(.callout).foregroundStyle(.secondary)
                 }
             } else {
-                Text("Click a control to learn just that one, or use Learn all. Keep the controller untouched until prompted.")
+                Text("Use Learn all (guided) to teach every control, or switch Mapping on and choose Re-learn… in a control's menu to teach just that one. Keep the controller untouched until prompted.")
                     .font(.callout).foregroundStyle(.secondary)
                 if !device.lastLearnResult.isEmpty {
                     Text("Last: \(device.lastLearnResult)").font(.callout).foregroundStyle(.secondary)
@@ -1151,8 +1301,17 @@ private struct LayoutToolbar: View {
                 Text("Drag labels, or drag a box on empty space to select several (Shift adds); selected labels move together. Double-click or right-click a leader to add a corner; double-click or right-click a corner to remove it. Sliders under each view set the label space. Leader menu sets shape and corner direction; drag the yellow square to move where the line meets the label and the green dot to move where it meets the control. Mouse wheel zooms toward the pointer.")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else {
+                let gate = device.modeGate
                 Button("Edit layout") { device.beginEditingLayout() }
-                    .disabled(device.dev != nil)
+                    .disabled(!gate.canBeginEditing)
+                Button(device.isRemapping ? "Mapping ✓ Done" : "Mapping") {
+                    if device.isRemapping { device.endRemapping() } else { _ = device.beginRemapping() }
+                }
+                .disabled(!gate.mappingButtonEnabled)
+                .help("Choose what a button sends: click a label or a button")
+                .accessibilityIdentifier("toolbar.mapping")
+                Button("Learn all (guided)") { device.startGuidedLearn() }
+                    .disabled(!gate.learnAllEnabled)
                 Button(device.dev == nil ? "Developer" : "Developer ✓ Done") {
                     if let dev = device.dev {
                         if dev.isRunning { dev.stop() }
@@ -1161,10 +1320,18 @@ private struct LayoutToolbar: View {
                         _ = device.beginDeveloper()
                     }
                 }
-                .disabled(editor.isEditing)
+                .disabled(device.dev == nil && !gate.canBeginDeveloper)
                 .help("Record what the virtual pad sends while the app tells you what to press")
+                if device.isRemapping {
+                    Button("Reset all remaps") { device.resetAllRemaps() }
+                        .disabled(device.mapping.outputs.isEmpty)
+                        .help("Every button sends what it did before; learned buttons stay")
+                        .accessibilityIdentifier("toolbar.resetAllRemaps")
+                }
                 if let dev = device.dev {
                     DevToolbarHint(session: dev)
+                } else {
+                    RemapHintLine(device: device)
                 }
                 Spacer()
             }
@@ -1173,6 +1340,25 @@ private struct LayoutToolbar: View {
         if editor.isEditing {
             FontToolbar(device: device)
                 .padding(.horizontal)
+        }
+    }
+}
+
+/// The line next to the Mapping button: what a click does now, who drives the controller when the driver cannot do the
+/// mapping yet, and the flash after a click in the live view.
+private struct RemapHintLine: View {
+    @ObservedObject var device: EnvisionProDevice
+
+    var body: some View {
+        let flashing = !device.isRemapping && device.remapHintFlashing
+        if flashing {
+            Text(RemapHint.flash).font(.caption).foregroundStyle(RemapColors.flash).lineLimit(2)
+        } else if let limit = device.remapLimit {
+            Text("Driven by: App (mapping needs a driver update: \(limit))")
+                .font(.caption).foregroundStyle(RemapColors.flash).lineLimit(2)
+        } else {
+            Text(RemapHint.text(remapping: device.isRemapping, flashing: false))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
         }
     }
 }

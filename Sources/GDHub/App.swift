@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
         driver = DriverManager(mode: mode)
         let layout = ControlLayout.load()
         envision = EnvisionProDevice(layout: layout)
+        envision.displayOnly = mode == .displayOnly       // another copy owns the engine: no Mapping, no learn here
         envision.startMappingWatch()
         modules = [envision]
         monitor = HIDMonitor(matchList: modules.flatMap { $0.matchList })
@@ -214,7 +215,7 @@ struct LayoutCommands: View {
             if editor.isEditing { device.lockLayout() } else { device.beginEditingLayout() }
         }
         .keyboardShortcut("e", modifiers: [.command, .shift])
-        .disabled(device.dev != nil)
+        .disabled(!editor.isEditing && !device.modeGate.canBeginEditing)
         Button("Cancel editing") { device.cancelEditingLayout() }
             .keyboardShortcut(".", modifiers: [.command, .shift])
             .disabled(!editor.isEditing)

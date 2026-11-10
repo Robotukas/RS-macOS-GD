@@ -51,11 +51,34 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         didSet {
             guard mapping != oldValue else { return }
             mappingRevision &+= 1
+            refreshRemapCaches()
             if !adoptingExternalMapping { store.save(mapping) }       // an adopted file is already on disk
         }
     }
     /// Bumped on every mapping change; lets the virtual pad feed drop duplicate frames cheaply.
     private(set) var mappingRevision = 0
+    /// `mapping.sourcesByOutput()`, recomputed only when the mapping changes (the lighting needs it every frame).
+    private(set) var remapSources: [PadOutput: [String]] = ControlMapping.default.sourcesByOutput()
+    /// What the driver cannot do for the current mapping yet (`RemapHint.limit`), recomputed only when the mapping changes.
+    private(set) var remapLimit: String?
+
+    private func refreshRemapCaches() {
+        remapSources = mapping.sourcesByOutput()
+        remapLimit = RemapHint.limit(of: mapping)
+    }
+
+    // MARK: Mapping mode (remap plan, "UI (R2)")
+
+    /// Mapping mode is on: a click on a label or a drawn button opens the menu of what it sends.
+    @Published private(set) var isRemapping = false
+    /// The control whose menu is open (the selection outline on its label and button); nil when no menu is open.
+    @Published private(set) var remapMenuControl: String?
+    /// The live view was clicked a moment ago: the toolbar hint flashes "Switch Mapping on first".
+    @Published private(set) var remapHintFlashing = false
+    /// A display-only copy of the app (the engine belongs to another copy): it cannot enter Mapping or start a learn.
+    /// Set once at launch by the app.
+    var displayOnly = false
+    private var hintFlashWork: DispatchWorkItem?
     @Published private(set) var learn: LearnSession?
     /// Summary of the last learn step of the most recently finished session.
     @Published private(set) var lastLearnResult = ""
@@ -97,6 +120,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         self.store = store
         var startNotes: [String] = []
         self.mapping = store.loadMovingUnreadableAside { startNotes.append($0) }
+        refreshRemapCaches()
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.timerTick() } }
         }
@@ -200,6 +224,89 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         learn?.feed(new, now: now)
     }
 
+    // MARK: Modes
+
+    /// The one place that says which mode may start and what a click does, built from the device's state.
+    var modeGate: ModeGate {
+        ModeGate(isEditing: editor.isEditing, devOn: dev != nil, remapping: isRemapping,
+                 learning: learn.map { $0.mode == .guided ? .guided : .single } ?? .none,
+                 displayOnly: displayOnly)
+    }
+
+    /// Switches Mapping mode on. Refused while the layout is being edited, while Developer mode is on and in a display-only
+    /// copy. A running learn keeps going.
+    @discardableResult
+    func beginRemapping() -> Bool {
+        guard modeGate.canBeginRemapping, !isRemapping else { return false }
+        isRemapping = true
+        hintFlashWork?.cancel()
+        remapHintFlashing = false
+        return true
+    }
+
+    /// Switches Mapping mode off and closes the menu state. A running learn keeps going.
+    func endRemapping() {
+        guard isRemapping else { return }
+        isRemapping = false
+        remapMenuControl = nil
+    }
+
+    /// The menu presenter marks the control whose menu is open (and clears it when the menu closes).
+    func setRemapMenuControl(_ id: String?) {
+        if remapMenuControl != id { remapMenuControl = id }
+    }
+
+    /// A click in the live view: flash the hint for a moment (decision C: no learn, no menu).
+    func flashRemapHint() {
+        hintFlashWork?.cancel()
+        remapHintFlashing = true
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.remapHintFlashing = false }
+        }
+        hintFlashWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    /// What a click (or an accessibility press) on a drawn button or a label does, decided in one place by `ModeGate`:
+    /// Edit layout selects a label, Mapping calls `openMenu`, the live view flashes the hint. It never starts a learn
+    /// (decision C): learning is "Learn all (guided)" or "Re-learn…" in the menu. Returns what it did.
+    @discardableResult
+    func handleClick(on target: ModeGate.ClickTarget, controlID: String, extendSelection: Bool = false,
+                     openMenu: () -> Void) -> ModeGate.ClickAction {
+        let action = modeGate.clickAction(on: target)
+        switch action {
+        case .selectLabel: editor.toggleSelection(controlID, extend: extendSelection)
+        case .openMenu: openMenu()
+        case .flashHint: flashRemapHint()
+        case .none: break
+        }
+        return action
+    }
+
+    /// Makes `id` send `output`. The mapping's `didSet` saves it and the engine picks it up. A display-only copy changes nothing.
+    func setOutput(_ output: ControlOutput, for id: String) {
+        guard !displayOnly else { return }
+        var m = mapping
+        m.setOutput(output, for: id)
+        mapping = m
+    }
+
+    /// Back to what `id` sends if never touched.
+    func resetOutput(for id: String) {
+        guard !displayOnly, mapping.isRemapped(id) else { return }
+        var m = mapping
+        m.outputs[id] = nil
+        mapping = m
+    }
+
+    /// Clears every remap (never learned buttons).
+    func resetAllRemaps() {
+        guard !displayOnly, !mapping.outputs.isEmpty else { return }
+        var m = mapping
+        m.resetAllOutputs()
+        mapping = m
+    }
+
     // MARK: Learning
 
     func startGuidedLearn() {
@@ -230,7 +337,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     private var layoutBeforeEdit: ControlLayout?
 
     func beginEditingLayout() {
-        guard dev == nil else { return }
+        guard modeGate.canBeginEditing else { return }
         layoutBeforeEdit = layout
         layout?.writePreEditSnapshot()
         editor.isEditing = true
@@ -326,11 +433,11 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
 
     // MARK: Developer mode
 
-    /// Switches Developer mode on. Cancels a learn in progress; refuses while the layout is being edited, while it is
-    /// already on, or when there is no driver manager to run against.
+    /// Switches Developer mode on. Cancels a learn in progress; refuses while the layout is being edited, while Mapping is on,
+    /// while it is already on, or when there is no driver manager to run against.
     @discardableResult
     func beginDeveloper() -> Bool {
-        guard dev == nil, !editor.isEditing, let driver = driverForDeveloper else { return false }
+        guard modeGate.canBeginDeveloper, let driver = driverForDeveloper else { return false }
         cancelLearn()
         dev = DevSession(device: self, driver: driver)
         return true
@@ -345,7 +452,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     }
 
     private func beginLearn(controls: [ControlLayout.Control], mode: LearnSession.Mode) {
-        guard dev == nil else { return }
+        guard modeGate.canLearn else { return }
         learn?.cancel()
         let session = LearnSession(
             controls: controls, mode: mode, baseline: latestFrame,
