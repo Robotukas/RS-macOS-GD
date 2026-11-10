@@ -238,4 +238,12 @@ final class ControlMappingTests: XCTestCase {
         two.buttons["c"] = .button(9)
         XCTAssertEqual(two.learnConflict(LearnAssignment(controlId: "z", target: .whole, binding: .button(9), physicalBits: 0)), "c")
     }
+
+    func testLearnGuardLeavesCrosswiseOrdinaryButtonsRepairable() {
+        var m = ControlMapping.default
+        m.buttons["a"] = .button(2); m.buttons["b"] = .button(1)        // learned crosswise by a slip
+        XCTAssertNil(m.learnConflict(LearnAssignment(controlId: "a", target: .whole, binding: .button(1), physicalBits: 0)))
+        XCTAssertNil(m.learnConflict(LearnAssignment(controlId: "b", target: .whole, binding: .button(2), physicalBits: 0)))
+        XCTAssertEqual(m.learnConflict(LearnAssignment(controlId: "g1", target: .whole, binding: .button(4), physicalBits: 0)), "y")
+    }
 }

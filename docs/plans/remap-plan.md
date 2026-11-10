@@ -14,10 +14,10 @@ volume"; "Of course light up any linked buttons"; every hands-on test is a Devel
 
 | Phase | Title | Driver replacement? | Exit | Status |
 |---|---|---|---|---|
-| R0 | Volume-key spike, run as the template `volume-spike` (owner presses G3 and G2). Gate for R3 and for `gkeys-volume` only | No | Result (pass / which half failed) written here | ▶ current — needs the owner |
+| R0 | Volume-key spike, run as the template `volume-spike` (owner presses G3 and G2). Gate for R3 and for `gkeys-volume` only | No | Result (pass / which half failed) written here | waiting for the owner (controller on); template and scratch script ready |
 | R0b | Mockup v6 (what changed since v5) and the owner's OK on "Changes from mockup v5" below | No | Answers recorded in this file | ✅ done 2026-11-10: "OK all" (mockup `remap-buttons-v6.html`) |
-| R1 | Model and translators: `outputs` in the mapping, mapper OR, encoder limits, strict reload, learn guard, Developer mode under remaps | No | Listed tests green; factory blob, checked-in header, default JSON and `mappingHash` byte-identical; `swift test` + Python green | ▶ in progress (pin tests committed) |
-| R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | pending |
+| R1 | Model and translators: `outputs` in the mapping, mapper OR, encoder limits, strict reload, learn guard, Developer mode under remaps | No | Listed tests green; factory blob, checked-in header, default JSON and `mappingHash` byte-identical; `swift test` + Python green | ✅ done 2026-11-10 (813 tests; independent review folded in) |
+| R2 | UI: Mapping mode, click menu, view tabs, "G1 → Y" labels, linked lighting, no learn on click | No | R2 tests green; installed with `--same-build`; I open every menu through the accessibility ids | ▶ current |
 | R3 | Volume off for a mapped G2–G4 (per key), re-applied at every link | No if R0 passes; owner decides if not | Engine-as-writer check passes (first step of R3) | pending — needs R0 pass |
 | R4 | Templates `remap-g1-as-y`, `remap-swap-a-b`, `gkeys-volume`; owner runs them on App and Driver | No | Three reports pass on both paths; the owner's mapping file is what it was before R4 | pending (`gkeys-volume` needs R3) |
 | R5 | Results, docs, HANDOFF (incl. the rollback note) | No | Committed and pushed | pending |
@@ -124,6 +124,21 @@ pad **trigger**.
   `DevExpectation` follows remaps for buttons and D-pad only. In step 1 a step whose control is a remapped `lt`/`rt`, or a
   button sent to LT/RT, is **skipped with that reason**; the step window opens on the physical pull
   (`triggerValue`), not on the pad's trigger. An un-remapped mapping resolves exactly as today.
+
+### R1 result (2026-11-10)
+
+Built in five slices plus one independent review; 813 Swift tests and 21 Python tests green; nothing under `Shared/`
+changed, so the driver stays at build 24. Not installed yet (R2 installs). Differences from the text above:
+
+- The learn guard refuses only a control that has no pad button of its own (G keys, Profile, a paddle or SAX key learned
+  without its bits). Two ordinary buttons learned crosswise stay repairable one at a time.
+- A mapping file without a `buttons` key is unreadable (moved aside), not an empty mapping.
+- The GUI did read the mapping file only once; it now watches it and adopts outside edits without writing them back.
+- `XlateCore` freed its map twice when a blob was rejected (a crash waiting in an existing fallback path); fixed.
+- The Swift mapper's sources table is cached in the sink per set of remaps.
+- An internal blob rejection has its own status wording. **Open:** the status line does not yet say when the engine
+  started on defaults because the file was unreadable (logged at error level only).
+- A trigger with two sources is refused even when the default owner would send nothing (could be allowed later).
 
 ## UI (R2)
 

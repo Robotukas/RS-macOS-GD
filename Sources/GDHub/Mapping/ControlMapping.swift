@@ -370,6 +370,9 @@ extension ControlMapping {
     /// Guided "Learn all" simply does not call this.
     func learnConflict(_ a: LearnAssignment) -> String? {
         guard a.target == .whole, let binding = a.binding, a.physicalBits == 0 else { return nil }
+        // Only a control with no pad button of its own (G keys, Profile, a paddle or SAX key learned without its bits) is
+        // refused: two ordinary buttons learned crosswise (A as B, B as A) must stay repairable one at a time.
+        if case .pad = defaultOutput(a.controlId) { return nil }
         return buttons.filter { id, b in
             id != a.controlId && b == binding && (physicalBits[id] ?? 0) == 0
         }.keys.min()
