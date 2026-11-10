@@ -48,7 +48,7 @@ compare tool (exit 2).
 | `readySeconds` | number | 2 | Minimum "hands off" time before Go. Range 0...30. The hands-still gate can extend it. |
 | `releaseSeconds` | number | 0.5 for stick, trigger and held, else 0 | Tail after the window where the owner lets go. Range 0...10. |
 | `expect` | object? | by kind | Overrides of the judge. Flat; only keys that fit the step's kind apply, the rest are ignored. |
-| `requires` | object? | absent | `{ "mapping": { "<control>": "<binding name>" } }`. If the current mapping does not route that control to that output, the step is recorded as `skipped` with the reason, not failed. |
+| `requires` | object? | absent | `{ "mapping": { "<control>": "<output>" } }`. If the control does not currently send that output (see "requires" below), the step is recorded as `skipped` with the reason, not failed. |
 | `actions` | [object]? | absent | Held steps only. The one action is `{ "toggleInputPath": { "values": ["driver","engine"], "intervalMs": 3000, "count": 12 } }`; see "held steps" below. Without the background engine (in-app mode) the step is recorded `skipped` ("needs the background engine"). |
 
 `expect` keys: stick `minReports` (100), `extent` (0.40), `deadZone` (0.12), `otherStickStill` (true),
@@ -66,6 +66,28 @@ held).
   latency uses), with the usual return to centre at the end. `minReports` then applies only if the step sets it.
   Must be 1 or more and only on a `stick` step.
 - `requireDirections: false` drops the four-direction (extent) check of the stick rule; flick steps set it.
+
+### `requires`
+
+`requires.mapping` names what a control must send **at the moment the run starts**; it compares the control's effective
+output (`ControlMapping.effectiveOutput`: what Mapping set, or the control's factory output when nothing was set) with a
+value from a closed, lowercase vocabulary:
+
+- a pad output: `a b x y lb rb lt rt view menu l3 r3 guide dpad_up dpad_right dpad_down dpad_left` (`"g1": "y"`);
+- `nothing` (`"g2": "nothing"`: the control sends nothing, and for G2–G4 that also means the volume function is off);
+- `built_in` (`"g4": "built_in"`: the control keeps its own function; valid only for `g2`, `g3` and `g4`).
+
+The controls are the remappable ones (a b x y lb rb lt rt view menu l3 r3, the four D-pad directions, start, profile,
+g1–g5). Learned bindings are not compared. A miss skips the step in the owner's words: `needs G1 → Y: set it in Mapping`,
+`needs G2 → Nothing: set it in Mapping`, `needs G4 left at its built-in function: Reset it in Mapping` (`Reset it` when
+the wanted output is the control's factory one).
+
+Developer mode under remaps: a digital or held step expects what the virtual pad shows for the control **under the
+current mapping** (G1 sent to Y expects Y; A and B swapped, A expects B). Trigger remaps are not judged yet: a trigger or
+held step on a remapped `lt` / `rt` is recorded `skipped` ("LT is remapped to A; trigger remaps are checked after the
+next driver update"), and so is a digital or held step on a control that is sent to LT or RT ("a button sent to LT/RT is
+checked after the next driver update"). The window of an `lt` / `rt` step opens on the physical pull of that trigger, not
+on the pad's trigger value.
 
 ### Held steps
 
@@ -104,6 +126,9 @@ style `<id>.json step <n>: ...`:
 - `step n: a rest step takes no controls` / `needs at least one control` / `unknown control X`
 - `step n: a stick step does not fit control X (a button)`
 - `step n: unknown control X in requires`
+- `step n: requires names unknown output "X" (use a pad output such as y or dpad_up, nothing, or built_in)` (values are
+  lowercase and case-sensitive) / `requires built_in for X, but only g2, g3 and g4 have a built-in function` /
+  `requires names X, which has no output that can be remapped`
 - `step n: expect names unknown button "X"` / `unknown hat direction "X"`
 - `step n: expect times T must be 1 or more` / `expect flicks F must be 1 or more` / `expect flicks only applies to stick steps`
 - `step n: toggleInputPath value "X" is not engine, shadow or driver` / `toggleInputPath needs values, a count of 1 or more and an intervalMs of 1 or more`

@@ -290,7 +290,7 @@ extension ControlMapping {
     private static let remappableSet = Set(remappableIDs)
 
     /// Controls on which `ControlOutput.builtIn` (the volume function) is valid.
-    private static let builtInIDs: Set<String> = ["g2", "g3", "g4"]
+    static let builtInIDs: Set<String> = ["g2", "g3", "g4"]
 
     func defaultOutput(_ id: String) -> ControlOutput {
         switch id {

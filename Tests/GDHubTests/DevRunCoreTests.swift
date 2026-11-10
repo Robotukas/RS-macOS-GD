@@ -10,7 +10,7 @@ private final class Rig {
     var frame = GamepadFrame.idle
     var pad = PadState()
     private var lastBytes: [UInt8: [UInt8]] = [:]
-    let mapping = ControlMapping.default
+    var mapping = ControlMapping.default
     static let layout = ControlLayout.loadFromBundle()!
 
     @discardableResult
@@ -620,10 +620,111 @@ final class DevRunCoreTests: XCTestCase {
         let r = Rig()
         r.prepare()
         r.start(steps: [step, Rig.aStep])
-        guard case .skipped(let why)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
-        XCTAssertTrue(why.contains("g1"), why)
+        XCTAssertEqual(r.verdict(0), .skipped("needs G1 → Y: set it in Mapping"))
         XCTAssertEqual(r.core.state, .step(index: 1, phase: .ready))
         XCTAssertFalse(r.core.canGoToPreviousStep, "Back never lands on an automatic skip")
+    }
+
+    // MARK: Requirements and trigger remaps (remap plan R1e)
+
+    private func requiring(_ mapping: [String: String], kind: DevKind = .digital, controls: [String] = ["g1"]) -> DevStep {
+        var step = DevStep(id: "s", kind: kind, controls: controls, title: "t")
+        var req = DevRequires()
+        req.mapping = mapping
+        step.requires = req
+        return step
+    }
+
+    private func skip(_ step: DevStep, _ mapping: ControlMapping) -> String? {
+        let t = DevTemplate(id: "test", title: "t", steps: [step])
+        return DevResolvedStep.resolve(template: t, mapping: mapping, layout: Rig.layout)[0].skipReason
+    }
+
+    func testRequiresComparesEffectiveOutputsByValue() {
+        var m = ControlMapping.default
+        XCTAssertEqual(skip(requiring(["g1": "y"]), m), "needs G1 → Y: set it in Mapping")
+        m.setOutput(.pad(.y), for: "g1")
+        XCTAssertNil(skip(requiring(["g1": "y"]), m))
+        XCTAssertEqual(skip(requiring(["g1": "nothing"]), m), "needs G1 → Nothing: Reset it in Mapping", "Nothing is the factory choice of G1")
+        // a control left alone "sends" its default
+        XCTAssertNil(skip(requiring(["g1": "nothing", "a": "a", "start": "guide", "g4": "built_in"]), ControlMapping.default))
+        XCTAssertNil(skip(requiring(["g2": "nothing"], controls: ["g2"]), { var x = ControlMapping.default; x.setOutput(.nothing, for: "g2"); return x }()))
+        // built-in is a thing G2-G4 lose when remapped, even to Nothing
+        var n = ControlMapping.default
+        n.setOutput(.nothing, for: "g4")
+        XCTAssertEqual(skip(requiring(["g4": "built_in"], controls: ["g4"]), n), "needs G4 left at its built-in function: Reset it in Mapping")
+        XCTAssertEqual(skip(requiring(["g4": "nothing"], controls: ["g4"]), ControlMapping.default), "needs G4 → Nothing: set it in Mapping")
+        // a miss that the default would fix says Reset
+        var swapped = ControlMapping.default
+        swapped.setOutput(.pad(.b), for: "a")
+        XCTAssertEqual(skip(requiring(["a": "a"], controls: ["a"]), swapped), "needs A → A: Reset it in Mapping")
+        // the learned bindings no longer matter: g1 carrying y's binding is not "g1 → y"
+        var bound = ControlMapping.default
+        bound.buttons["g1"] = bound.buttons["y"]
+        XCTAssertEqual(skip(requiring(["g1": "y"]), bound), "needs G1 → Y: set it in Mapping")
+        // two misses: the first control id in order gives the reason
+        XCTAssertEqual(skip(requiring(["g1": "y", "a": "b"], controls: ["a"]), ControlMapping.default), "needs A → B: set it in Mapping")
+        // a value outside the vocabulary never matches
+        XCTAssertNotNil(skip(requiring(["g1": "Y"]), m))
+    }
+
+    func testTriggerRemapsAreSkippedWithAReason() {
+        var m = ControlMapping.default
+        m.setOutput(.pad(.a), for: "lt")
+        XCTAssertEqual(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), m),
+                       "LT is remapped to A; trigger remaps are checked after the next driver update")
+        XCTAssertEqual(skip(DevStep(id: "s", kind: .held, controls: ["lt"], title: "t"), m),
+                       "LT is remapped to A; trigger remaps are checked after the next driver update")
+        XCTAssertNil(skip(DevStep(id: "s", kind: .trigger, controls: ["rt"], title: "t"), m), "RT was left alone")
+        var swap = ControlMapping.default
+        swap.setOutput(.pad(.rt), for: "lt"); swap.setOutput(.pad(.lt), for: "rt")
+        XCTAssertEqual(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), swap),
+                       "LT is remapped to RT; trigger remaps are checked after the next driver update")
+        var none = ControlMapping.default
+        none.setOutput(.nothing, for: "rt")
+        XCTAssertEqual(skip(DevStep(id: "s", kind: .held, controls: ["rt"], title: "t"), none),
+                       "RT is remapped to Nothing; trigger remaps are checked after the next driver update")
+        // a button sent to a trigger
+        var toTrigger = ControlMapping.default
+        toTrigger.setOutput(.pad(.lt), for: "g1")
+        let why = "a button sent to LT/RT is checked after the next driver update"
+        XCTAssertEqual(skip(DevStep(id: "s", kind: .digital, controls: ["g1"], title: "t"), toTrigger), why)
+        XCTAssertEqual(skip(DevStep(id: "s", kind: .held, controls: ["g1"], title: "t"), toTrigger), why)
+        XCTAssertNil(skip(DevStep(id: "s", kind: .digital, controls: ["g2"], title: "t"), toTrigger))
+        XCTAssertNil(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), toTrigger),
+                      "LT itself is where it was; another control also feeding it is not judged here")
+    }
+
+    func testTheWindowOfATriggerStepOpensOnThePhysicalPull() {
+        // LB is sent to RT; the RT step must not open on LB, only on the trigger itself.
+        let r = Rig()
+        r.mapping.setOutput(.pad(.rt), for: "lb")
+        let step = DevStep(id: "rt", kind: .trigger, controls: ["rt"], title: "Pull RT", seconds: 3, readySeconds: 1)
+        r.prepare()
+        r.start(steps: [step])
+        r.untilGo()
+        var lb = GamepadFrame.idle
+        lb.buttons = 1 << 4
+        var padRT = PadState(); padRT.rt = 1
+        r.move(lb, padRT, hold: 200)
+        XCTAssertEqual(r.core.state, .step(index: 0, phase: .ready), "LB reaching the pad's RT is not the physical pull")
+        r.releaseAll(hold: 400)
+        r.untilGo()
+        var pull = GamepadFrame.idle
+        pull.rt = 1023
+        var p = PadState(); p.rt = 1
+        r.move(pull, p, hold: 100)
+        XCTAssertEqual(r.core.state, .step(index: 0, phase: .window))
+    }
+
+    func testBuiltInTemplatesResolveWithoutAnySkipOnTheFactoryMapping() {
+        let templates = DevBuiltins.generate(layout: Rig.layout)
+        XCTAssertFalse(templates.isEmpty)
+        for t in templates {
+            for r in DevResolvedStep.resolve(template: t, mapping: .default, layout: Rig.layout) {
+                XCTAssertNil(r.skipReason, "\(t.id) step \(r.step.id)")
+            }
+        }
     }
 
     // MARK: Stop, finish, restore

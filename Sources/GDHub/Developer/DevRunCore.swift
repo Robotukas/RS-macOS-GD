@@ -117,18 +117,61 @@ struct DevResolvedStep: Equatable {
                 expected = DevExpectation.resolve(step: step, mapping: mapping, layout: layout)
                 linked = DevExpectation.linkedOutputControls(for: expected).filter { !step.controls.contains($0) }
             }
-            var skip: String?
-            if let want = step.requires?.mapping {
-                for (cid, out) in want.sorted(by: { $0.key < $1.key }) {
-                    // "g1 as y" means g1 carries the receiver binding that the y control carries.
-                    if mapping.buttons[cid] == nil || mapping.buttons[cid] != mapping.buttons[out] {
-                        skip = "needs \(cid) mapped like \(out)"
-                        break
-                    }
-                }
-            }
+            let skip = requirementSkip(step, mapping: mapping, layout: layout)
+                ?? triggerRemapSkip(step, mapping: mapping, layout: layout)
             return DevResolvedStep(step: step, expected: expected, wanted: step.controls, linked: linked, skipReason: skip)
         }
+    }
+
+    // MARK: Skip reasons (plain words, layout labels)
+
+    /// The owner's word for a control: the layout label ("G1"), else the id.
+    private static func label(_ id: String, _ layout: ControlLayout) -> String { layout.control(id: id)?.label ?? id }
+
+    /// The owner's word for an output: "Y", "D-pad up", "Nothing", "its built-in function".
+    private static func label(_ output: ControlOutput, _ layout: ControlLayout) -> String {
+        switch output {
+        case .nothing: return "Nothing"
+        case .builtIn: return "its built-in function"
+        case .pad(let p): return layout.control(id: p.rawValue)?.label ?? p.padItem?.name ?? p.rawValue.uppercased()
+        }
+    }
+
+    /// `requires.mapping`: every named control must currently send the named output (`effectiveOutput`, by value).
+    /// The first miss, in control order, gives the reason.
+    private static func requirementSkip(_ step: DevStep, mapping: ControlMapping, layout: ControlLayout) -> String? {
+        guard let want = step.requires?.mapping else { return nil }
+        for (cid, value) in want.sorted(by: { $0.key < $1.key }) {
+            let output = ControlOutput(string: value)
+            if let output, mapping.effectiveOutput(cid) == output { continue }
+            let who = label(cid, layout)
+            guard let output else { return "needs \(who) → \"\(value)\": not an output this build knows" }
+            if output == .builtIn { return "needs \(who) left at its built-in function: Reset it in Mapping" }
+            let how = mapping.defaultOutput(cid) == output ? "Reset it in Mapping" : "set it in Mapping"
+            return "needs \(who) → \(label(output, layout)): \(how)"
+        }
+        return nil
+    }
+
+    /// Step 1 of the remap work does not judge the pad's triggers under a remap: a step on a remapped `lt` / `rt`, or
+    /// on a button that is sent to one, is skipped (a later driver update gives the judge what it needs).
+    private static func triggerRemapSkip(_ step: DevStep, mapping: ControlMapping, layout: ControlLayout) -> String? {
+        let kind = step.devKind
+        for cid in step.controls {
+            if cid == "lt" || cid == "rt" {
+                guard kind == .trigger || kind == .held else { continue }
+                let own = ControlOutput.pad(cid == "lt" ? .lt : .rt)
+                let now = mapping.effectiveOutput(cid)
+                if now != own {
+                    return "\(label(cid, layout)) is remapped to \(label(now, layout)); trigger remaps are checked after the next driver update"
+                }
+            } else if kind == .digital || kind == .held {
+                if case .pad(let p) = mapping.effectiveOutput(cid), p.isTrigger {
+                    return "a button sent to LT/RT is checked after the next driver update"
+                }
+            }
+        }
+        return nil
     }
 }
 
@@ -961,8 +1004,9 @@ struct DevRunCore {
         case .trigger?, .held?:
             return r.step.controls.contains { cid in
                 switch cid {
-                case "lt": return pad.lt > ru.triggerRelease
-                case "rt": return pad.rt > ru.triggerRelease
+                // The physical pull (the control's own binding), not the pad's trigger: under a remap the pad's value
+                // may come from another control. Without remaps this is the same number the mapper puts on the pad.
+                case "lt", "rt": return (m.triggerValue(cid, f) ?? 0) > ru.triggerRelease
                 default: return m.isActive(cid, f)
                 }
             }

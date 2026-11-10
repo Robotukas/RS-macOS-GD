@@ -176,7 +176,10 @@ struct DevAction: Codable, Equatable {
 }
 
 struct DevRequires: Codable, Equatable {
-    /// control id → the output the mapping must route it to (`"g1": "y"`). A step whose requirement is not met is skipped.
+    /// control id → the output the control must currently send (`"g1": "y"`). The value comes from a closed
+    /// vocabulary, exactly `ControlOutput(string:)`: a pad output id (`y`, `dpad_up`, `lt`, `guide` …), `nothing` or
+    /// `built_in` (G2-G4 only). It is compared with `ControlMapping.effectiveOutput`, so a control left alone
+    /// "sends" its default. A step whose requirement is not met is skipped, not failed.
     var mapping: [String: String]?
     init() {}
 }
@@ -392,8 +395,20 @@ struct DevTemplate: Codable, Equatable {
             if let s = step.releaseSeconds, !DevStep.releaseRange.contains(s) {
                 v.warnings.append("\(at): releaseSeconds \(Self.number(s)) is outside \(Self.number(DevStep.releaseRange.lowerBound))…\(Self.number(DevStep.releaseRange.upperBound)), using \(Self.number(step.effectiveReleaseSeconds))")
             }
-            for cid in (step.requires?.mapping ?? [:]).keys.sorted() where layout.control(id: cid) == nil {
-                v.errors.append("\(at): unknown control \(cid) in requires")
+            for (cid, value) in (step.requires?.mapping ?? [:]).sorted(by: { $0.key < $1.key }) {
+                if layout.control(id: cid) == nil {
+                    v.errors.append("\(at): unknown control \(cid) in requires")
+                    continue
+                }
+                guard let output = ControlOutput(string: value) else {
+                    v.errors.append("\(at): requires names unknown output \"\(value)\" (use a pad output such as y or dpad_up, nothing, or built_in)")
+                    continue
+                }
+                if !ControlMapping.remappableIDs.contains(cid) {
+                    v.errors.append("\(at): requires names \(cid), which has no output that can be remapped")
+                } else if output == .builtIn, !ControlMapping.builtInIDs.contains(cid) {
+                    v.errors.append("\(at): requires built_in for \(cid), but only g2, g3 and g4 have a built-in function")
+                }
             }
             if let items = step.expect?.items {
                 for name in items.buttons where !PadItem.buttonItems.contains(where: { $0.name == name }) {

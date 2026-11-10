@@ -95,6 +95,34 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertTrue(errors.contains { $0.contains("toggleInputPath needs values") })
     }
 
+    func testRequiresValuesComeFromAClosedVocabulary() {
+        func errors(_ cid: String, _ value: String) -> [String] {
+            var s = digital("a", ["a"])
+            var r = DevRequires(); r.mapping = [cid: value]
+            s.requires = r
+            return template(steps: [s]).validation(layout: layout).errors.filter { $0.contains("requires") }
+        }
+        for ok in ["y", "dpad_up", "lt", "rt", "guide", "l3", "nothing"] { XCTAssertEqual(errors("g1", ok), [], ok) }
+        for ok in ["g2", "g3", "g4"] { XCTAssertEqual(errors(ok, "built_in"), [], ok) }
+        let unknown = "full.json step 1: requires names unknown output \"Y\" (use a pad output such as y or dpad_up, nothing, or built_in)"
+        XCTAssertEqual(errors("g1", "Y"), [unknown], "case-sensitive lowercase")
+        XCTAssertEqual(errors("g1", "NOTHING").count, 1)
+        XCTAssertEqual(errors("g1", "").count, 1)
+        XCTAssertEqual(errors("g1", "volume").count, 1)
+        XCTAssertEqual(errors("g1", "built_in"), ["full.json step 1: requires built_in for g1, but only g2, g3 and g4 have a built-in function"])
+        XCTAssertEqual(errors("a", "built_in").count, 1)
+        XCTAssertEqual(errors("g9", "y"), ["full.json step 1: unknown control g9 in requires"])
+        XCTAssertEqual(errors("left_stick", "nothing"), ["full.json step 1: requires names left_stick, which has no output that can be remapped"])
+    }
+
+    func testBundledTemplatesUseNoRequirementsYet() {
+        // Every `requires` in a built-in must pass the closed vocabulary; today none uses it.
+        for t in DevBuiltins.generate(layout: layout) {
+            XCTAssertTrue(t.steps.allSatisfy { $0.requires == nil }, t.id)
+            XCTAssertEqual(t.validation(layout: layout).errors, [], t.id)
+        }
+    }
+
     // MARK: decoding
 
     func testTolerantDecodeAndSchemaGate() throws {

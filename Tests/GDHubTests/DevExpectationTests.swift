@@ -41,6 +41,51 @@ final class DevExpectationTests: XCTestCase {
         XCTAssertEqual(expected("g1", m), DevExpectedItems(hat: "E"))
     }
 
+    // MARK: Remaps (outputs): buttons and the D-pad follow the mapper
+
+    func testExpectationsFollowRemaps() {
+        var m = mapping
+        m.setOutput(.pad(.y), for: "g1")
+        XCTAssertEqual(expected("g1", m), DevExpectedItems(buttons: ["Y"]))
+        XCTAssertEqual(expected("y", m), DevExpectedItems(buttons: ["Y"]), "Y still sends Y (OR of two sources)")
+        let step = DevStep(id: "s", kind: .digital, controls: ["g1"], title: "t")
+        XCTAssertEqual(DevExpectation.resolve(step: step, mapping: m, layout: layout), DevExpectedItems(buttons: ["Y"]))
+        XCTAssertEqual(DevExpectation.linkedOutputControls(for: expected("g1", m)), ["y"])
+        XCTAssertEqual(DevExpectation.linkedOutputControl(for: "g1", mapping: m, layout: layout), "y")
+
+        var swap = mapping
+        swap.setOutput(.pad(.b), for: "a"); swap.setOutput(.pad(.a), for: "b")
+        XCTAssertEqual(expected("a", swap), DevExpectedItems(buttons: ["B"]))
+        XCTAssertEqual(expected("b", swap), DevExpectedItems(buttons: ["A"]))
+        XCTAssertEqual(DevExpectation.linkedOutputControl(for: "a", mapping: swap, layout: layout), "b")
+
+        var none = mapping
+        none.setOutput(.nothing, for: "x")
+        XCTAssertTrue(expected("x", none).isEmpty)
+        XCTAssertTrue(DevExpectation.linkedOutputControls(for: expected("x", none)).isEmpty)
+
+        var guide = mapping
+        guide.setOutput(.pad(.guide), for: "g5")
+        XCTAssertEqual(expected("g5", guide), DevExpectedItems(guide: true))
+        XCTAssertEqual(expected("start", guide), DevExpectedItems(guide: true))
+
+        var dpad = mapping
+        dpad.setOutput(.pad(.dpad_left), for: "g2")
+        XCTAssertEqual(expected("g2", dpad), DevExpectedItems(hat: "W"))
+        XCTAssertEqual(DevExpectation.linkedOutputControl(for: "g2", mapping: dpad, layout: layout), "dpad_left")
+        dpad.setOutput(.pad(.a), for: "dpad_up")
+        XCTAssertEqual(expected("dpad_up", dpad), DevExpectedItems(buttons: ["A"]))
+    }
+
+    func testAHeldStepFollowsARemappedButton() {
+        var m = mapping
+        m.setOutput(.pad(.x), for: "g3")
+        let step = DevStep(id: "s", kind: .held, controls: ["g3"], title: "t")
+        let items = DevExpectation.resolve(step: step, mapping: m, layout: layout)
+        XCTAssertEqual(items, DevExpectedItems(buttons: ["X"]))
+        XCTAssertEqual(DevExpectation.heldTargets(step: step, expected: items), [.item(.x)])
+    }
+
     func testStepOverrideAndUnion() {
         var step = DevStep(id: "s", kind: .digital, controls: ["a", "dpad_up"], title: "t")
         XCTAssertEqual(DevExpectation.resolve(step: step, mapping: mapping, layout: layout), DevExpectedItems(buttons: ["A"], hat: "N"))
