@@ -106,8 +106,11 @@ enum MapBlobEncoder {
     /// "start" feeds Guide, "l3"/"r3" feed LS/RS (PassthroughPadMapper).
     static let buttonControls = ["a", "b", "x", "y", "lb", "rb", "view", "menu", "l3", "r3", "start",
                                  "dpad_up", "dpad_right", "dpad_down", "dpad_left"]
+    /// The pad output of each item above, same order (`buttonControls` names the control that sends it by default).
+    static let buttonOutputs: [PadOutput] = [.a, .b, .x, .y, .lb, .rb, .view, .menu, .l3, .r3, .guide,
+                                             .dpad_up, .dpad_right, .dpad_down, .dpad_left]
     static let stickControls = ["left_stick", "right_stick"]
-    static let triggerControls = ["lt", "rt"]
+    static let triggerOutputs: [PadOutput] = [.lt, .rt]
     static let axisFields = GamepadFrame.axisNames
     static let triggerFields = GamepadFrame.triggerNames
 
@@ -152,8 +155,47 @@ enum MapBlobEncoder {
         }
     }
 
+    /// What GDHM v1 cannot say about the mapping's remaps (`outputs`), in the owner's words, or nil. v1 takes 0, 1 or 2
+    /// OR-ed rules per pad button and exactly one field per pad trigger, so it cannot send one pad button from three
+    /// controls, a button to a trigger, or two controls to one trigger. Never non-nil for a mapping with empty
+    /// `outputs`. Pure; the menu uses it to mark picks the driver cannot do yet (the App drives the pad then).
+    static func remapLimit(_ mapping: ControlMapping) -> String? {
+        guard !mapping.outputs.isEmpty else { return nil }
+        for output in PadOutput.allCases {
+            let sources = mapping.sources(of: output)
+            if output.isTrigger {
+                for source in sources where mapping.triggerFeed(from: source, into: output) == .fullScale {
+                    return "\(source) sends \(label(output)): a button cannot pull a trigger in this driver version"
+                }
+                if sources.count > 1 {
+                    return "\(count(sources.count)) controls send \(label(output)): \(sources.joined(separator: ", "))"
+                }
+            } else if sources.count > 2 {
+                return "\(count(sources.count)) buttons send \(label(output)): \(sources.joined(separator: ", "))"
+            }
+        }
+        return nil
+    }
+
+    private static func label(_ o: PadOutput) -> String {
+        switch o {
+        case .dpad_up: return "D-pad up"
+        case .dpad_right: return "D-pad right"
+        case .dpad_down: return "D-pad down"
+        case .dpad_left: return "D-pad left"
+        case .guide: return "Guide"
+        default: return o.rawValue.uppercased()
+        }
+    }
+
+    private static func count(_ n: Int) -> String {
+        let words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"]
+        return n < words.count ? words[n] : String(n)
+    }
+
     static func table(_ m: ControlMapping, identity: PadIdentity, spec: [UInt8], revision: UInt32,
                       axisDeadband: Double = 0.002, triggerDeadband: Double = 0.002) throws -> GDHMTable {
+        if let why = remapLimit(m) { throw Failure.unsupported(why) }
         guard supportsLayout(of: identity) else {
             throw Failure.unsupported("pad layout \(identity.id) has no GDHM placements")
         }
@@ -170,8 +212,11 @@ enum MapBlobEncoder {
         t.reports = xboxBT16Reports
         t.placements = xboxBT16Placements
 
-        for (item, cid) in buttonControls.enumerated() {
-            t.buttons.append(try buttonRule(item: UInt8(item), control: cid, m))
+        // Per item: one rule per source, the default owner first (so an un-remapped mapping gives exactly one rule per item).
+        for (item, output) in buttonOutputs.enumerated() {
+            for cid in m.sources(of: output) {
+                t.buttons.append(try buttonRule(item: UInt8(item), control: cid, m))
+            }
         }
         for (stickIndex, sid) in stickControls.enumerated() {
             let s = m.sticks[sid]
@@ -179,9 +224,20 @@ enum MapBlobEncoder {
                 t.axes.append(try axisRule(stick: UInt8(stickIndex), component: UInt8(component), binding, in: s, control: sid))
             }
         }
-        for (i, cid) in triggerControls.enumerated() {
+        for (i, output) in triggerOutputs.enumerated() {
             var field = UInt8(GDX_FIELD_NONE)
-            if case .trigger(let name)? = m.buttons[cid], let f = triggerFields.firstIndex(of: name) { field = UInt8(f) }
+            let sources = m.sources(of: output)
+            if sources.count > 1 { throw Failure.unsupported("\(sources.joined(separator: ", ")) all send \(label(output))") }
+            if let source = sources.first {
+                switch m.triggerFeed(from: source, into: output) {
+                case .nothing:
+                    break
+                case .analog(let name):
+                    if let f = triggerFields.firstIndex(of: name) { field = UInt8(f) }
+                case .fullScale:
+                    throw Failure.unsupported("\(source) sends \(label(output)): a button cannot pull a trigger in this driver version")
+                }
+            }
             t.triggers.append(.init(item: UInt8(GDX_ITEM_LT) + UInt8(i), field: field))
         }
         return t

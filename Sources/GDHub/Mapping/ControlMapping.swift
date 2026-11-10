@@ -287,6 +287,8 @@ extension ControlMapping {
         "dpad_up", "dpad_right", "dpad_down", "dpad_left", "start", "profile", "g1", "g2", "g3", "g4", "g5",
     ]
 
+    private static let remappableSet = Set(remappableIDs)
+
     /// Controls on which `ControlOutput.builtIn` (the volume function) is valid.
     private static let builtInIDs: Set<String> = ["g2", "g3", "g4"]
 
@@ -296,14 +298,14 @@ extension ControlMapping {
         case "g2", "g3", "g4": return .builtIn
         case "guide": return .nothing
         default:
-            if Self.remappableIDs.contains(id), let p = PadOutput(rawValue: id) { return .pad(p) }
+            if Self.remappableSet.contains(id), let p = PadOutput(rawValue: id) { return .pad(p) }
             return .nothing
         }
     }
 
     func effectiveOutput(_ id: String) -> ControlOutput {
-        guard Self.remappableIDs.contains(id) else { return defaultOutput(id) }
-        return outputs[id] ?? defaultOutput(id)
+        if let o = outputs[id], Self.remappableSet.contains(id) { return o }
+        return defaultOutput(id)
     }
 
     func isRemapped(_ id: String) -> Bool { outputs[id] != nil }
@@ -318,10 +320,48 @@ extension ControlMapping {
 
     /// Controls that currently send `item`: the default owner first (for Guide that is "start"), then the rest in
     /// `remappableIDs` order. The single source of truth for the mapper, the encoder, the menu and the lighting.
-    func sources(of item: PadOutput) -> [String] {
-        let all = Self.remappableIDs.filter { effectiveOutput($0) == .pad(item) }
-        guard let owner = all.first(where: { defaultOutput($0) == .pad(item) }) else { return all }
-        return [owner] + all.filter { $0 != owner }
+    func sources(of item: PadOutput) -> [String] { sourcesByOutput()[item] ?? [] }
+
+    /// `sources(of:)` for every pad output in one pass (the mapper needs all of them for every frame). Outputs nobody
+    /// sends are absent.
+    func sourcesByOutput() -> [PadOutput: [String]] {
+        // No remaps (the common case): the default owners alone.
+        if outputs.isEmpty { return Self.defaultSources }
+        var all: [PadOutput: [String]] = [:]
+        for id in Self.remappableIDs {
+            guard case .pad(let p) = effectiveOutput(id) else { continue }
+            if defaultOutput(id) == .pad(p) { all[p, default: []].insert(id, at: 0) }     // the default owner goes first
+            else { all[p, default: []].append(id) }
+        }
+        return all
+    }
+
+    /// Each pad output with the control whose default output it is, derived from `defaultOutput` (not a second table).
+    private static let defaultSources: [PadOutput: [String]] = {
+        let m = ControlMapping()
+        var owners: [PadOutput: [String]] = [:]
+        for id in remappableIDs {
+            if case .pad(let p) = m.defaultOutput(id), owners[p] == nil { owners[p] = [id] }
+        }
+        return owners
+    }()
+
+    /// What one source adds to a trigger output (`lt` / `rt`). The single rule the mapper, the encoder and the menu share.
+    enum TriggerFeed: Equatable {
+        /// Adds nothing: the default owner of this trigger while its learned binding is not a trigger field (an
+        /// un-remapped `lt` learned as a button sends nothing, as before remaps existed).
+        case nothing
+        /// Adds the analog value of this physical trigger field ("lt" or "rt"): the source's learned binding is a trigger.
+        case analog(String)
+        /// Adds full scale while the source is held (`isActive`): an explicitly remapped button.
+        case fullScale
+    }
+
+    /// How `source` feeds the pad trigger `trigger` (`.lt` or `.rt`). Judged by the learned binding, not by the control id.
+    /// The default owner contributes exactly what it did before remaps (`triggerValue ?? 0`).
+    func triggerFeed(from source: String, into trigger: PadOutput) -> TriggerFeed {
+        if case .trigger(let field)? = buttons[source] { return .analog(field) }
+        return defaultOutput(source) == .pad(trigger) ? .nothing : .fullScale
     }
 
     /// Learn guard (remap plan): in a single-control learn, an assignment of a whole control with a binding and no

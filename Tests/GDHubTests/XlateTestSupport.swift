@@ -134,6 +134,49 @@ enum XlateFixtures {
         return m
     }
 
+    // MARK: Random remaps (outputs)
+
+    /// `m` plus a few random remaps, drawn from ITS OWN generator (`seed`), never from the stream `randomMapping` uses, so
+    /// the existing seeded mappings stay what they were. With `expressibleOnly` (the default) a pick that GDHM v1 could not
+    /// say (`MapBlobEncoder.remapLimit`) is dropped, so every result encodes; without it the result can be anything.
+    /// About a third of the picks involve a trigger, and now and then a swap of two controls is made.
+    static func randomOutputs(_ m: ControlMapping, _ seed: UInt64, expressibleOnly: Bool = true) -> ControlMapping {
+        var rng = SplitMix64(seed: seed)
+        var out = m
+        let ids = ControlMapping.remappableIDs
+        func output(for id: String) -> ControlOutput {
+            switch rng.int(0...9) {
+            case 0: return .nothing
+            case 1 where id == "g2" || id == "g3" || id == "g4": return .builtIn
+            case 2, 3, 4: return .pad(rng.pick([.lt, .rt]))
+            default: return .pad(rng.pick(PadOutput.allCases))
+            }
+        }
+        func apply(_ picks: [(String, ControlOutput)]) {
+            var candidate = out
+            for (id, o) in picks { candidate.setOutput(o, for: id) }
+            if !expressibleOnly || MapBlobEncoder.remapLimit(candidate) == nil { out = candidate }
+        }
+        for _ in 0..<rng.int(1...6) {
+            switch rng.int(0...9) {
+            case 0:                                                      // a swap
+                let a = rng.pick(ids), b = rng.pick(ids)
+                if a != b, case .pad(let pa) = out.effectiveOutput(a), case .pad(let pb) = out.effectiveOutput(b) {
+                    apply([(a, .pad(pb)), (b, .pad(pa))])
+                }
+            case 1, 2, 3:                                                // a trigger control, or a trigger output
+                let id = rng.chance(50) ? rng.pick(["lt", "rt"]) : rng.pick(ids)
+                apply([(id, output(for: id))])
+            case 4 where rng.chance(50):                                 // the LT/RT swap, or one trigger moved to the other
+                apply(rng.chance(50) ? [("lt", .pad(.rt)), ("rt", .pad(.lt))] : [("lt", .pad(.rt)), ("rt", .nothing)])
+            default:
+                let id = rng.pick(ids)
+                apply([(id, output(for: id))])
+            }
+        }
+        return out
+    }
+
     // MARK: Random frames
 
     static func randomRaw(_ rng: inout SplitMix64) -> [UInt8] {

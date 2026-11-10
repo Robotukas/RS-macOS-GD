@@ -15,6 +15,28 @@ final class GDHubXlateParityTests: XCTestCase {
             + (0..<3).map { Case(name: "random\($0)", mapping: F.randomMapping(&rng)) }
     }
 
+    /// Remapped mappings from their own seeds (the generator that draws them never touches the stream above): the hand-picked
+    /// shapes of the plan first, then random expressible ones on top of the factory, the live-shaped and random mappings.
+    private func remappedMappings() -> [Case] {
+        func r(_ picks: [(String, ControlOutput)]) -> ControlMapping {
+            var m = ControlMapping.default
+            for (id, o) in picks { m.setOutput(o, for: id) }
+            return m
+        }
+        var rng = SplitMix64(seed: 0x7265_6D61_70)
+        var out = [Case(name: "g1->y", mapping: r([("g1", .pad(.y))])),
+                   Case(name: "a<->b", mapping: r([("a", .pad(.b)), ("b", .pad(.a))])),
+                   Case(name: "lt<->rt", mapping: r([("lt", .pad(.rt)), ("rt", .pad(.lt))])),
+                   Case(name: "lt->a,rt->nothing", mapping: r([("lt", .pad(.a)), ("rt", .nothing)])),
+                   Case(name: "lt->rt,rt->nothing", mapping: r([("lt", .pad(.rt)), ("rt", .nothing)])),
+                   Case(name: "dpad+g5", mapping: r([("g5", .pad(.dpad_down)), ("g4", .pad(.dpad_up)), ("start", .pad(.y))]))]
+        for i in 0..<10 {
+            let base = [ControlMapping.default, F.liveShaped, F.randomMapping(&rng)][i % 3]
+            out.append(Case(name: "remap\(i)", mapping: F.randomOutputs(base, 0x5EED_0000 + UInt64(i))))
+        }
+        return out
+    }
+
     /// One frame through both pipelines; mismatches go to `log`.
     private func check(_ core: XlateCore, _ oracle: SwiftOracle, _ raw: [UInt8], _ log: MismatchLog, _ tag: @autoclosure () -> String) {
         let want = oracle.state(raw)
@@ -35,9 +57,17 @@ final class GDHubXlateParityTests: XCTestCase {
     // MARK: Buttons, hat, physical bits
 
     func testEveryButtonBitAndHatValue() throws {
+        try sweepButtonsAndHats(standardMappings())
+    }
+
+    func testEveryButtonBitAndHatValueOnRemappedMappings() throws {
+        try sweepButtonsAndHats(remappedMappings())
+    }
+
+    private func sweepButtonsAndHats(_ cases: [Case]) throws {
         let log = MismatchLog()
         var frames = 0
-        for c in standardMappings() {
+        for c in cases {
             let core = try F.core(c.mapping), oracle = SwiftOracle(mapping: c.mapping)
             var buttonSets = [0, 0x7ffff] + (0..<19).map { 1 << $0 }
             buttonSets += (0..<18).map { 3 << $0 }                                  // neighbouring pairs
@@ -149,6 +179,35 @@ final class GDHubXlateParityTests: XCTestCase {
 
     // MARK: Triggers
 
+    /// Every raw trigger value through remaps that move, swap, drop or re-source LT and RT, on bindings that make a trigger
+    /// control analog, digital or unbound.
+    func testEveryTriggerRawValueUnderTriggerRemaps() throws {
+        let log = MismatchLog()
+        let shapes: [[(String, ControlOutput)]] = [
+            [("lt", .pad(.rt)), ("rt", .pad(.lt))], [("lt", .pad(.rt)), ("rt", .nothing)], [("lt", .pad(.a))],
+            [("rt", .pad(.lt)), ("lt", .pad(.x))], [("lt", .nothing), ("rt", .pad(.y)), ("a", .pad(.b))], [("rt", .pad(.rb))],
+        ]
+        let bindings: [(Binding?, Binding?)] = [(.trigger("lt"), .trigger("rt")), (.trigger("rt"), .trigger("lt")),
+                                                (nil, .trigger("lt")), (.trigger("zz"), .button(2)), (.trigger("lt"), .trigger("lt"))]
+        for shape in shapes {
+            for (lt, rt) in bindings {
+                var m = ControlMapping.default
+                m.buttons["lt"] = lt; m.buttons["rt"] = rt
+                for (id, o) in shape { m.setOutput(o, for: id) }
+                guard MapBlobEncoder.remapLimit(m) == nil else { continue }
+                let core = try F.core(m), oracle = SwiftOracle(mapping: m)
+                for v in 0...1023 {
+                    for w in [v, 1023 - v, (v * 7) % 1024] {
+                        var b = [UInt8](repeating: 0, count: 16); b[0] = 6
+                        F.setTriggers(&b, v, w, hat: 8)
+                        check(core, oracle, b, log, "trigger \(v)/\(w) \(shape.map { "\($0.0)=\($0.1.string)" })")
+                    }
+                }
+            }
+        }
+        log.assertNone("triggers under remaps")
+    }
+
     func testEveryTriggerRawValueAndBinding() throws {
         let log = MismatchLog()
         let bindings: [(Binding?, Binding?)] = [(.trigger("lt"), .trigger("rt")), (.trigger("rt"), .trigger("lt")),
@@ -238,6 +297,25 @@ final class GDHubXlateParityTests: XCTestCase {
         log.assertNone("OR'ed sources (\(frames) frames)")
     }
 
+    /// The two-source rule set the encoder now writes itself (not glued from two mappings) against the oracle, with sources
+    /// that carry physical masks, hats, triggers and axes.
+    func testEncoderWrittenTwoSourceItemsOnRandomBindings() throws {
+        var rng = SplitMix64(seed: 0x4F52_4532)
+        let log = MismatchLog()
+        var frames = 0
+        for i in 0..<12 {
+            var m = F.randomMapping(&rng)
+            for id in ["g1", "g2", "g3", "g4", "g5", "profile"] {            // random bindings on the extra keys too
+                m.buttons[id] = [.button(rng.int(0...21)), .hat(UInt8(rng.int(0...9))), .trigger("rt"), .axis("x", sign: -1)][rng.int(0...3)]
+                if rng.chance(25) { m.physicalBits[id] = UInt16(1) << UInt16(rng.int(0...12)) }
+            }
+            m = F.randomOutputs(m, 0xE0E0 + UInt64(i))
+            let core = try F.core(m), oracle = SwiftOracle(mapping: m)
+            for _ in 0..<20_000 { check(core, oracle, F.randomRaw(&rng), log, "two-source \(i)"); frames += 1 }
+        }
+        log.assertNone("encoder-written OR'ed sources (\(frames) frames)")
+    }
+
     // MARK: Bad frames
 
     func testWrongLengthsAndReportIdsAreRejectedLikeParse() throws {
@@ -312,6 +390,21 @@ final class GDHubXlateParityTests: XCTestCase {
 
     /// 10^6 seeded random frames: 200,000 on each of the factory mapping, the live-shaped one and three random learned
     /// mappings.
+    /// 14 remapped mappings from their own seeds, 50,000 seeded random frames each.
+    func testSeededRandomFramesOnRemappedMappings() throws {
+        let log = MismatchLog()
+        var rng = SplitMix64(seed: 0x5EED_0007)
+        var frames = 0
+        for c in remappedMappings() {
+            let core = try F.core(c.mapping), oracle = SwiftOracle(mapping: c.mapping)
+            for _ in 0..<50_000 {
+                check(core, oracle, F.randomRaw(&rng), log, c.name)
+                frames += 1
+            }
+        }
+        log.assertNone("random frames on remapped mappings (\(frames))")
+    }
+
     func testOneMillionSeededRandomFrames() throws {
         let log = MismatchLog()
         var rng = SplitMix64(seed: 0x5EED_0006)

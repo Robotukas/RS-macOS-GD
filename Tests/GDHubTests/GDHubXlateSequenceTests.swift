@@ -130,6 +130,25 @@ final class GDHubXlateSequenceTests: XCTestCase {
         }
     }
 
+    /// Remapped mappings (the plan's shapes, then random expressible ones on their own seeds) through the Swift sink, the C
+    /// sink and gdx_step.
+    func testRandomWalkOnRemappedMappings() throws {
+        var shapes: [(String, ControlMapping)] = []
+        func r(_ picks: [(String, ControlOutput)]) -> ControlMapping {
+            var m = ControlMapping.default
+            for (id, o) in picks { m.setOutput(o, for: id) }
+            return m
+        }
+        shapes.append(("g1->y", r([("g1", .pad(.y))])))
+        shapes.append(("a<->b", r([("a", .pad(.b)), ("b", .pad(.a))])))
+        shapes.append(("lt<->rt", r([("lt", .pad(.rt)), ("rt", .pad(.lt))])))
+        shapes.append(("lt->a", r([("lt", .pad(.a))])))
+        for i in 0..<4 { shapes.append(("remap\(i)", F.randomOutputs(i % 2 == 0 ? .default : F.liveShaped, 0x5EE0 + UInt64(i)))) }
+        for (i, s) in shapes.enumerated() {
+            try compare(s.1, frames: 20_000, seed: 0x5E20 + UInt64(i), s.0)
+        }
+    }
+
     /// Hand-built sequences around the hysteresis threshold and the end stop.
     func testHysteresisAndEndStopSequences() throws {
         var m = ControlMapping.default

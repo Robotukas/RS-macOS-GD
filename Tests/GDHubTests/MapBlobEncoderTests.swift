@@ -185,4 +185,144 @@ final class MapBlobEncoderTests: XCTestCase {
         m.sticks["a"] = StickBinding(horizontal: nil, vertical: nil, ranges: nil); m.buttons["a"] = nil
         XCTAssertEqual(try decoded(try XCTUnwrap(blob(m))).table.buttons[0].kind, UInt8(GDX_KIND_NONE))
     }
+
+    // MARK: Remaps (outputs)
+
+    private func remapped(_ picks: [(String, ControlOutput)]) -> ControlMapping { remapped(.default, picks) }
+
+    private func remapped(_ base: ControlMapping, _ picks: [(String, ControlOutput)]) -> ControlMapping {
+        var m = base
+        for (id, o) in picks { m.setOutput(o, for: id) }
+        return m
+    }
+
+    func testTwoSourcesOnOnePadButtonEncodeAndValidate() throws {
+        let m = remapped([("g1", .pad(.y))])
+        XCTAssertNil(MapBlobEncoder.remapLimit(m))
+        let b = try XCTUnwrap(blob(m))
+        XCTAssertEqual(F.validate(b), GDX_OK)
+        let t = try decoded(b).table
+        XCTAssertEqual(t.buttons.filter { $0.item == 3 }, [.init(item: 3, kind: UInt8(GDX_KIND_BUTTON), arg: 3),
+                                                         .init(item: 3, kind: UInt8(GDX_KIND_BUTTON), arg: 11)], "Y by Y, then G1 (button 12)")
+        XCTAssertEqual(t.buttons.count, 16)
+        XCTAssertEqual(t.triggers, [.init(item: 20, field: 0), .init(item: 21, field: 1)])
+    }
+
+    func testAControlSentNowhereLeavesItsItemWithoutARule() throws {
+        let m = remapped([("a", .nothing), ("start", .pad(.y))])
+        let t = try decoded(try XCTUnwrap(blob(m))).table
+        XCTAssertFalse(t.buttons.contains { $0.item == 0 }, "A has no source")
+        XCTAssertFalse(t.buttons.contains { $0.item == 10 }, "Guide has no source")
+        XCTAssertEqual(t.buttons.filter { $0.item == 3 }.map(\.arg), [3, 10], "Y by Y, then Start (button 11)")
+    }
+
+    func testThreeSourcesAreUnsupportedWithTheirNames() {
+        let m = remapped([("g1", .pad(.y)), ("g2", .pad(.y))])
+        XCTAssertEqual(MapBlobEncoder.remapLimit(m), "three buttons send Y: y, g1, g2")
+        XCTAssertEqual(reason(m), "three buttons send Y: y, g1, g2")
+        // Moving the original owner away makes it two again.
+        XCTAssertNil(MapBlobEncoder.remapLimit(remapped(m, [("y", .nothing)])))
+    }
+
+    func testAButtonSentToATriggerIsUnsupported() {
+        let m = remapped([("g1", .pad(.lt))])
+        XCTAssertEqual(reason(m), "g1 sends LT: a button cannot pull a trigger in this driver version")
+        // Also when LT itself is gone: the button is the only source and still cannot pull a trigger.
+        XCTAssertEqual(reason(remapped([("lt", .nothing), ("g1", .pad(.lt))])),
+                       "g1 sends LT: a button cannot pull a trigger in this driver version")
+    }
+
+    func testLTSentToRTAloneIsUnsupportedButTheSwapAndTheMoveAwayAreFine() throws {
+        XCTAssertEqual(reason(remapped([("lt", .pad(.rt))])), "two controls send RT: rt, lt")
+        let swap = remapped([("lt", .pad(.rt)), ("rt", .pad(.lt))])
+        XCTAssertNil(MapBlobEncoder.remapLimit(swap))
+        let b = try XCTUnwrap(blob(swap))
+        XCTAssertEqual(F.validate(b), GDX_OK)
+        XCTAssertEqual(try decoded(b).table.triggers, [.init(item: 20, field: 1), .init(item: 21, field: 0)], "LT reads rt, RT reads lt")
+        let moved = remapped([("lt", .pad(.rt)), ("rt", .nothing)])
+        let t = try decoded(try XCTUnwrap(blob(moved))).table
+        XCTAssertEqual(t.triggers, [.init(item: 20, field: UInt8(GDX_FIELD_NONE)), .init(item: 21, field: 0)])
+    }
+
+    func testATriggerSentToAButtonOrToNothingEncodes() throws {
+        let toA = remapped([("lt", .pad(.a))])
+        let t = try decoded(try XCTUnwrap(blob(toA))).table
+        XCTAssertEqual(t.buttons.filter { $0.item == 0 }, [.init(item: 0, kind: UInt8(GDX_KIND_BUTTON), arg: 0),
+                                                         .init(item: 0, kind: UInt8(GDX_KIND_TRIGGER_GT), arg: 0)])
+        XCTAssertEqual(t.triggers[0], .init(item: 20, field: UInt8(GDX_FIELD_NONE)))
+        XCTAssertNotNil(blob(remapped([("lt", .nothing)])))
+    }
+
+    func testNoRemapLimitWithoutRemaps() {
+        XCTAssertNil(MapBlobEncoder.remapLimit(.default))
+        XCTAssertNil(MapBlobEncoder.remapLimit(ControlMapping()))
+        var rng = SplitMix64(seed: 0x11AA)
+        for _ in 0..<200 { XCTAssertNil(MapBlobEncoder.remapLimit(F.randomMapping(&rng))) }
+    }
+
+    func testRemapLimitIsNilExactlyWhenEncodingSucceeds() throws {
+        var accepted = 0, refused = 0
+        var reasons = Set<String>()
+        for i in 0..<600 {
+            let base = i % 2 == 0 ? ControlMapping.default : F.liveShaped
+            let m = F.randomOutputs(base, 0xA11C_E000 + UInt64(i), expressibleOnly: false)
+            let limit = MapBlobEncoder.remapLimit(m)
+            switch MapBlobEncoder.encode(m, identity: F.identity, spec: F.spec, revision: 1) {
+            case .blob(let b):
+                XCTAssertNil(limit, "mapping \(i)")
+                XCTAssertEqual(F.validate(b), GDX_OK, "mapping \(i)")
+                accepted += 1
+            case .unsupported(let why):
+                XCTAssertEqual(limit, why, "mapping \(i)")
+                for kind in ["buttons send", "cannot pull a trigger", "controls send"] where why.contains(kind) { reasons.insert(kind) }
+                refused += 1
+            }
+        }
+        XCTAssertGreaterThan(accepted, 100); XCTAssertGreaterThan(refused, 30)
+        XCTAssertEqual(reasons.count, 3, "several kinds of limit were hit: \(reasons)")
+    }
+
+    func testExpressibleRandomOutputsAlwaysEncode() throws {
+        var remappedCount = 0
+        for i in 0..<400 {
+            var rng = SplitMix64(seed: 0xB0B0 + UInt64(i))
+            let m = F.randomOutputs(F.randomMapping(&rng), 0xC0DE_0000 + UInt64(i))
+            let b = try XCTUnwrap(blob(m), "mapping \(i): \(String(describing: MapBlobEncoder.remapLimit(m)))")
+            XCTAssertEqual(F.validate(b), GDX_OK)
+            if !m.outputs.isEmpty { remappedCount += 1 }
+        }
+        XCTAssertGreaterThan(remappedCount, 300)
+    }
+
+    func testRandomOutputsUseTheirOwnSeedAndLeaveTheMappingStreamAlone() {
+        var a = SplitMix64(seed: 99), b = SplitMix64(seed: 99)
+        let m1 = F.randomMapping(&a)
+        _ = F.randomOutputs(.default, 5); _ = F.randomOutputs(.default, 6)
+        XCTAssertEqual(F.randomMapping(&b), m1)
+        XCTAssertEqual(F.randomOutputs(.default, 5), F.randomOutputs(.default, 5), "deterministic")
+        XCTAssertEqual(a.next(), b.next())
+    }
+
+    func testAnUnRemappedMappingWithLtLearnedAsAButtonEncodesLikeBefore() throws {
+        var m = ControlMapping.default
+        m.buttons["lt"] = .button(5)
+        let t = try decoded(try XCTUnwrap(blob(m))).table
+        XCTAssertEqual(t.triggers, [.init(item: 20, field: UInt8(GDX_FIELD_NONE)), .init(item: 21, field: 1)], "LT sends nothing, as before")
+        XCTAssertEqual(t.buttons.count, 15)
+        // Byte-identical to what the pre-remap encoder wrote: its single trigger rule was "field of lt's trigger binding, else none".
+        var legacy = try MapBlobEncoder.table(.default, identity: F.identity, spec: F.spec, revision: 1)
+        legacy.triggers[0].field = UInt8(GDX_FIELD_NONE)
+        XCTAssertEqual(blob(m), legacy.serialize())
+        // A stray entry equal to the default changes nothing either.
+        var stray = m
+        stray.outputs["a"] = .pad(.a)
+        XCTAssertEqual(blob(stray), blob(m))
+    }
+
+    func testFactoryBlobIsUnchangedByTheRemapSupport() throws {
+        // 15 rules, one per item, in item order, each from the item's own control; two triggers.
+        let t = try MapBlobEncoder.table(.default, identity: F.identity, spec: F.spec, revision: 1)
+        XCTAssertEqual(t.buttons.map(\.item), Array(0..<15).map { UInt8($0) })
+        XCTAssertEqual(t.buttons.count, 15)
+    }
 }
