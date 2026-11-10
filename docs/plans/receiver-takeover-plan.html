@@ -199,6 +199,7 @@ details.toc a{text-decoration:none}
 <li><a href="#t5-results-2026-11-09-passed-production-dext-build-23">T5 results (2026-11-09): passed (production dext build 23)</a></li>
 <li><a href="#t6-results-2026-11-09-passed-app-only-dext-build-23-unchanged">T6 results (2026-11-09): passed (app only; dext build 23 unchanged)</a></li>
 <li><a href="#t7-results-2026-11-09-passed-production-dext-build-24-developer-mode-built-the-same-evening-to-run-the-checks">T7 results (2026-11-09): passed (production dext build 24; Developer mode built the same evening to run the checks)</a></li>
+<li><a href="#t8-gate-result-2026-11-10-0049-dext-build-24-all-rows-pass-except-the-g4b-stick-onset-margin-default-stays-engine-for-now">T8 gate result (2026-11-10 00:49, dext build 24): all rows pass except the G4b stick-onset margin; default stays engine for now</a></li>
 <li><a href="#appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</a></li>
 <li><a href="#review-resolution">Review resolution</a></li>
 </ul>
@@ -3563,6 +3564,114 @@ The last line must be `status is now on` or `Game mode enabled`.
 </tbody>
 </table></div>
 <p><strong>Not verified (carried to T8/T9):</strong> S1 24 h soak in LIVE; in-app GUI fallback (engine uninstalled, GUI drives); a GUI learn edit while LIVE; controller sleep → silence neutral ≤ 300 ms (needs the 5-min timer and patience; the off/on path covers the stop neutral); A21 logout / fast user switching; A22 a seizing reader. <code>inputPath</code> is back on <code>engine</code> until T8 decides the default.</p>
+<hr />
+<h2 id="t8-gate-result-2026-11-10-0049-dext-build-24-all-rows-pass-except-the-g4b-stick-onset-margin-default-stays-engine-for-now">T8 gate result (2026-11-10 00:49, dext build 24): all rows pass except the G4b stick-onset margin; default stays <code>engine</code> for now</h2>
+<p>Measured with the Developer-mode template <code>t8-latency</code> (App pass then Driver pass, same session, same owner, 1 min apart; reports <code>dev-runs/2026-11-10T00-49-19_{engine,driver}_t8-latency.json</code>, <code>dev-run-compare.py</code> gate line), the dext meters from the LIVE session (<code>dext-stream-T8.log</code>) and the engine's counter line.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Criterion</th>
+<th>Measured</th>
+<th>Pass</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G1</td>
+<td>dext <code>total</code> p50</td>
+<td>100–125 µs</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>dext <code>total</code> p99</td>
+<td>225–300 µs</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>worst <code>total</code> max</td>
+<td>597 µs</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G4a</td>
+<td>driver digital→pad p50</td>
+<td><strong>0.132 ms</strong> (n=64: A ×20, B ×44 edges)</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G4b</td>
+<td>driver vs App, same session: digital p50 and stick-onset p50 both ≥ 0.2 ms lower</td>
+<td>digital 0.412 → 0.132 ms (<strong>−0.281</strong>) ✓; stick onset 0.256 → 0.118 ms (<strong>−0.138</strong>, n=11) ✗</td>
+<td><strong>✗ on the stick margin</strong></td>
+</tr>
+<tr>
+<td>G5g</td>
+<td>tapPosts / changed frames</td>
+<td>loss ratio 1.00 on every step of every template run (5 of 5 here, 31 of 31 in <code>full</code>)</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G6</td>
+<td>parity mismatches; framesBad</td>
+<td>0; frames=2,255,714 all r06 (framesBad not counted separately; noMap=8 at start-up only)</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G7</td>
+<td>poolMiss + slowMap</td>
+<td>poolMiss=9 of 2,255,714 frames (0.0004 %)</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G8</td>
+<td>rejected posts outside drills</td>
+<td>rej=0, err=0</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G9</td>
+<td>neutral after the stream stops ≤ 300 ms</td>
+<td>not timed (controller off/on and Mac sleep passed functionally; the silence neutral was not clocked)</td>
+<td>not measured</td>
+</tr>
+<tr>
+<td>G10</td>
+<td>stall drill → fallback</td>
+<td>296 ms</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G11</td>
+<td><code>hop</code> p50</td>
+<td>1 µs (p99 3)</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>G12</td>
+<td><code>occ</code> p99</td>
+<td>50–75 µs</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>PC1</td>
+<td>engine frame rate</td>
+<td>962–964 Hz</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>PC3</td>
+<td>pad count</td>
+<td>1</td>
+<td>✓</td>
+</tr>
+</tbody>
+</table></div>
+<p>Per-step latency (receiver edge → pad report, kernel timestamps), App / Driver p50: flick onsets 0.256 / 0.118 ms; A taps 0.410 / 0.105; B taps 0.412 / 0.132; RT pulls 0.338 / 0.123; circle onset 0.332 / 0.048. p99 App 0.33–0.81 ms, Driver 0.05–0.26 ms. No edge went unanswered on either path.</p>
+<p><strong>Decision (R15):</strong> the driver is faster on every row and every step, but G4b asks for ≥ 0.2 ms on the stick onset too and the measured margin is 0.14 ms over 11 onsets — the App path is already quick there since T1/T3, so the 0.2 ms bar was set against an older baseline. Rule is rule: <code>inputPath</code> stays <code>engine</code> by default. To settle it: re-run <code>t8-latency</code> with a 30-flick step (template variant) for a tighter stick-onset median, then decide; the owner may also simply choose Driver in the menu (it is verified safe by T7).</p>
+<p><strong>Play test:</strong> not valid yet. The owner played on Shadow PC with the Slipstream receiver on Shadow's USB-forwarding list, so the receiver left the Mac for the whole session (engine: <code>controller interface down</code> 23:42:49 → <code>up</code> 23:50:55, zero frames) and neither path was in the loop; the lag felt was Shadow's USB tunnel plus streaming. Redo after un-forwarding the receiver in the Shadow client (Shadow then uses GDHub's pad as an "Xbox 360 Controller").</p>
 <hr />
 <h2 id="appendix-a-judges-mustfix-items-and-where-each-is-handled">Appendix A: Judges' mustFix items and where each is handled</h2>
 <div class="tw"><table>

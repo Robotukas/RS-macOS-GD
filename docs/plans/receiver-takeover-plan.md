@@ -1731,6 +1731,36 @@ Tests: 478.
 
 ---
 
+## T8 gate result (2026-11-10 00:49, dext build 24): all rows pass except the G4b stick-onset margin; default stays `engine` for now
+
+Measured with the Developer-mode template `t8-latency` (App pass then Driver pass, same session, same owner, 1 min apart; reports `dev-runs/2026-11-10T00-49-19_{engine,driver}_t8-latency.json`, `dev-run-compare.py` gate line), the dext meters from the LIVE session (`dext-stream-T8.log`) and the engine's counter line.
+
+| # | Criterion | Measured | Pass |
+|---|---|---|---|
+| G1 | dext `total` p50 | 100–125 µs | ✓ |
+| G2 | dext `total` p99 | 225–300 µs | ✓ |
+| G3 | worst `total` max | 597 µs | ✓ |
+| G4a | driver digital→pad p50 | **0.132 ms** (n=64: A ×20, B ×44 edges) | ✓ |
+| G4b | driver vs App, same session: digital p50 and stick-onset p50 both ≥ 0.2 ms lower | digital 0.412 → 0.132 ms (**−0.281**) ✓; stick onset 0.256 → 0.118 ms (**−0.138**, n=11) ✗ | **✗ on the stick margin** |
+| G5g | tapPosts / changed frames | loss ratio 1.00 on every step of every template run (5 of 5 here, 31 of 31 in `full`) | ✓ |
+| G6 | parity mismatches; framesBad | 0; frames=2,255,714 all r06 (framesBad not counted separately; noMap=8 at start-up only) | ✓ |
+| G7 | poolMiss + slowMap | poolMiss=9 of 2,255,714 frames (0.0004 %) | ✓ |
+| G8 | rejected posts outside drills | rej=0, err=0 | ✓ |
+| G9 | neutral after the stream stops ≤ 300 ms | not timed (controller off/on and Mac sleep passed functionally; the silence neutral was not clocked) | not measured |
+| G10 | stall drill → fallback | 296 ms | ✓ |
+| G11 | `hop` p50 | 1 µs (p99 3) | ✓ |
+| G12 | `occ` p99 | 50–75 µs | ✓ |
+| PC1 | engine frame rate | 962–964 Hz | ✓ |
+| PC3 | pad count | 1 | ✓ |
+
+Per-step latency (receiver edge → pad report, kernel timestamps), App / Driver p50: flick onsets 0.256 / 0.118 ms; A taps 0.410 / 0.105; B taps 0.412 / 0.132; RT pulls 0.338 / 0.123; circle onset 0.332 / 0.048. p99 App 0.33–0.81 ms, Driver 0.05–0.26 ms. No edge went unanswered on either path.
+
+**Decision (R15):** the driver is faster on every row and every step, but G4b asks for ≥ 0.2 ms on the stick onset too and the measured margin is 0.14 ms over 11 onsets — the App path is already quick there since T1/T3, so the 0.2 ms bar was set against an older baseline. Rule is rule: `inputPath` stays `engine` by default. To settle it: re-run `t8-latency` with a 30-flick step (template variant) for a tighter stick-onset median, then decide; the owner may also simply choose Driver in the menu (it is verified safe by T7).
+
+**Play test:** not valid yet. The owner played on Shadow PC with the Slipstream receiver on Shadow's USB-forwarding list, so the receiver left the Mac for the whole session (engine: `controller interface down` 23:42:49 → `up` 23:50:55, zero frames) and neither path was in the loop; the lag felt was Shadow's USB tunnel plus streaming. Redo after un-forwarding the receiver in the Shadow client (Shadow then uses GDHub's pad as an "Xbox 360 Controller").
+
+---
+
 ## Appendix A: Judges' mustFix items and where each is handled
 
 | Item (judge) | Where |
