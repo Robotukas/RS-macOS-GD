@@ -437,7 +437,7 @@ Before U1:
 
 1. `scripts/build-xcode.sh --check` passes on the current tree.
 2. Archive the installed app (the S4 build, which knows paddle remaps) to `~/GDHub-rollback/S7-pre/GDHub.app`. Check
-   that the archived dext's `CFBundleVersion` is 24 and its `GDHubSourceHash` equals the seeded build-24 hash: a
+   that the archived dext's `CFBundleVersion` is 24 and the archived app's `GDHubDextSourceHash` (in the app's own Info.plist: `plutil -extract GDHubDextSourceHash raw …/Contents/Info.plist`; S1 put it there so nothing under `Dext/` had to change) equals the seeded build-24 hash: a
    rollback would install unchanged build-24 sources.
 3. Copy the layout and mapping files; check that no `envision-pro-layout.before-edit.json` exists; Parallels off,
    Shadow not forwarding.
@@ -712,7 +712,8 @@ works), S7 (driver 25, the rollback path, the archive), and the test counts at e
     with the current number; the existing signature, entitlement, plist and `-ffp-contract` checks; the built app is
     deleted afterwards.
   - The build number is written only after xcodebuild and the checks succeed, so a failed build leaves it as it was.
-  - The build writes the hash into the dext's Info.plist as `GDHubSourceHash`.
+  - The build writes the hash into the app's Info.plist as `GDHubDextSourceHash` (as built in S1: a key in the dext's own
+    plist would have changed `Dext/` and the seeded hash).
   (d) Mockup v7 (with its Developer-mode part) from the S1-pre layout copy, sent in chat, copy in `docs/mockups`. Stop
   for the owner's OK; (a)–(c) do not wait for it. (e) Recorder, `record` kind, row 10, `echo-survey.py`; the "recorded"
   display only after the v7 OK. Install: archive the installed step-1 app to `~/GDHub-rollback/S1-pre/GDHub.app` (none
