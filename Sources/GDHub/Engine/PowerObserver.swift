@@ -18,12 +18,15 @@ final class PowerObserver: @unchecked Sendable {
     private let vhidQueue: DispatchQueue
     private let willSleep: () -> Void           // runs on vhidQueue
     private let didWake: () -> Void             // runs on vhidQueue
+    private let wakeOffFrame: (() -> Void)?     // runs on powerQueue, never on vhidQueue
     private var rootPort: io_connect_t = 0
     private var port: IONotificationPortRef?
     private var notifier: io_object_t = 0
 
-    init(vhidQueue: DispatchQueue, willSleep: @escaping () -> Void, didWake: @escaping () -> Void) {
+    init(vhidQueue: DispatchQueue, willSleep: @escaping () -> Void, didWake: @escaping () -> Void,
+         wakeOffFrame: (() -> Void)? = nil) {
         self.vhidQueue = vhidQueue
+        self.wakeOffFrame = wakeOffFrame
         self.willSleep = willSleep
         self.didWake = didWake
     }
@@ -64,6 +67,7 @@ final class PowerObserver: @unchecked Sendable {
             IOAllowPowerChange(rootPort, arg)
         case Self.systemHasPoweredOn:
             Self.log.notice("woke")
+            wakeOffFrame?()
             vhidQueue.async { [didWake] in didWake() }
         default:
             break

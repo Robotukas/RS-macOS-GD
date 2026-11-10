@@ -52,9 +52,13 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
             guard mapping != oldValue else { return }
             mappingRevision &+= 1
             refreshRemapCaches()
+            onMappingChange?(mapping)
             if !adoptingExternalMapping { store.save(mapping) }       // an adopted file is already on disk
         }
     }
+    /// Called after every mapping change, on the main actor. The app sets it only while this process is the volume-key
+    /// writer (in-app mode); it tells `ConsumerKeyMute` the new mapping.
+    var onMappingChange: ((ControlMapping) -> Void)?
     /// Bumped on every mapping change; lets the virtual pad feed drop duplicate frames cheaply.
     private(set) var mappingRevision = 0
     /// `mapping.sourcesByOutput()`, recomputed only when the mapping changes (the lighting needs it every frame).

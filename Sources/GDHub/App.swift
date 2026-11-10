@@ -17,6 +17,8 @@ final class AppModel: ObservableObject {
     /// Corsair "Bragi" control channel: battery readout and sleep timer.
     let control = EnvisionProControl()
     private var controlStatusSub: AnyCancellable?
+    /// The volume-key writer of in-app mode (also after a fall-back to in-app). nil while the engine, or another copy, is the owner.
+    private var volumeKeys: ConsumerKeyMute?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var routes: [ObjectIdentifier: (module: DeviceModule, usagePage: Int)] = [:]
 
@@ -105,6 +107,17 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated { driver.prepareForTermination() }
         }
         lifecycleObservers += [sleep, terminate]
+
+        // This process now owns the pad, so it is also the one writer of the volume-key switch-off (the engine, when it ran,
+        // cleared it on its way out). Called only in in-app mode and on a fall-back to it; never twice (`volumeKeys` guards).
+        guard volumeKeys == nil else { return }
+        let mute = ConsumerKeyMute()
+        volumeKeys = mute
+        mute.start(mapping: envision.mapping)
+        envision.onMappingChange = { m in mute.update(m) }
+        let clearOnQuit = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in mute.stop() }
+        lifecycleObservers.append(clearOnQuit)
     }
 }
 

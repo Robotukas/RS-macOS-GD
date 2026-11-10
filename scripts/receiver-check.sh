@@ -132,6 +132,28 @@ if d3 is not None:
     else:
         print("if3 rate: n/a (InputReportCount missing or receiver changed during sampling)")
 
+# volume-key switch-off: the receiver's Consumer service (page 0x0C). Read-only get; this script never sets anything.
+if not FIXTURE:
+    import re
+    try:
+        r = subprocess.run(["hidutil", "property", "--matching", '{"VendorID":0x1b1c,"ProductID":0x3a08,"PrimaryUsagePage":12}',
+                            "--get", "UserKeyMapping"], capture_output=True, text=True, timeout=10)
+        rows = re.split(r"(?m)^(?=[0-9a-fA-F]+\s+UserKeyMapping\b)", r.stdout)
+        found = []
+        for row in rows:
+            m = re.match(r"([0-9a-fA-F]+)\s+UserKeyMapping\s*(.*)", row, re.S)
+            if m:
+                v = " ".join(m.group(2).split())
+                found.append((m.group(1), "none" if v.replace(" ", "") in ("", "()", "(null)") else v))
+        if r.returncode != 0 or not found:
+            print("if4 UserKeyMapping: n/a (service not found)")
+        elif len(found) == 1:
+            print(f"if4 UserKeyMapping: {found[0][1]}")
+        else:
+            print("if4 UserKeyMapping: " + "; ".join(f"{i}={v}" for i, v in found))
+    except Exception as e:
+        print(f"if4 UserKeyMapping: n/a ({e})")
+
 print(f"if3-child={children.get(3, 'absent')} if4-child={children.get(4, 'absent')}")
 if EXPECT:
     ok = children.get(3) == EXPECT and children.get(4) == "AppleUserHIDEventDriver"

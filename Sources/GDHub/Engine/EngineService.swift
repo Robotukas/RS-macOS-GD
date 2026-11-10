@@ -25,6 +25,8 @@ final class EngineService: @unchecked Sendable {
     private let throttle: ThrottleCheck
     private let store = MappingStore.envisionPro
     private var watcher: MappingWatcher?
+    /// Switches off the volume function of a remapped G2-G4. Its own queue; the engine is its one writer in engine mode.
+    private let volumeKeys = ConsumerKeyMute()
     private var power: PowerObserver?
     private var signalSources: [DispatchSourceSignal] = []
     private var meterTimer: DispatchSourceTimer?
@@ -126,14 +128,17 @@ final class EngineService: @unchecked Sendable {
 
         let w = MappingWatcher(store: store, initial: core.mapping, queue: controlQueue) { [weak self] m in
             guard let self else { return }
+            self.volumeKeys.update(m)                              // enqueues on its own queue; before the frame-queue hop
             self.vhidQueue.async { self.core.setMapping(m); self.tapSupervisor.invalidateMapping() }
         }
         w.start()
         watcher = w
+        volumeKeys.start(mapping: core.mapping)                    // the engine is up: switch off the volume of mapped G2-G4
 
         let p = PowerObserver(vhidQueue: vhidQueue,
                               willSleep: { [weak self] in self?.core.neutral() },
-                              didWake: { [weak self] in self?.presence.didWake(); self?.tapSupervisor.didWake() })
+                              didWake: { [weak self] in self?.presence.didWake(); self?.tapSupervisor.didWake() },
+                              wakeOffFrame: { [weak self] in self?.volumeKeys.didWake() })
         p.start()
         power = p
     }
@@ -177,6 +182,7 @@ final class EngineService: @unchecked Sendable {
             s.setEventHandler { [weak self] in
                 guard let self else { exit(0) }
                 Self.log.notice("signal \(sig): shutting down")
+                self.volumeKeys.stop()                     // clears UserKeyMapping (waits at most 1 s); not on vhidQueue
                 self.vhidQueue.sync {
                     self.reader.stop()
                     self.tapSupervisor.shutdown()          // INERT first, then the pad is destroyed and the connection closed
