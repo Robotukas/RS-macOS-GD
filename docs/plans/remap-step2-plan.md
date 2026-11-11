@@ -1,18 +1,76 @@
 # Remap step 2: paddles and SAX by their own signal, GDHM v2 (R6 of the remap plan)
 
-Status: **plan v2 (2026-11-10): the plan review is folded in.** Made from a read-only survey of the code and docs and
-three independent designs (smallest driver change, risk first, owner first), then reviewed against the code by
-independent reviewers and verifiers. The choices between designs and between conflicting findings are listed under
-"Design choices". Before any code: the owner's answers to "Questions for the owner" (S0).
+Status: **plan v3 (2026-11-11): a new rule for hiding the controller's own button, after the survey (S2), reviewed.**
+Plan v2 was made from a read-only survey of the code and docs and three independent designs (smallest driver change,
+risk first, owner first), reviewed against the code, and answered by the owner in S0 ("OK all"). The survey failed the
+v2 gate on one real point: the controller cancels opposite D-pad directions, which the reviewed rule cannot handle. The
+owner chose "Rework the rule". Plan v3 replaces the hiding rule and everything that depends on it. It was made from three
+independent designs of a new rule (a fixed table with no state; a learned and saved table; a small state), replayed over
+the survey recording, then reviewed against the code and the recording (S2b: 33 findings, all confirmed, folded in
+below). The choices are under "Design choices". Before S3 code: the owner answers "Questions for the owner (v3)".
 Scope (remap plan, R6 row and "Not in step 1"): paddles and SAX as sources by their physical bits with the controller's
 own button hidden; GDHM v2 for three-plus sources on a button, a button sending a trigger and two sources on a trigger;
 trigger remaps checked in Developer mode; **one** driver replacement.
-Mockup: v6 (`docs/mockups/remap-buttons-v6.html`) is approved; v7 is drawn and approved in S1, before any UI code.
+Mockup: v6 (`docs/mockups/remap-buttons-v6.html`) is approved; v7 was approved during S2 (2026-11-10 21:56, "v7 OK",
+after S1 was closed); v7b (v7 with only the changes listed under "UI": v3's wordings, the placeholders v7 left for after
+the survey, row 11's two new steps and the demo's press order) is approved before S3's UI code and before S4 builds rows
+11 and 12.
 Owner's rules that shape it: mockup first, from the real layout; a click on a label or button opens a plain menu; plain
 words; hidden, not greyed; cover every button; every hands-on test is a saved Developer-mode template, named by picker
 number and title.
 
+## Plan v3: what the survey changed (2026-11-10)
+
+1. The hiding rule is new: a remapped key's extra button (the "echo") is removed in the same report as the key's own
+   bit, and a D-pad direction the controller cancelled against a remapped paddle is worked out per axis (D-pad up held
+   while the paddle that adds D-pad down is pressed: the pad keeps D-pad up).
+2. No window W, no grace G, no latch set S: S2 measured no lag and no lead at all.
+3. Each remapped key's stored item (its binding; the factory item D-pad right, down, up, left, A or B when the binding
+   names no single hideable item) is always covered while the key is held. The press itself is read only when that
+   item was not already on and the press is the only change among the six keys: it either shows the stored item
+   ("seen"), or one other item, which is then covered too ("other": a Profile press changed the key's button).
+   Otherwise the report is checked against the stored item ("confirmed" or "unconfirmed").
+4. A small state (16 bytes) matters only while a remapped key is held: the value each covered button or direction had
+   before the cover, and which keys' stored item was seen or confirmed at their press. With no remapped key held the
+   report passes unchanged.
+5. No ghost presses with the echoes S2 measured: an opposite direction is worked out only from a key's stored item, and
+   only when its press showed it or the report agreed with it (seen or confirmed); an item read as "other" is hidden,
+   never used to work out a direction. The listed limits can drop or hold an item; none shows one nobody pressed. The
+   exceptions are a profile change (Q11) and onboard bindings cleared (not planned).
+6. Triggers, sticks, Start, the G keys and Profile are never touched (v2 zeroed LT and RT inside a window).
+7. Smaller driver change: `gdx_reset` stays the only reset function and its body does not change; no
+   `gdx_reset_delivery`, no echo-entry compare in `loadMap`, no keep rules in LiveWatch or the App. The frame path's LIVE
+   gate reset (`GDHubReceiverTap.cpp:564`) keeps the echo state around it, three lines in `shadowFrame`. After any other
+   reset during a hold the stored item is covered from the first report on.
+8. The GDHM v2 echo entry is the hide mask plus one stored item per key (8 bytes), instead of hide mask, W, G and S.
+9. Parity carries the echo word (the cleaned buttons and hat) instead of a mask; the engine's own check compares words
+   only when both sides are armed and have stepped the same number of reports since the last report with no remapped
+   key held.
+10. Limits: "at the same moment as the key", the LT/RT zeroing, the Profile window and the release flash are gone;
+    "everything held is hidden after a reset" is narrowed to the key's own item; the opposite-direction cancel is
+    recovered; new: both paddles of a pair remapped and held together freeze that D-pad axis (Q10), and what a profile
+    change can still upset (Q11).
+11. Echo cases E1–E29 become V1–V27; a replay test runs the rule over a trimmed fixture of the survey recording under all
+    64 hide masks; the random walk drops lags and adds echo changes between holds and two changes in one report; an
+    exhaustive search of short sequences with up to two changes per report pins "no ghost".
+12. Row 11 gains the recovered case in both orders (D-pad left held through paddle outer right, and the reverse); its
+    picks stay; row 12 is unchanged.
+13. `echo-survey.py`: an item change belongs to a key only in that key's own report, never across two keys; the gate
+    checks same-report timing, the per-axis hat and a replay of the rule; W and G go.
+14. Facts: whether S2's Profile presses (all made while a paddle was held) switched the profile is unproven; on
+    2026-11-09 plain Profile presses did change the echoes. The new rule depends on neither.
+15. Review of v3 (S2b, 2026-11-11): **33 findings raised, 33 confirmed** by independent verifiers, none a blocker, in five
+    dimensions (rule against the recording 3, rule on sequences 4, blob and C 5, tests and templates 7, slicing and
+    consistency 14). The ones that matter most: a real change in the same report as a key whose own item was already on
+    was read as the key's button (the real press hidden, ghost directions); the replay's truth model, "wrong" and "ghost"
+    were not defined; the remapped-key note and row 11's new steps were not in an approved mockup before their code;
+    "a repeated report gives the same word" and "the state depends on that report alone" were not true as written; the
+    engine's word check failed on a missed frame. All are folded into the sections below; conflicts are decided under
+    "Design choices".
+
 ## Plan v2: what the review changed (2026-11-10)
+
+Items 1–3 and the echo parts of items 6 and 9 are replaced by plan v3; the rest stands.
 
 55 findings confirmed against the code (2 rejected), in 7 dimensions: echo correctness, blob and C core, driver
 upgrade, model and compatibility, tests and templates, UI and owner, slicing. None was a blocker. The ones that matter
@@ -46,26 +104,27 @@ most:
 
 ## Phases
 
-During R6 the progress line counts this S0–S9 ledger (Phase n/10); S2b, if it is opened, shows as 2b.
+During R6 the progress line counts this S0–S9 ledger (Phase n/10); S2b shows as 2b.
 
 | Phase | Title | Driver replacement? | Exit | Status |
 |---|---|---|---|---|
 | S0 | Plan review and the owner's answers to "Questions for the owner" | No | Review folded in (plan v2, 2026-11-10): done. Outstanding: the owner's answers to Q1–Q9, quoted in "S0 answers"; then plan v2 committed, the remap-plan R6 row and HANDOFF point here | ✅ done 2026-11-10: "OK all" (see "S0 answers") |
-| S1 | Safety net, build guard, receiver recorder, survey template, mockup v7 (app-only install) | No | Pins committed; build-24 source hash seeded; `--check` works; v7 approved (quoted) before the `record` display was coded; `swift test` + Python green; installed with `--same-build`; layout and mapping equal to their copies | ✅ done 2026-11-10 21:05 (see "S1 notes") |
-| S2 | Owner sitting 1: run row 10 (survey) | No | "S2 result" written: echoes and light colour per profile, each key's bit, lags, leads, hat behaviour, Profile during a hold; W, G and row 11's probe and picks fixed; gate passed, or the Q8 answer applied (S2b opened when needed) | ▶ current: survey run 2026-11-10 23:14, **gate fails on one real point** (see "S2 result"); stopped for the owner |
-| S2b | Re-plan after a failed gate (only if the S2 gate fails) | No | Q8 = (b): the (b) changes applied and v7b approved; any other case: plan v3 written, reviewed against the code, owner's OK quoted. "skipped" when the gate passes | pending |
-| S3 | Model, Swift echo filter, menus, labels, lighting (App path only) | No | Tests green; S1 pins byte-identical; echo cases E1–E29 pass in Swift | pending |
-| S4 | Developer mode judges triggers, `builtInEcho`, "cannot judge"; rows 11 and 12; app-only install; owner runs them on App | No | Rows 11 and 12 pass on App with a conclusive hiding verdict per remapped key; their Driver pass stands down quietly on build 24; rows 4, 1 and 7 pass on App and Driver; layout and mapping equal to their copies; no before-edit file | pending |
-| S5 | GDHM v2 in the shared C translator and the encoder | No (shared C; reaches the driver in S7) | Tests green; v1 bytes, golden vectors and existing `GDHubDefaults.h` arrays unchanged; C equals Swift on random sequences; `build-xcode.sh --check` passes | pending |
-| S6 | Driver code, capability bit, §7.1/§7.2 text fixes, independent pre-install review | Prepares it | Tests green; `--check` passes before and after the review; Start, Stop and SetPowerState source unchanged; review findings fixed | pending |
-| S7 | The driver replacement, build 24 → 25 (takeover plan §7.1), with two SHADOW soaks | **Yes (the only one)** | Build 25 activated enabled, one driver process, `tapPid == rootPid`, self-test passes; row 1 passes on App; 10 min v1 and 5 min v2 SHADOW soaks with 0 parity mismatches, 0 echo-mask differences and no fallback; `inputPath` absent and the engine LIVE; no latch; layout and mapping equal to their copies | pending |
-| S8 | Owner sitting 3: rows 11 and 12 on App and Driver; regression rows 4, 5, 6, 1 | No | Every step passes on both paths; each remapped key had a conclusive hiding verdict on both; row 11's Driver pass shows echo parity checked; no fallback, limiter or breaker line and no latch; mapping and layout equal to their copies after "Reset all remaps" | pending |
+| S1 | Safety net, build guard, receiver recorder, survey template, mockup v7 (app-only install) | No | Pins committed; build-24 source hash seeded; `--check` works; v7 approved (quoted) before the `record` display was coded; `swift test` + Python green; installed with `--same-build`; layout and mapping equal to their copies | ✅ done 2026-11-10 21:05 (see "S1 notes"). Deviation: `fb83ebd` (21:01) coded an interim, neutral "recorded" display before the v7 OK (21:56, during S2); S4(a) aligns it with v7 |
+| S2 | Owner sitting 1: run row 10 (survey) | No | "S2 result" written: echoes per key and state, each key's bit, timing, hat behaviour, Profile during a hold; row 11's probe and picks checked; gate passed, or the owner's decision recorded (S2b opened when needed) | ✅ done 2026-11-10 23:29: survey run 23:14; **gate failed on the opposite-direction cancel**; the owner chose "Rework the rule"; mockup v7 approved 21:56 ("v7 OK"); row 11's probe (D-pad up) and picks (R3, L3, Nothing, View, Menu) are outside every echo seen (`echo-survey.py`) (see "S2 result") |
+| S2b | Plan v3: new hiding rule, reviewed | No | Plan v3 written; an independent read-only review against the code and the recording folded in (choices under "Design choices") | ✅ done 2026-11-11: 33 findings raised, 33 confirmed, all folded in, none a blocker |
+| S3 | Model, Swift echo filter, menus, labels, lighting (App path only) | No | Before any S3 code: the owner's answers to "Questions for the owner (v3)" quoted in "S2b answers" and plan v3 committed. Tests green; S1 pins byte-identical; echo cases V1–V27 pass in Swift (their Swift halves); V22, V23, V25 and the survey replay pass in Python (`echo_rule.py`); the survey replay passes in Swift; `echo-survey.py` fixed; v7b approved (quoted) before the UI code of S3(c), which includes the remapped-key note | ▶ current |
+| S4 | Developer mode judges triggers, `builtInEcho`, "cannot judge"; rows 11 and 12; app-only install; owner runs them on App | No | Rows 11 and 12 pass on App with a conclusive hiding verdict per remapped key; row 11's receiver reports read for the paddle-first cancel; their Driver pass stands down quietly on build 24; rows 4, 1 and 7 pass on App and Driver; layout and mapping equal to their copies; no before-edit file | pending |
+| S5 | GDHM v2 in the shared C translator and the encoder | No (shared C; reaches the driver in S7) | Tests green; v1 bytes, golden vectors and existing `GDHubDefaults.h` arrays unchanged; C equals Swift on V1–V27 (`GDHubXlateEchoTests`), on random sequences and on the survey replay; `swift build` of `GDHubDextCore` with the sequence runner; `build-xcode.sh --check` passes | pending |
+| S6 | Driver code, capability bit, §7.1/§7.2 text fixes, independent pre-install review | Prepares it | Tests green; `--check` passes before and after the review; Start, Stop, SetPowerState and `syncMode` source unchanged; review findings fixed | pending |
+| S7 | The driver replacement, build 24 → 25 (takeover plan §7.1), with two SHADOW soaks | **Yes (the only one)** | Build 25 activated enabled, one driver process, `tapPid == rootPid`, self-test passes; row 1 passes on App; 10 min v1 and 5 min v2 SHADOW soaks with 0 parity mismatches, 0 echo-word differences on aligned words and no fallback; `inputPath` absent and the engine LIVE; no latch; layout and mapping equal to their copies | pending |
+| S8 | Owner sitting 3: rows 11 and 12 on App and Driver; regression rows 4, 5, 6, 1 | No | Every step passes on both paths; each remapped key had a conclusive hiding verdict on both; row 11's Driver pass shows echo parity checked (the echo counters and `parityEchoOk` rose); no fallback, limiter or breaker line and no latch; mapping and layout equal to their copies after "Reset all remaps" | pending |
 | S9 | Results, docs, HANDOFF | No | Committed; pushed on the owner's word; remap-plan R6 row ticked; compatibility table in takeover §5.7 | pending |
 
-Needs the owner's hands: S0 (answers only), S1 (look at mockup v7 on the phone and say OK), S2 (controller on, run row
-10), S4 (picks in Mapping, runs, Profile back to the noted colour, resets), S7 (power-cycle the controller at U6; a
-reboot only if U5 does not match within 2 min; any System Settings prompt; row 1 on App; use the controller for 10 min,
-then 5 min with the row 11 and 12 picks), S8 (picks, runs, resets). S7 and S8 are one sitting.
+Needs the owner's hands: S0 (answers only), S1 (look at mockup v7 on the phone and say OK; given during S2), S2
+(controller on, run row 10), S3 (first the answers to Q10 and Q11; then look at mockup v7b on the phone and say OK), S4
+(picks in Mapping, runs, Profile back to the noted colour, resets), S7 (power-cycle the controller at U6; a reboot only
+if U5 does not match within 2 min; any System Settings prompt; row 1 on App; use the controller for 10 min, then 5 min
+with the row 11 and 12 picks), S8 (picks, runs, resets). S7 and S8 are one sitting.
 Before any sitting: Parallels VM not running, Shadow not forwarding the receiver; for row 7 (S4), the Mac's own
 speakers as the sound output. Profile is pressed only where a step says so. Before the first run of S4, S7 and S8 the
 owner notes the controller's light colour, and after every row-1 run presses Profile until that colour is back.
@@ -78,11 +137,16 @@ owner notes the controller's light colour, and after every row-1 run presses Pro
 - **Controller's profile** is exactly today: the key sends the button the controller's onboard profile gives it, and
   follows that button's remap. Nothing changes on the day of the update for keys the owner has not touched.
 - **Any other pick** (a pad button or Nothing) makes the key send only that pick, recognised by its own signal, and
-  GDHub hides the button the controller adds for it. The hiding learns that button from the press itself, never from a
-  stored value, so a Profile press between holds does not upset a remapped key.
-- **The limits** (Q3), because the controller sends its own button on the same line as the real button: while a
-  remapped key is held, a press of that same button is not visible until the key is let go (lost if let go first); a
-  button pressed at the same moment as the key (within W reports, about 1–4 ms) counts as the controller's; a few rarer
+  GDHub hides the button the controller adds for it, in the same report. GDHub hides the key's stored button (its
+  binding, the factory button by default) and also reads the press itself: when a Profile press has changed the key's
+  button, a clean press shows the new one, and that is hidden too. A D-pad direction the controller cancels against a
+  remapped paddle still reaches the pad (D-pad up held while pressing the paddle that adds D-pad down: the pad keeps
+  D-pad up).
+- **The limits** (Q3 as changed in v3, see "The limits in v3 against Q3"), because the controller sends its own button
+  on the same line as the real button: while a remapped key is held, a press of the button it adds is not visible until
+  the key is let go (lost if let go first), and that button held from before stays held until the key is let go; with
+  both paddles of a pair remapped and held together, the D-pad axis between them stays as it was (Q10); a profile
+  change can still upset a few presses (Q11). Other buttons pressed at the same moment as the key pass. A few rarer
   cases are listed under "What cannot be told apart".
 - Three or more controls on one pad button, a button sending LT or RT, and two controls on one trigger run in the driver
   after the update. The "App drives *" tag and the "needs a driver update" lines disappear after the update, come back
@@ -95,13 +159,37 @@ owner notes the controller's light colour, and after every row-1 run presses Pro
   bit 0 paddle outer right, 1 inner right, 2 inner left, 3 outer left, 4 SAX left, 5 SAX right
   (`docs/protocol/envision-pro-receiver.md:74-82`; `ControlMapping.swift:173-174`). Real D-pad, A and B presses carry
   no extra bit.
-- The standard fields also carry the onboard profile's button for that key (the "echo"). It differs per profile and the
-  Mac cannot see the active profile: a Profile press sends only button 17 (`envision-pro-receiver.md:113-126`). Echoes
-  seen so far on this unit: the four D-pad directions, A, B, X, Y, LB and RB (protocol notes; takeover plan T7 runs).
-- Timing measured once: in `scuf-envision/captures/02-button-walk.txt` (one profile, wireless) all 16 edges of 8
-  paddle and SAX presses had the bit and its echo change in the same report. Nothing else is measured: other profiles,
-  hat combinations, Profile during a hold, wired mode. Developer-mode run files keep no receiver frames today.
-- The report ORs the echo with the real control, so nothing in software can tell them apart while the key is held.
+- The standard fields also carry the onboard profile's button for that key (the "echo", the owner's "extra button").
+  The Mac cannot see the active profile: a Profile press sends only button 17 (`envision-pro-receiver.md:113-126`).
+  Echoes seen on this unit: the four D-pad directions, A, B, X, Y, LB and RB (protocol notes; takeover plan T7 runs).
+- Measured in S2 (2026-11-10, wireless, App path, one session; "S2 result"): in the starting state and after each of
+  three Profile presses the echo was paddle outer right → D-pad right, inner right → down, inner left → up, outer left
+  → left, SAX left → A, SAX right → B. That equals the factory bindings (`ControlMapping.swift:167-172`) and the stored
+  bindings in the owner's S1-pre mapping copy. Of 654 key edges where only one of the six keys changed (all 54
+  attempts, superseded ones included), 634 changed exactly that echo in the same report (a cancel counted as the
+  opposite direction) and 20 changed nothing because the echo item was already on. None lagged or led. In
+  `scuf-envision/captures/02-button-walk.txt` 16 of 16 edges did the same.
+- Whether those Profile presses switched the profile is unproven: all three were made while paddle outer right was
+  held, and no light colour was recorded. On 2026-11-09 plain Profile presses did change the echoes (paddles A, X, Y,
+  B and SAX RB; `receiver-takeover-plan.md:1716-1717`), and SAX left has shown A, LB and X
+  (`envision-pro-receiver.md:124-126`). The v3 rule reads the echo from each press, so it depends on neither reading.
+- How the report combines them (S2): buttons are ORed with the real button. The D-pad is a hat the controller combines
+  per axis: a direction is reported when the real D-pad or any held key adds it, and none when both directions of that
+  axis are added. Neighbours give the diagonal, the same direction changes nothing, opposite directions cancel. Profile
+  pressed during a hold changes nothing until the key is let go.
+- So while a key is held, the item it adds says nothing about the real control. Everything else can be worked out,
+  including a real direction opposite to a paddle's (the axis reads none). Not measured: three inputs on one axis, a
+  real diagonal with a paddle, a real B with SAX right, wired mode, other firmware; a real button or direction pressed
+  or let go while one of the six is held (none of the 789 reports shows one; a press of the key's own item would not
+  show anyway); any opposite cancel with the paddle, or the down/right input, first (in S2 the real or up/left input
+  always came first). S2 rules out a fixed priority on either axis, and "first press wins" when the real input came
+  first, so the combination is expected not to depend on order. That is an expectation, not a measurement: row 11
+  reads it in S4.
+- Order of pressing in S2 (a correction to "S2 result", which says two steps): three steps were done the other way
+  round, 11 `outer-right-dpad-up` (D-pad up held, then paddle outer right), 12 `outer-right-dpad-left` (D-pad left
+  held, then the paddle) and 13 `outer-right-outer-left` (its second attempt, the one read: outer left held, then outer
+  right); step 16 `sax-left-held-a` began with A pressed and let go alone, then SAX left with its own A, and nothing in
+  the reports shows A pressed during a SAX left hold.
 - GDHM v1 already has a per-rule `physMask` that overrides the rule kind (`Shared/GDHubXlate.c:376`), and the encoder
   fills it (`MapBlobEncoder.swift:249`). What v1 lacks: hiding the echo (`nEcho` must be 0, `GDHubXlate.c:181`), more than
   two rules per pad button (`:219`, a 15-entry counter declared at `:158`), a button rule on LT/RT, two entries per
@@ -154,12 +242,22 @@ All in `Sources/GDHub/Mapping/ControlMapping.swift` unless named.
   gives `.analog`, the default owner gives `.nothing`, anything else gives `.fullScale`. So a stray learned bit on
   `lt` or `rt` never turns the analog trigger digital.
 - New `echoHideMask`: OR of `identityBits` over the six whose effective output is not `.builtIn` (Nothing included).
+- New `echoItem(id)`: the stored echo of one of the six, read from its binding `buttons[id]`: `.button(1...10)` → that
+  receiver button, `.hat(0)`, `.hat(2)`, `.hat(4)`, `.hat(6)` → D-pad up, right, down, left; anything else (missing, a
+  diagonal, a trigger, an axis, buttons 11–19) → that key's factory item (paddle outer right D-pad right, inner right
+  down, inner left up, outer left left, SAX left A, SAX right B), never none. The default bindings (`:167-172`) are the
+  factory echoes. For every other id it returns none. New `echoParams`: `echoHideMask` plus `echoItem` of the six, the
+  only input of every echo filter and of the encoder's echo entry; it returns the plain `EchoParams` value of S3(a).
+  A key in the hide mask therefore always has a stored item, so a press the rule cannot read still covers one.
 - New `signalConflict()`, the same on every driver build: a remapped key of the six whose table bit is also stored in
   the `physicalBits` of a control outside the six (an old learn). It gives "<Other> was learned with <Paddle>'s signal:
   re-learn <Other>." It is shown as a note and a hint line (UI item 9), never through `remapLimit`, and the encoder
   does not refuse it (App and driver do the same thing with it). What to do with such controls is Q9.
 - `LearnSession` (`:191-195`): attach extra bits only when learning one of the six. A learn of one of the six whose
-  rising bit is not its table bit is refused: "That was <Other>'s signal: press <Label> itself."
+  rising bit is not its table bit is refused: "That was <Other>'s signal: press <Label> itself." "Re-learn button…" on
+  one of the six stores the rising standard item as its binding (as today), which is also its stored echo; for a D-pad
+  echo it stores the one direction that changed against the baseline hat (`LearnSession.swift:217-224`), not the most
+  frequent hat value, so a paddle re-learned while D-pad up is held is stored as `.hat(2)`, not the diagonal `.hat(1)`.
 - `learnConflict` (`:368-378`): the six are never owners of a binding (they never feed the pad through it); its doc
   comment says so.
 - Codable: no change. The decoder now keeps paddle and SAX keys because they are in the list; unknown words are still
@@ -176,138 +274,278 @@ All in `Sources/GDHub/Mapping/ControlMapping.swift` unless named.
 
 ## Translators: hiding the echo
 
-### The rule (the same in Swift `EchoFilter` and in C `gdx_echo_next`)
+### The rule (the same in Swift `EchoFilter.step` and in C `gdx_echo_next`)
 
-It never reads which button the echo is. A button or hat direction that comes on in the same report as a hidden key
-goes down (or within `W` reports after, or one report before) belongs to that key, and stays hidden until it goes off
-or every hidden key is up. While a key is held, a direction the hat dropped and brings back is hidden again.
+In words: while a remapped key is held, its stored item is covered (a button A–R3 or one D-pad direction; every key in
+the hide mask has one). A covered button or direction keeps the value it had in the report before the cover began. On
+an axis where exactly one direction is covered, a reading of "no direction" means the real opposite direction is held,
+and the pad shows it, but only when the key covering that direction had its stored item seen or confirmed at its press.
+At a press the press itself is read only when the key's stored item was not already on in the report before and the
+press is the only change among the six keys in that report: if it changed exactly the stored item, the item is "seen";
+if it changed exactly one other item (a Profile press changed the key's button), that item is covered too, and neither
+is used to work out a direction ("other"). In every other case the stored item stands: "confirmed" when the report
+agrees with it (it shows the item, or the axis reads what the held keys add), else "unconfirmed" (covered, never used to
+work out a direction). With no remapped key held the report passes unchanged.
 
-Parameters (from the blob's echo entry; `EchoParams` in Swift): `H` hide mask (extra bits), `W` window (0..4 reports),
-`G` grace (0..8 reports), `S` latch set (which standard bits may be hidden).
+Items, a 14-bit word: bits 0..9 = receiver buttons 1..10 (A B X Y LB RB View Menu L3 R3), bits 10..13 = D-pad up,
+right, down, left. An item code c in 1..14 names bit c − 1; 0 = none. `HAT_ITEMS[16]` turns the receiver hat into
+direction bits (hat 0 up, 1 up+right, 2 right, 3 right+down, 4 down, 5 down+left, 6 left, 7 left+up, 8..15 none);
+`ITEMS_HAT[16]` = {8,0,2,1,4,8,3,2,6,7,8,0,5,6,4,8} turns direction bits back into a hat value, opposite directions
+cancelling as the controller does. `axis(s)` on {p, n} is 1 when `s` has p and not n, −1 for n and not p, else 0.
 
-Standard word `std` of a frame: bits 0..18 = receiver buttons 1..19; bits 19..22 = hat up, right, down, left (hat 0 up,
-1 up+right, 2 right, 3 right+down, 4 down, 5 down+left, 6 left, 7 left+up, 8 and above none); bit 23 = LT raw above
-`triggerActiveRaw`; bit 24 = RT the same; bits 25..31 = 0.
-Default `S` = 0x01F803FF: buttons 1–10 (A B X Y LB RB View Menu L3 R3), the four directions, LT and RT. Start (11),
-G1–G5 (12–16) and Profile (17) are never hidden. The survey reports trigger echoes for information only.
+Parameters (`EchoParams`; the blob's echo entry): `H`, the hide mask (bit k = extra bit k is remapped: 0 paddle outer
+right, 1 inner right, 2 inner left, 3 outer left, 4 SAX left, 5 SAX right), and `S[0..5]`, the stored item of each key
+in H (from `echoItem`; never none for a key in H, 0 for a key outside it).
 
-State `gdx_echo` / `EchoState`, 24 bytes (21 used): `u32 prevStd, latched, echoSet, prevRose; u16 prevHeld;
-u8 window, grace, relWin`. All zero = fresh. `PROFILE` = bit 16 (receiver button 17).
+State `gdx_echo` / `EchoState`, 16 bytes, all zero = fresh: `u16 est` (the cleaned items of the last report; both
+directions of an axis may be set), `u16 prev` (the raw items of the last report), `u8 held` (remapped keys down in the
+last report), `u8 six` (all six key bits of the last report), `u8 known` (held keys whose stored item was seen or
+confirmed at their press), `u8 flags` (bit 0 VALID: `prev` and `six` hold a report; bit 1 ARMED: a report with no
+remapped key held was seen since the reset), `u8 cur[6]` (the item code read for each held key: its stored item, or the
+other item its press showed; all 0 while no remapped key is held), `u8 pad[2]` = 0.
 
-Per report:
+`changed(prev, obs)`, what one press changed: the buttons 1..10 that came on, plus per axis {p, n} the direction p when
+the axis went from 0 to p, from n to 0 or straight from n to p, and n when it went from 0 to n, from p to 0 or straight
+from p to n. (For a release, `echo-survey.py` reads it backwards, `changed(obs, prev)`: what the release took away.)
+`on(s, items)`: item s is on in a raw report, a button by its bit, a direction when the axis reads s's direction.
+
+Per report (C-like; the Python oracle `scripts/tools/echo_rule.py`, written in S3(a), is the reference):
 
 ```
-held     = extra & H
-pressed  = held & ~prevHeld                       // a hidden key went down
-released = prevHeld & ~held                       // a hidden key came up
-if (pressed)                              window = max(window, W + 1)
-if (held && ((std ^ prevStd) & PROFILE))  window = max(window, W + 1)   // Profile pressed or let go during a hold
-if (released) { window = max(window, max(W, G) + 1); relWin = max(W, G) + 1 }
-rose = std & ~prevStd & S
-if (window) { if (held) latched |= rose | (pressed ? prevRose : 0); window -= 1 }
-if (held)   latched |= rose & echoSet          // an echo the hat dropped and brought back is hidden again
-latched &= std                                 // a hidden bit that went off is free at once: its next rise is real
-if (relWin) { echoSet = latched; relWin -= 1 } // after a release the set follows what is still hidden
-else          echoSet |= latched
-if (held)          grace = G
-else if (grace)    grace -= 1
-else             { latched = 0; echoSet = 0 }  // every hidden key is up and the grace is over: forget the rest
-prevStd = std; prevHeld = held; prevRose = rose
-return latched                                 // the mask for this report
+obs  = (buttons & 0x3FF) | HAT_ITEMS[hat] << 10
+six  = extra & 0x3F;   held = six & H
+if (!held) {                                                                                    // unchanged
+    if (st.held) cur[0..5] = 0                                                                  // a hold ended
+    est = prev = obs; st.six = six; st.held = known = 0; flags = VALID | ARMED; return 0;
+}
+pressed = held & ~st.held
+if (pressed) {
+    mp = OR S[j] over j in (held & ~pressed & known) | pressed                 // what the keys add, as stored
+    c  = (flags & VALID) && exactly one bit in (six ^ st.six) ? changed(prev, obs) : 0
+    for each k in pressed:
+        if (!on(S[k], prev) && c is exactly one item) {                        // the press shows one item
+            cur[k] = code(c);
+            if (c == S[k]) known |= 1 << k;                                   // seen
+            else word |= OTHER;                                               // covered with S[k]; never worked out from
+        } else {                                                              // the stored item stands
+            cur[k] = code(S[k]);
+            ok = (obs & S[k]) != 0 || (S[k] is a direction && axis(obs) == axis(est | mp) on S[k]'s axis)
+            if (ok) known |= 1 << k; else word |= UNCONFIRMED;                // confirmed, or covered only
+        }
+}
+known &= held
+M  = OR (S[k] | item(cur[k])) over k in held;   MI = OR S[k] over k in held & known
+out = (obs & 0x3FF & ~M) | (est & 0x3FF & M)                          // a covered button keeps its value
+for each axis {p, n} of {up, down} and {right, left}:
+    if neither p nor n is in M:  out |= obs & (p | n)                 // nothing covered: as reported
+    else if both are in M:       out |= est & (p | n)                 // the axis is frozen
+    else {                       // a = the covered direction, b = the other one
+        out |= est & a;                                               // a keeps its value
+        if ((obs & b) || (!(obs & a) && (MI & a))) {                  // "none" under a seen or confirmed a: b is held
+            out |= b; if (!(obs & b)) word |= RECOVERED; }
+    }
+est = out; prev = obs; st.held = held; st.six = six; flags |= VALID
+return word | APPLIED | (flags & ARMED ? W_ARMED : 0) | held << 16 | ITEMS_HAT[(out >> 10) & 15] << 10 | (out & 0x3FF)
 ```
 
-Applying the mask (`gdx_echo_apply` / `EchoFilter.apply`, pure): buttons `&= ~(mask & 0x7FFFF)`; the hat nibble is
-re-encoded from its directions minus the masked ones **only when they intersect** (nothing left → 8); the LT or RT
-10-bit field is zeroed when bit 23 or 24 is in the mask; extra bits are never touched, so the remapped key's own rule
-still fires. A mask of 0 gives the input bytes unchanged.
+The word (u32): bits 0..9 the cleaned receiver buttons 1..10; bits 10..13 the cleaned hat (0..8); bits 16..21 the
+remapped keys held; bit 24 RECOVERED (the pad shows a direction the report does not); bit 25 OTHER (a press showed
+another item than the stored one; both are covered); bit 26 UNCONFIRMED (a press whose stored item was neither seen nor
+agreed with by the report); bit 27 ARMED; bit 31 APPLIED. Bits 25 and 26 mark the press report only. A word of 0 means
+the report passes unchanged (no echo entry, a bad frame, or no remapped key held).
 
-### What the owner gets (factory echo as the example: paddle outer right → Y, its echo D-pad right)
+Applying the word (`gdx_echo_apply(word, in[16], out[16])` / `EchoFilter.apply`, pure): with bit 31 set, receiver
+buttons 1..10 (byte 12 and bits 0–1 of byte 13) := word bits 0..9 and the hat nibble (the high nibble of byte 11) :=
+word bits 10..13; nothing else changes. The extra bits stay, so the remapped key's own rule still fires
+(`GDHubXlate.c:376`); triggers, sticks, Start, G1–G5, Profile and buttons 18–19 are never touched. A word of 0 gives
+the input bytes unchanged.
 
-- Paddle alone → Y; D-pad right never reaches the pad, on press, hold and release.
-- D-pad right alone, with no hidden key held → D-pad right at once.
-- D-pad up held, then the paddle: if the controller sends up+right, right is hidden and up stays.
-- Paddle held, then a real D-pad left (the hat drops right) and let go: right comes back hidden, not as a ghost.
-- Two hidden keys, "last press wins" on the hat, or opposite directions cancelling: no ghost press. The per-hold echo
-  set re-hides a direction the hat brings back, and a release opens a window of max(W, G) reports for the direction
-  of the key still held.
-- An echo that arrives one report before its bit shows for that one report only.
-- Other buttons and other directions during the hold pass at once.
-- A key left on Controller's profile is not in `H`: its echo passes as today.
-- If the onboard bindings are ever cleared, nothing comes on with the bit and the filter does nothing; no change needed.
-- W and G in milliseconds go here after S2 (one report is about 1 ms).
+What the code guarantees (tests pin each):
+- With no remapped key held, the output equals the input, and the state is byte for byte the state a fresh one gets
+  from that report (`cur` is cleared on the report a hold ends).
+- A repeated report gives the same state and the same word except bits 25–26, which mark only the press report.
+  `gdx_echo_apply` reads only bits 0–13 and 31, so dropping duplicates and coalescing change no cleaned byte.
+- A direction the report does not show appears only for a key whose stored item was seen or confirmed at its press, and
+  only as the opposite of that item. An item read as "other" is only ever hidden.
+- Only items covered by a held key and, on an axis with one covered direction, the other direction can differ from
+  the report; every other button and direction passes as reported.
+- Integer work on six keys and two axes: no allocation, no division, no floating point, no libm. With no remapped key
+  held about ten operations (six byte stores more on the report a hold ends); with one held one loop over six keys and
+  two axis cases; the press part runs only on a press report.
+
+Truth model (the yardstick of the replay, the row 10 gate, the S3 exit and the Python tests; `echo_rule.py` implements
+exactly this):
+1. Real items per report, with E = the echoes of every held key among the six (hidden or not) as measured for that
+   state (the table for the fixture): buttons = the report's buttons minus E's buttons, which become unknown. Per axis:
+   no echoed direction, the axis as reported; exactly one echoed direction a, a is unknown and a reading of "none"
+   means the opposite b is really held; both directions echoed, both unknown.
+2. Each maximal run of an unknown item within one attempt takes the value of the report before the run (off when the
+   run starts the attempt) when the report after it agrees or the run reaches the end of the attempt; otherwise the
+   item is ambiguous for the whole run and not compared.
+3. Target = the real items plus the echoes of held keys outside H. A report is wrong when a button that is not
+   ambiguous differs, or when, on an axis with no ambiguous direction, the combined value (+1, 0, −1) differs.
+4. Ghost: from the report before a hold of a key in H begins, through every report of the hold, collect the target
+   items (before the axis combination); a pad item outside that set is a ghost.
+5. The random walk and the exhaustive search use the same ghost definition with the simulator's known real input. The
+   replay and the gate also print the number of ambiguous items (S2 copy: 0), so a later run that is mostly ambiguous
+   cannot pass unseen.
+
+### What the owner gets (factory echoes and row 11's picks as the example)
+
+- Paddle outer right → R3, pressed alone: R3; D-pad right never reaches the pad, on press, hold and release.
+- D-pad right alone, with no remapped key held: D-pad right at once.
+- D-pad up held, then the paddle (the controller sends up+right): the pad shows D-pad up and R3.
+- D-pad left held, then the paddle (the controller sends no direction): the pad keeps D-pad left and shows R3. The
+  other order is expected to work the same (paddle held, D-pad left pressed twice → D-pad left twice): S2 measured the
+  cancel only with D-pad left first, and row 11 reads the other order in S4.
+- D-pad up held, then paddle inner right remapped (it adds down; the controller sends no direction): the pad keeps
+  D-pad up.
+- Paddles outer right and inner right both remapped and held: no D-pad from them; a real D-pad up or left during the
+  hold passes.
+- Both outer paddles remapped and held: no D-pad from them; up and down pass; left and right stay as they were before
+  the pair went down (Q10).
+- A held, then SAX left (adds A) remapped and tapped: A stays held on the pad without a break.
+- Other buttons and directions pass at once during the hold, also when pressed or let go in the same report as the key
+  (one other change; the key's own item and the opposite of a paddle's direction are the exceptions listed below).
+- A key left on Controller's profile is not hidden: its button passes as today, also next to a remapped key (paddle
+  outer right remapped and outer left untouched, pressed one after the other and held: the pad shows outer left's D-pad
+  left).
+- If a Profile press changes what a key adds (seen on 2026-11-09), the next clean press of that key shows the new
+  button, and GDHub hides it together with the stored one for that hold, with no setting to change. The engine log
+  names the change. Q11 lists the presses where the new button can show instead.
+- If the onboard bindings were ever cleared (not planned, "Not in step 2"), a press changes nothing and the stored item
+  is still hidden while the key is held. Then a D-pad direction on a remapped paddle's axis that is held, pressed or let
+  go around the paddle's press can show as its opposite, or stay shown after it is let go, until the paddle is let go
+  (for example D-pad left held, paddle outer right pressed in the very report D-pad left is let go: left stays shown),
+  and a button or direction pressed in the very report of the press is hidden for that hold. Turning the hiding off for
+  such keys is the follow-up named there.
 
 ### What cannot be told apart (the report ORs the echo with the real control)
 
-These are the limits Q3 asks the owner to accept together.
-- While a hidden key is held: a press of its echo button that starts during the hold shows only at the key's release
-  (lost if let go first); a release of it during the hold shows only at the key's release. After the hat dropped the
-  echo direction, a real press of that direction during the hold also counts as echo.
-- A press of any button in `S` landing in the key's own press report, within `W` reports after it, or one report
-  before it, counts as echo: hidden while held, lost if let go before the key.
-- After one of two hidden keys is let go, a press of the other key's echo direction within max(W, G) reports counts as
-  echo.
-- A real LT or RT crossing `triggerActiveRaw` (100 of 1023) inside such a window is zeroed until it drops to 100 or
-  below, or until every hidden key is up and G reports have passed. A trigger already pulled before the edge is never
-  affected.
-- A Profile press **during** a hold: the new echo is hidden if it changes within W reports of the Profile edge (the
-  survey measures this); a later change shows until release.
-- If a hidden key is let go while the hat has dropped another hidden key's echo for a real press, that echo can come
-  back once as a ghost.
-- After a tap start, an interface reopen, sleep or controller silence, or a mapping change that alters the echo entry,
-  with a hidden key already held: everything in `S` that is down (a held trigger included) is hidden until let go.
-- If the controller drops a real D-pad direction while a paddle's direction is held, no software can show it (the
-  survey checks this and the gate stops). An echo onto a stick is never hidden (the survey checks that none exists).
-  An echo arriving two or more reports before its bit would show for the whole hold (the gate stops).
-- Only removing the echo at the controller removes these limits (Q3, "Not in step 2").
+These are the limits of v3; "The limits in v3 against Q3" says which ones are new.
+- While a remapped key is held, its own item (A for SAX left, D-pad down for paddle inner right, and so on): a press
+  of it that starts during the hold shows only at the key's release (lost if let go first); held from before, it stays
+  held until the key is let go, also if let go earlier. Rocking the D-pad from that direction to the opposite during
+  the hold shows nothing until the opposite is let go, then the old direction again until the key is let go.
+- Both paddles of a pair (outer left and outer right, or inner left and inner right) remapped and held together: the
+  controller reports no direction on that axis whatever the D-pad does. The pad keeps that axis as it was before the
+  pair went down, until one of them is let go; the other axis passes.
+- A direction opposite to a remapped paddle's that comes on in the very same report as the paddle (about 1 ms), from
+  the D-pad or from an untouched paddle pressed in that report, or that is already held when the echo state starts with
+  the paddle down (tap open, a new mapping, LIVE turned on, pause end, wake, a reconnect, the controller going quiet):
+  it shows only when the paddle is let go. After such a start, a covered item held from before drops until the key is
+  let go. The stored item stays covered from the first report on. (The LIVE gate reopening keeps the echo state, "Where
+  it runs".)
+- A direction of the key's own item let go in the very report of its press counts as held from before: it stays until
+  the key is let go (D-pad right let go as paddle outer right goes down).
+- After a Profile press that changed what a remapped key adds, the new button shows next to the pick for that hold, and
+  the stored item is hidden instead, when the press cannot be read cleanly (Q11): two of the six keys pressed in the
+  same report; the new button, or the key's old button, already on when the key is pressed (held by the owner or added
+  by another held key); another item changing in the very report of the press; a reset during the hold (tap open, a
+  new mapping, LIVE turned on, pause end, wake, a reconnect, the controller going quiet). A button held from before
+  then stays held until the key is let go. When the press is read cleanly ("other"), the stored item is hidden together
+  with the new button for that hold, and a real opposite of a new D-pad direction is not shown while the key is held.
+- Rare, three inputs on one axis (a real direction, a remapped paddle of the same direction and an untouched paddle of
+  the opposite one, in any order): the axis can show nothing, or the untouched paddle's direction, until the remapped
+  paddle is let go, and a button or direction pressed in the very report of that paddle's press is hidden for that hold.
+  An untouched key that adds the same item as a held remapped key (only after a profile change): hidden while both are
+  held.
+- Rare, several changes in the very report of a press (about 1 ms), such as the D-pad rolled straight from up to left
+  as paddle outer right goes down: the rule can take one of them for a changed button and hide it for that hold. It
+  never shows an item nobody pressed: the exhaustive search under "Tests" finds no ghost with the echoes S2 measured.
+- Timing: the rule needs each echo in the same report as its key's bit (S2: no exception in 654 edges). If wired mode
+  or another firmware were one report off, a remapped paddle could show its opposite direction for one report when its
+  echo goes early, or its own direction for one report when it goes late; an echo one report early on a press would
+  show for the whole hold. Row 10's gate finds this before such a setup is used.
+- An echo onto a stick, a trigger, Start, a G key or Profile is never hidden (none seen).
+- Only removing the echo at the controller removes these limits ("Not in step 2").
+
+### The limits in v3 against Q3
+
+What the owner accepted in Q3 on 2026-11-10, item by item:
+- Pressing the key's own button during the hold shows only at release; held from before, it stays until release:
+  **stays**, unchanged.
+- A button or D-pad direction pressed at the same moment as the key (about 1–4 ms) counts as the controller's:
+  **gone**. With the echoes S2 measured only the key's own item is hidden, apart from rare coincidences of several
+  changes in one report ("What cannot be told apart"); an opposite direction pressed in the very same report shows at
+  release.
+- The same just after letting go of one of two held remapped keys: **gone**.
+- LT or RT pulled at that moment stays at zero: **gone**; triggers are never touched.
+- Profile pressed while holding a remapped key: **gone** as a limit; S2 saw nothing change during a hold, and a
+  changed button is read at the next press.
+- Holding a remapped key while GDHub starts, reconnects, wakes or the mapping changes hides every such button already
+  held: **narrowed** to the key's own item; an opposite direction held then shows at release.
+- A D-pad direction can flash once when letting go of one of two remapped keys: **gone**.
+- A real D-pad press the controller drops while a paddle is held cannot be shown: **mostly gone**, the opposite cancel
+  is now worked out. What is left is new: both paddles of a pair remapped and held together (**Q10**).
+- **New**: after a profile change that altered a remapped key's button, the new button can show next to the pick for a
+  hold: two remapped keys pressed in the same millisecond; the key pressed while its new or old button is already held
+  (an ordinary move, no exact timing); another button or direction changing in the same millisecond; a restart of the
+  reading during the hold. A cleanly read press hides both buttons for that hold (**Q11**).
 
 ### Where it runs
 
-- **Driver path**: `gdx_step` runs `gdx_echo_next` and `gdx_echo_apply` into a 16-byte stack copy **only when the map
-  has an echo entry**, then evaluates the copy; a v1 map pays one branch. `gdx_state` gains `gdx_echo echo` and
-  `u32 lastEchoMask`.
-- **Resets**: `gdx_reset` stays the full reset the header documents (everything but the four counters, the echo state
-  and `lastEchoMask` included); its body needs no change. New `gdx_reset_delivery` clears only the delivery fields
-  (`haveLast`, `haveBytes`, `last`, `lastBytes`, `lastLen`) and keeps the echo state; the header says "only for
-  re-opening delivery on the same map". The tap uses it at LIVE turned on (`GDHubReceiverTap.cpp:434`), the LIVE gate's
-  `needReset` (`:564`) and pause end (`:644`). Everywhere else keeps the full reset: tap open (`:491`), a SHADOW change
-  (`:426`), `tapNeutral` (`:291`) and power on (`:372`), so Stop, SetPowerState and the timer reach no new code.
-- **Loading a map**: `loadMap` (`:203-223`) compares the old and new echo entries before the memcpy at `:212` (new C
-  helper `gdx_echo_same(a, b)`). It keeps the echo state (`gdx_reset_delivery`) only when the tap had a valid map at
-  entry, both maps have an echo entry and the entries are byte-equal; otherwise it does the full `gdx_reset`. Forced
-  reloads after Open (`:489-491`), Close (`:320-321`) and a SHADOW change (`:424-426`) clear `haveMap` first, so they
-  always reset. A new tap instance starts zeroed (`IONewZero` ivars, `:74`); tap Start gets no new code.
-- **Parity (F5)**: the tap builds the parity record from `gdx_eval` + `gdx_build` of the frame with `lastEchoMask`
-  applied, and stores the mask in the record's spare bytes (`rec.pad[0..3]`, little-endian; `rec.pad[4]` = 1 when the
-  map has an echo entry; `GDHubDextCore.h:410-418`). The engine's `ParitySampler` applies that mask with its own C core
-  and compares bytes exactly as today. If the pushed blob has an echo entry and the record has no mask, the sample is
-  skipped (counted in `skipped`), never counted as a mismatch. `gdx_eval` itself stays stateless and keeps its
-  signature. Parity checks the driver's eval and build under the driver's own mask; it cannot see a wrong mask, and
-  it cannot see a fault in the shared C (both sides run it).
-- **Independent mask check**: the engine's `FrameRing` (`ParitySampler.swift`) steps its own Swift `EchoFilter` on
-  every frame it records and stores the mask next to the bytes. `ParitySampler` compares that mask with the record's
-  `PARITY_ECHO_MASK` and counts differences in `echoMaskDiffs`. It arms only after a run of quiet frames (no hidden key
-  held, no latch-set bit down) longer than max(W, G) + 1 reports since its own reset, a revision change or a new tap
-  instance, because the two filters start at different times. It is a gate in S7 and S8, not a fallback trigger.
+- **Driver path**: `gdx_step` runs `gdx_echo_next` **only when the map has an echo entry** and, when the word is not 0,
+  `gdx_echo_apply` into a 16-byte stack copy; then it evaluates the copy as today. `gdx_state` gains `gdx_echo echo`
+  and `u32 lastEchoWord` (the word of the last frame). A v1 map pays one branch.
+- **Resets**: `gdx_reset` stays the only reset function and its body does not change (it zeroes the echo state and
+  `lastEchoWord` with the rest, `GDHubXlate.c:544-551`). One call site changes around it: the LIVE gate's `needReset`
+  in the frame path (`GDHubReceiverTap.cpp:564`) becomes `gdx_echo keep = iv->xstate.echo; gdx_reset(&iv->xstate);
+  iv->xstate.echo = keep;`. `gdx_step` runs on every frame there, also while submit is false (`:569`), so the echo
+  state has seen the stream all along; a pool miss (`:666`) skips one full-state frame, which the rule reads as the next
+  report. Every other call site stays exactly as it is and does the full reset: a map load (`:211`, a new map may
+  change H and S), `tapNeutral` (`:291`), power on (`:372`), a SHADOW change (`:426`), LIVE turned on (`:434`), tap
+  open (`:491`) and pause end (`:644`, a whole pause of frames is missing). After a full reset during a hold the stored
+  item is covered from the first report on; what it can cost is listed under "What cannot be told apart" (the opposite
+  direction at release, a covered item held from before dropping, and after a profile change the new button showing).
+  Tap Start, Stop, SetPowerState, `syncMode` and the timer reach no new code.
+- **Loading a map**: `loadMap` (`:203-223`) gains only the count checks (nTriggers ≤ 4, nEcho ≤ 1); no compare and no
+  keep rule.
+- **Parity (F5)**: the tap builds the parity record from `gdx_eval` + `gdx_build` of the frame with `lastEchoWord`
+  applied, the word `gdx_step` just made for that frame (`GDHubReceiverTap.cpp:569-575`). It stores the word in the
+  record's spare bytes: `rec.pad[0..3]` little-endian, `rec.pad[4]` = 1 when the map has an echo entry, `rec.pad[5]` =
+  `echoRun` (`GDHubDextCore.h:414`). `echoRun` is a u8 the tap keeps next to the state, outside the rule: after each
+  `gdx_step`, 0 when the word is 0, else the last value + 1 (mod 256): the number of frames stepped since the last one
+  with no remapped key held. The engine's `ParitySampler` applies that word with the same pure `gdx_echo_apply` and
+  compares bytes exactly as today. A record with `rec.pad[4]` = 0 while the pushed blob has an echo entry is skipped
+  (counted in `skipped`), never a mismatch. `gdx_eval` itself stays stateless and keeps its signature. Parity checks
+  the driver's eval and build under the driver's own word; it cannot see a wrong word, nor a fault in the shared C
+  (both sides run it).
+- **Independent word check**: the engine's `FrameRing` (`ParitySampler.swift:10-52`) steps its own Swift `EchoFilter`
+  on every frame it records and keeps the word and its own `echoRun` (counted the same way) next to the bytes; its
+  state resets when the ring is enabled or reset, on a revision change and on a new tap instance. `ParitySampler`
+  compares that word with the record's, bits 25–26 masked out, only when both are 0, or both carry the ARMED bit and
+  the two `echoRun` values are equal. The states are then equal when both sides stepped the same reports since the last
+  report with no remapped key held (after such a report the state is that report's alone), which the equal count
+  checks; only misses on both sides that exactly make up for each other inside one hold would pass unseen. Differences
+  count in `echoWordDiffs`; a word without ARMED on either side counts in `echoUnarmed`, armed words with different
+  counts in `echoUnaligned` (recorded, not judged: the engine's reader or the tap missed a frame,
+  `ParitySampler.swift:57-61`, `GDHR_CTR_FRAMES_UNMAPPED`). The masking keeps a press flag seen on one side only from
+  counting as a difference. Matches whose record word has bit 31 count in `parityEchoOk`. It is a gate in S7 and S8,
+  not a fallback trigger.
 - **App path**: `VirtualPadSink.submit(frame:)` steps one Swift `EchoState` under the mailbox lock on **every** call,
-  right after `received += 1` and before the `gateClosed` return and the duplicate drop (`VirtualPadSink.swift:516-527`).
-  `EchoParams` (H from `echoHideMask`, W, G, S) are derived from the mapping and cached in the mailbox per `revision`.
-  The state is reset by the same rule as `loadMap`: when the params change, or when the old or new params have no hide
-  mask. It is never reset by `setDriverDrives`, `resetDeliveryState` or a rebuild of `xlateCache`. The slot carries
-  `(frame, mask)`; the duplicate drop compares `(frame, mask, revision)`, so a frame whose mask alone changed still
-  posts, and a coalesced slot carries the newest mask. `handle` applies the mask and never steps a second state: the
-  Swift path runs `EchoFilter.apply` then `PassthroughPadMapper.padState` (pure, unchanged); from S5 the C path calls
-  `XlateCore.eval(frame, mask:)`, which runs `gdx_echo_apply` into a 16-byte copy and then the stateless `gdx_eval`.
-  App and Driver masks are then the same report by report.
-- **LiveWatch (F6)**: its C core steps its own echo state through `gdx_step`. `configure(core:)` keeps the echo state
-  only when the watch was enabled until now and the new core's echo entry equals the old one's (`gdx_echo_same`);
-  otherwise it does the full `gdx_reset` (its state does not advance while disabled; F6 tolerates the difference).
-- **GUI**: `EnvisionProDevice.ingest` runs its own filter on every frame (not at the publish rate) and gives
-  `RemapLighting.levels` the cleaned frame. `LearnSession` keeps reading raw frames.
-- **Developer mode** (S4(a)): one `EchoState` per run, built from the setup mapping's `echoHideMask` and the S2
-  `EchoParams`, reset at run start and when the mapping or params change. `DevRunCore.onFrame` steps it once on every
-  frame, before and outside the frame-keyed cache of `summary(for:)` (`DevRunCore.swift:1028`), which is keyed on
-  `(frame, mask)`. The cleaned frame feeds the summary (reference pad, neutral check) and `wantedActive`/`isActive`;
-  extra bits are never touched, so paddle activity still reads right. `recordReceiver` keeps the raw frame.
+  right after `received += 1` and before the `gateClosed` return and the duplicate drop (`VirtualPadSink.swift:516-527`),
+  so App and Driver words agree report by report when both stepped the same reports since a report with no remapped
+  key held. `EchoParams` come from the mapping's `echoParams`, cached in the
+  mailbox per `revision`; the state is reset only when the params change (never by `setDriverDrives`,
+  `resetDeliveryState` or a rebuild of `xlateCache`). The slot carries `(frame, word)`; the duplicate drop stays on
+  `(frame, revision)`: a repeated report applies the same bits 0–13 and 31. `handle` applies the word and never steps a
+  second state: the Swift path runs `EchoFilter.apply`, then `PassthroughPadMapper.padState` (pure, unchanged); from S5
+  the C path calls `XlateCore.eval(frame, word:)`, which runs `gdx_echo_apply` into a 16-byte copy and then the
+  stateless `gdx_eval`.
+- **LiveWatch (F6)**: its C core steps the echo inside `gdx_step`; `configure(core:)` keeps today's full `gdx_reset`.
+- **GUI**: `EnvisionProDevice.ingest` (`EnvisionProDevice.swift:225-237`) steps its own filter on every frame (not at
+  the publish rate) and gives `RemapLighting.levels` the cleaned frame. `LearnSession` keeps reading raw frames.
+- **Developer mode** (S4(a)): one `EchoState` per run, from the setup mapping's `echoParams`, reset at run start and
+  when the params change. `DevRunCore.onFrame` steps it once on every frame, before and outside the frame-keyed cache
+  of `summary(for:)` (`DevRunCore.swift:1028`), which is keyed on `(frame, word)`. The cleaned frame feeds the summary
+  (reference pad, neutral check) and `wantedActive`/`isActive`; extra bits are never touched, so paddle activity still
+  reads right. Each press's covered items and how they were found (seen, confirmed, other, unconfirmed) go into the
+  step's report. `recordReceiver` keeps the raw frame.
+- **Engine log**: when the ring's filter flags OTHER, one line "echo: <Label> now adds <item> (stored: <item>)" from
+  its state's `cur`, and one line when that key adds its stored item again; when a press where only that key changed
+  is UNCONFIRMED, one line "echo: <Label> not seen at its press (stored: <item>)"; nothing more per key until it
+  changes.
 
 ### Other v2 semantics (the Swift oracle already has them)
 
@@ -340,31 +578,37 @@ Button entry, layout unchanged: `{u8 item, u8 kind, u8 arg, i8 sign, u16 physMas
 Trigger entry, layout unchanged: `{u8 item 20|21, u8 field 0 lt | 1 rt | 0xFF none, u16 0}`.
 - v2: up to two entries per item, only with distinct fields 0 and 1; 0xFF only as an item's single entry.
 
-Echo entry (new); it has no reserved or padding bytes:
+Echo entry (new, 8 bytes); it has no reserved or padding bytes:
 
 | Offset | Field | Valid |
 |---|---|---|
-| +0 | u16 hideMask | 0x0001..0x1FFF |
-| +2 | u8 window (W) | 0..4 |
-| +3 | u8 grace (G) | 0..8 |
-| +4 | u32 latchSet (S) | non-zero; bits 10..16 and 25..31 zero |
+| +0 | u16 hideMask | 0x0001..0x003F: bit k = extra bit k is remapped (0 paddle outer right, 1 inner right, 2 inner left, 3 outer left, 4 SAX left, 5 SAX right); bits 6..15 zero |
+| +2 | u8 item[6] | the stored item of key k, in that order: 1..10 receiver buttons 1..10 (A B X Y LB RB View Menu L3 R3), 11 D-pad up, 12 right, 13 down, 14 left for a key in hideMask (never 0); always 0 for a key outside hideMask |
+
+With all six remapped on their factory bindings the entry is `3f 00 0c 0d 0b 0e 01 02`; the factory mapping itself has
+no echo entry (its mask is 0) and stays a v1 blob. Start, G1–G5, Profile, buttons 18–19, the triggers and the sticks
+have no code, so they can never be hidden.
 
 Validation: version 1 runs **exactly today's checks** (every existing blob test keeps its reason code). Version 2:
 the button item check is `item < GDX_BUTTON_ITEMS || item == GDX_ITEM_LT || item == GDX_ITEM_RT`, else `GDX_E_ITEM`;
 the per-item counter `itemRules` (`GDHubXlate.c:158, 219`) runs **only for version 1** and is neither read nor written
 in version 2; the range check comes strictly before any array access in both versions. A third trigger entry, a
-repeated field or 0xFF next to another entry → `GDX_E_TRIGGER`; nEcho > 1 or nTriggers > 4 → `GDX_E_COUNTS`; any bad
-echo field → new **`GDX_E_ECHO` = 22** (driver reasons stay below 100).
+repeated field or 0xFF next to another entry → `GDX_E_TRIGGER`; nEcho > 1 or nTriggers > 4 → `GDX_E_COUNTS`; a
+hideMask of 0 or above 0x3F, an item code above 14, code 0 for a key inside hideMask, or a non-zero code for a key
+outside hideMask → new **`GDX_E_ECHO` = 22** (driver reasons stay below 100).
 
 Sizes: largest v2 blob 64 + 16 + 256 + 64 + 16 + 256 + 8 = 680 B (v1: 664). Factory blob 408 B, unchanged. Native
-`gdx_map` gains version, nEcho, the echo fields and `triggers[4]`; it stays far below `GDH_MAP_MAX` 1024 (the static
-asserts in `GDHubReceiverTap.cpp:21` and `GDHubXlateGlue.cpp:8-9` hold; `--check` compiles them before S7).
+`gdx_map` gains `version`, `nEcho`, `echoHide` (u8) and `echoItem[6]` (u16 item masks, decoded once by `gdx_validate`),
+and `triggers[4]`; it stays far below `GDH_MAP_MAX` 1024 (the static asserts in `GDHubReceiverTap.cpp:21` and
+`GDHubXlateGlue.cpp:8-9` hold; `--check` compiles them before S7).
 
 Defines: `GDX_BLOB_VERSION` stays 1; new `GDX_BLOB_VERSION_MAX` 2, `GDX_MAX_ECHO` 1; `GDX_MAX_TRIGGERS` 4 (v1's limit of 2
-is checked by version). C API: `gdx_echo_next(map, state, in, len) -> u32 mask` (0 when the map has no echo entry or the
-frame is bad); `gdx_echo_apply(map, mask, in[16], out[16])`; `gdx_echo_same(a, b)`; `gdx_reset_delivery(state)`. All in
-`GDHubXlate.c` (the only `Shared` file the dext compiles, `project.yml:39-41`). Integer only, no allocation, no libm,
-compiled with `-ffp-contract=off` as today.
+is checked by version). C API, two functions: `uint32_t gdx_echo_next(const gdx_map *, gdx_echo *, const uint8_t *in,
+size_t len)` returns the word (0 when the map has no echo entry, the frame is bad, or no remapped key is held), and
+`void gdx_echo_apply(uint32_t word, const uint8_t in[16], uint8_t out[16])`. The `gdx_echo` type and the two
+`gdx_state` fields go into `GDHubXlate.h`. No delivery reset and no compare helper. All in `GDHubXlate.c` (the only
+`Shared` file the dext compiles, `project.yml:39-41`). Integer only, no allocation, no libm, compiled with
+`-ffp-contract=off` as today.
 
 Encoder (`MapBlobEncoder.swift`):
 - `GDHMTable` gains `version` and `echo`; `serialize` writes `version` (not the compiled define) and byte 27, and appends
@@ -380,23 +624,40 @@ Encoder (`MapBlobEncoder.swift`):
   step-1 messages stay byte-identical. A test checks the table against `envision-pro-layout.json`.
 - v2 order: items 0..14 as today (default owner first, then `remappableIDs` order, so paddles come last), then item 20
   rules, then item 21; trigger entries LT then RT, distinct analog fields in source order or one 0xFF entry; then echo.
+- Echo entry from `echoParams`: written whenever `echoHideMask` is not 0; the item codes of the keys in the mask from
+  `echoItem` (a button n → n; up, right, down, left → 11, 12, 13, 14; never none for a key in the mask), 0 for every
+  other key.
 
 ## Driver and engine (S6), and the replacement (S7)
 
 Driver changes, only these:
 - `GDHUB_CAP_GDHM2` = `1u << 12` in hello `out[2]`, set together with `XLATE` (build 25 reports 0x1F01 = 7937; a
   `GDHUB_TAP_DECLINE` build does not set it). No protocol bump, no new selector.
-- `loadMap` (`GDHubReceiverTap.cpp:203-223`): count checks gain nTriggers ≤ 4 and nEcho ≤ 1; the echo-entry compare
-  and reset rule under "Where it runs". `gdx_reset_delivery` at `:434`, `:564`, `:644` only.
-- Parity record: the echo mask as above. status2 appended (version stays 1, size 676 → 704): 676 u32 `PARITY_ECHO_MASK`,
-  680 u8 `PARITY_ECHO_VALID`, 681–687 zero, 688 u64 `ECHO_LATCHES` (bits newly hidden), 696 u64 `ECHO_HIDDEN_FRAMES`.
-- Self-test (`GDHubXlateGlue.cpp:17-66`): also runs the v2 golden blob and its 128-frame sequence with carried echo
-  state, starting from `memset(&st, 0, sizeof st)`; the sequence runner is plain C in the Dext Core folder so SwiftPM
-  runs the same code. Still all-or-nothing.
-- **Do not touch**: the bodies of tap Start, Stop, free/init and SetPowerState, and the timer setup in Start (an empty
-  `git diff` of those functions against build 24, recorded in the S6 notes; new code is reachable only from `loadMap`,
-  `syncMode` and the frame path); registry sizes (`GDH_MAP_MAX`); `GDHUB_PROTOCOL_VERSION`; the −1 quirk (takeover open
-  question 9). New frame code then runs only after SHADOW is asked for and the self-test passes.
+- `loadMap` (`GDHubReceiverTap.cpp:203-223`): count checks gain nTriggers ≤ 4 and nEcho ≤ 1. Nothing else: no
+  compare, no new reset site (see "Where it runs").
+- Frame path (`shadowFrame`): the LIVE gate's reset at `:564` keeps the echo state (three lines, "Where it runs"), and
+  the tap keeps `echoRun` after each `gdx_step` and writes it to `rec.pad[5]`.
+- Parity record: the echo word as above. status2 appended (version stays 1, size 676 → 720): 676 u32
+  `PARITY_ECHO_WORD`, 680 u8 `PARITY_ECHO_VALID`, 681–687 zero, then u64 counters of frames whose word has a bit set:
+  688 `ECHO_HIDDEN_FRAMES` (bit 31), 696 `ECHO_RECOVERED_FRAMES` (bit 24), 704 `ECHO_OTHER` (bit 25), 712
+  `ECHO_UNCONFIRMED` (bit 26). The tap counts them from `lastEchoWord` after each `gdx_step`; bits 25 and 26 mark the
+  press report only, so those two count presses. `PARITY_ECHO_WORD` is the last frame's word, for diagnosis only.
+- Self-test (`GDHubXlateGlue.cpp:17-66`): also runs the v2 golden blob and its sequence through `gdx_step`, starting
+  from `memset(&st, 0, sizeof st)`, with the `gdx_reset` the sequence marks. The runner is a new
+  `Dext/GDHubVirtualHID/Core/GDHubSeqCore.c` that includes only `GDHubXlate.h` (never `GDHubDefaults.h`) and takes the
+  blob, spec, frame sequence, expected bytes and reset marks as pointer and length parameters, declared in its own Core
+  header with `uint8_t`/`uint32_t`/`size_t` parameters only; `GDHubXlateGlue.cpp` passes the `GDHubDefaults.h` arrays,
+  and `GDHubXlateGoldenTests` passes the same arrays through the `GDHubXlate` module, so both run identical code.
+  Package.swift gets `dependencies: ["GDHubXlate"]` on the `GDHubDextCore` target (`Package.swift:18-22`); no
+  project.yml change (the dext compiles everything under `Dext/GDHubVirtualHID` with `Shared` on its header path). Still
+  all-or-nothing.
+- **Do not touch**: the bodies of tap Start, Stop, free/init, SetPowerState and `syncMode`, the timer setup in Start
+  and every existing `gdx_reset` call except the three-line keep at `:564` (an empty `git diff` of those functions
+  against build 24, recorded in the S6 notes); in the tap, new code is reachable only from `loadMap`'s count checks and
+  the frame path (`shadowFrame`/`gdx_step`: the `:564` keep, `echoRun`, the parity word and the four echo counters);
+  outside the tap, only the hello caps, the status2 writer and the self-test; registry sizes (`GDH_MAP_MAX`);
+  `GDHUB_PROTOCOL_VERSION`; the −1 quirk (takeover open question 9). New frame code then runs only after SHADOW is
+  asked for and the self-test passes.
 
 Engine and GUI:
 - `DextClient.acceptsGDHM2`. `TapSupervisor.mappingOffer` becomes `(revision, maxVersion) -> MappingOffer`.
@@ -407,9 +668,13 @@ Engine and GUI:
   expressible in GDHM" without a version.
 - A mapping that needs v2 on build 24 is `.unsupported`: quiet stand-down, the App drives, no limiter count, never
   pushed, so `GDX_E_VERSION` cannot happen.
-- `TapStatusReport`: `gdhmMax` (an integer; a missing key decodes to 1); `echoValid`, `echoMask`, `echoLatches`,
-  `echoHiddenFrames` and `echoMaskDiffs` (missing keys decode to 0); one engine log line with them. Developer-mode run
-  reports carry them next to the parity numbers, with the sampler's `skipped` count.
+- `TapStatusReport`: `gdhmMax` (an integer; a missing key decodes to 1); `echoValid`, `echoWord`, `echoHiddenFrames`,
+  `echoRecoveredFrames`, `echoOther`, `echoUnconfirmed`, `echoWordDiffs`, `echoUnarmed`, `echoUnaligned` and
+  `parityEchoOk` (missing keys decode to 0); one engine log line with them. The counters are cumulative; they go into
+  the report rounded down to hundreds, like `parityOkBucket` (`TapSupervisor.swift:1028`), so the file is rewritten
+  when one crosses a bucket and never per frame (`TapStatusReport.swift:7-10`); parity is sampled on the 100 ms tick.
+  Developer-mode run reports record them, with `echoValid` and the sampler's `skipped` count, before and after each
+  step, next to the parity numbers.
 - GUI level: `EnvisionProDevice` gets `@Published var gdhmLevel: Int?`. `DriverManager` sets it from the live report's
   `gdhmMax` only when `report.pid` is the running engine's pid; in in-app mode from `DextClient`'s hello caps (2 with
   `GDHUB_CAP_GDHM2`, else 1) once a hello was read; nil in every other case (engine not running, waiting for the engine,
@@ -470,9 +735,12 @@ After U7:
     outer left → L3, paddle inner left → Nothing, SAX left → View, SAX right → Menu, G1 → LT, LT → RT, X → A, G5 → A;
     they do not overlap). That one v2 blob has an echo entry, an item 20 rule, two sources on RT and three on A. The
     owner presses the remapped keys, paddle inner right, the D-pad, A, X, G1, G5, LT and RT for 5 minutes, with holds
-    and combinations. Pass: the "mapping revision accepted" line shows a blob size other than 408; `ECHO_LATCHES` and
-    `ECHO_HIDDEN_FRAMES` rise; `PARITY_ECHO_VALID` = 1 on the samples; 0 parity mismatches; `echoMaskDiffs` = 0; no
-    `driverRefused` or fallback; the self-test still passes.
+    and combinations, and a few times holds D-pad left while pressing paddle outer right. Pass: the "mapping revision
+    accepted" line shows a blob size other than 408; `ECHO_HIDDEN_FRAMES` and `ECHO_RECOVERED_FRAMES` rise;
+    `PARITY_ECHO_VALID` = 1 on the samples; 0 parity mismatches; `echoWordDiffs` = 0 over aligned armed words, with at
+    least one aligned armed word compared while a remapped key was held (`parityEchoOk` rose); no `driverRefused` or
+    fallback; the self-test still passes. `ECHO_OTHER`, `ECHO_UNCONFIRMED` and `echoUnaligned` are recorded, not judged
+    (a profile change, a two-key press or a missed frame is not a fault).
 11. Mapping → Reset all remaps; compare the mapping and layout with the copies.
 12. `defaults delete com.interlinked.gdhub inputPath` (delete, not `driver`, so the Mac is back in the HANDOFF "no
     inputPath stored" state). Within seconds the engine logs `inputPath: shadow -> driver` and reaches LIVE (armed =
@@ -495,7 +763,8 @@ driver fault.
 
 **If the S7 exit fails** (the same rule applies to a Driver-pass failure in S8). Failure is any of: U5 not matching
 within 2 min even after the budgeted reboot; "selftest FAIL" or `driverRefused` in the engine log; a parity fallback or
-any parity mismatch or echo-mask difference in a soak; the layout or mapping differing from its copy. First, with no
+any parity mismatch or echo-word difference on an aligned word in a soak; the layout or mapping differing from its
+copy. First, with no
 owner decision needed: leave the automatic App fallback in place (F4/F5) and make sure `inputPath` = engine so the
 controller keeps working; do not install, rebuild or reboot again. A tap crash loop is the one exception: controller
 off and roll back per §7.2 at once (takeover R9). Then stop: "apprall" does not cover this. Report what failed
@@ -515,7 +784,7 @@ retry, it is built from the S7-pre commit (the current tree holds build-25 drive
 retry needs a fix, a new S6 independent review and the owner's consent in chat; it uses a new number (U3 gives 26) and
 never rebuilds 25 from different code.
 
-## UI (mockup v7 first, approved in S1; code in S3 and S4)
+## UI (mockup v7 first, approved during S2; v7b before the UI code of S3(c) and rows 11 and 12; code in S3 and S4)
 
 Mockup `docs/mockups/remap-buttons-v7.html` is drawn from the layout copy taken at the start of S1 into
 `~/GDHub-rollback/S1-pre/` (the owner's rule: from the real layout; the drawing never opens the data folder; the copy is
@@ -527,8 +796,43 @@ switch "driver build 24 / after the update / level unknown" that shows and hides
 control's menu and the status line; the toolbar and a Front menu with nothing remapped (Reset items hidden); A's menu
 showing that remapping A leaves a remapped SAX key alone; a signal-conflict note and hint line. A Developer-mode part
 shows a `record` step, a judged trigger step, a `builtInEcho` step naming the button it saw, a "cannot judge" verdict,
-the `built_in` wording for a paddle and the trigger-remap skip gone. The owner's OK is quoted before any UI code,
-including S1's `record` display.
+the `built_in` wording for a paddle and the trigger-remap skip gone. The owner's OK was to come before any UI code,
+including S1's `record` display; it came during S2 ("v7 OK", 2026-11-10 21:56), after `fb83ebd` had coded an interim,
+neutral display (the S1 deviation in the ledger; S4(a) aligns it with v7).
+
+Mockup v7b (`docs/mockups/remap-buttons-v7b.html`, copy kept in `docs/mockups`, sent in chat for the phone) is v7 with
+only these changes, listed in a "Changes from mockup v7" box; every text in v7 that describes a placeholder is updated
+with it:
+1. The remapped-key note without "or any button at the same moment as the key" (item 2; v7 `NOTE_RM`, `:254`).
+2. The Profile note's placeholder sentence filled (item 5; v7 `PH_PROFILE`, `:255`), and the texts that describe it:
+   change 5 of the "Changes from mockup v6" box (`:147`) describes the final sentence, "remapped ones keep sending only
+   your pick", instead of a sentence written after the survey; the Profile menu "Try" caption (`:450`) reads "The new
+   note."
+3. The limits paragraph of part 3, "What a remapped paddle does, and its limits" (`:196`), rewritten to v3 ("The limits
+   in v3 against Q3", the owner's view), its milliseconds placeholder removed (v3 has no window); the table above it
+   (`:190-193`) gains the row "Hold the paddle, press D-pad right → Y only; D-pad right shows when you let go of the
+   paddle".
+4. The "Hold" demo models press order (`lights()`, `:295-301`, and "The game gets" `:352`): a remapped key's own
+   button pressed after the key is not sent and is drawn as waiting ("shows when you let go of <key>") until the key is
+   let go, and lost if let go first; held before the key and let go during the hold, it stays lit and sent until the
+   key is let go. One line under "The game gets": "Pressing a remapped key's own button while you hold the key shows
+   only when you let go of the key." With an untouched paddle and the opposite real direction held, the demo leaves
+   that direction out, as the controller's cancel does.
+5. Developer mode: the hiding-check wordings of UI item 11, each with the condition it applies to, replace `:225`; the
+   "cannot judge" tooltip placeholder (`:226`) is filled ("the controller sent no button for this key").
+6. Row 11 as built in S4 (`ROW11`, `:482-494`; `NOTES[11]`, `:526`): the two new steps after the D-pad up step, "Hold
+   Paddle outer right, press D-pad left twice" (D-pad left ×2, R3 held in the background) and "Hold D-pad left, press
+   Paddle outer right twice" (R3 ×2, D-pad left held in the background and never dropping), each with an instruction
+   line saying to press the held control first; the first step's hiding verdict says D-pad right was seen on the
+   receiver before D-pad left and that the pad showed D-pad left while the controller sent no direction; the second's
+   reads "not exercised (the controller sent no D-pad right during the hold)", and it proves the recovery (D-pad left
+   never dropped); `NOTES[11]` gains "Press the held control first, as the step says".
+7. Row 10's survey table (`SURVEY()`, `:474-480`) follows the built template: the six keys first, four "Hold D-pad up,
+   press <paddle> once" steps, rest last, 41 rows.
+8. "What I need from you" (`:236`) names the one placeholder left, the Driver-pass stand-down (`:557`), which is worded
+   in S4.
+Drawn from the same S1-pre layout copy. The owner's OK is quoted before the UI code of S3(c) (the remapped-key note
+included) and before S4(b) codes rows 11 and 12.
 
 What changes on screen:
 
@@ -536,14 +840,14 @@ What changes on screen:
    the `.deferred` kind go (`RemapMenuModel.swift:41-48,76,122-130`).
 2. Their note: on Controller's profile, "Sends the button the controller's profile gives it, and follows that button's
    remap."; remapped, "Sends only your pick. The controller's own button for this key is hidden while you hold it, so
-   pressing that same button yourself, or any button at the same moment as the key, shows only when you let go." (final
-   words in v7).
+   pressing that same button yourself shows only when you let go." (final words in v7b).
 3. Labels: "Paddle outer right → Y", "SAX left → Nothing" (grey). Check the leading and trailing labels on Back and
    Sides for overlap: they grow sideways (only centred labels keep their place).
 4. Lighting: a remapped paddle lights itself and Y (linked) on Front and All, not D-pad right; a paddle on Controller's
    profile still lights D-pad right as today.
 5. Profile note: "Each press also switches the controller's own profile. Paddles and SAX keys left on Controller's
-   profile change with it." plus one sentence on pressing Profile while holding a remapped key, worded after S2.
+   profile change with it; remapped ones keep sending only your pick." (the sentence v7 left as a placeholder; final
+   words in v7b).
 6. "App drives *", the footnote and "Driven by: App (mapping needs a driver update: …)" appear only while the running
    driver cannot take the mapping (build 24). After the update they are gone, and they never show while the driver's
    level is unknown. They name keys in words ("Paddle outer right sends Y: this driver version cannot hide the
@@ -559,12 +863,15 @@ What changes on screen:
     <Label> itself."
 11. Developer mode: the skip "trigger remaps are checked after the next driver update" disappears and trigger steps are
     judged; `record` steps read "recorded" with no verdict; a `builtInEcho` step names the button it saw; a hiding
-    claim the profile hides reads "cannot judge: the controller's current profile sends <X> for this key", and with no
-    echo "not exercised (no echo from the controller)"; a `built_in` requirement on one of the six reads "needs Paddle
+    claim reads "cannot judge: the controller's current profile sends <X> for this key" when the covered item equals
+    the pick, a background item or the button pressed during the hold; "cannot judge: the controller's button for this
+    key was not seen at its press (it sent none or several)" when the press was unconfirmed; "not exercised (the
+    controller sent no <X> during the hold)" when the covered item never reached the receiver during the hold (for
+    example cancelled against a held opposite direction); a `built_in` requirement on one of the six reads "needs Paddle
     inner right on Controller's profile: Reset it in Mapping" (G2–G4 keep "at its built-in function"); `background` fail
     messages such as "A dropped while View was being pressed"; the Developer prompt names keys in words; rows 10, 11
     and 12 appear in the picker.
-12. No new line in the Driver menu; the echo counters go to the engine log and the run report.
+12. No new line in the Driver menu; the echo counters and the "now adds" line go to the engine log and the run report.
 
 ## Templates and checks
 
@@ -587,7 +894,8 @@ Developer-mode additions:
   late echo release is still seen); `seconds` stays the upper limit. `scripts/tools/echo-survey.py` (with Python tests)
   prints per key and per Profile block: the extra bit seen next to the table entry, the echo, the lag on press and
   release, any lead, the re-emergence lag of the other key's direction in two-key blocks, the hat value in each
-  combination, the echo change after a Profile edge during a hold, and any analog field moving.
+  combination, the echo change after a Profile edge during a hold, and any analog field moving. S3(a) fixes how it
+  attributes changes when two keys are pressed together and replaces its gate (row 10 below).
 - S4: `DevExpectedItems` gains `lt` and `rt` (one full pull per press, the other trigger still); the trigger rule judges
   the pad trigger the control is **mapped to**, and fails unexpected button changes; trigger and held steps get the
   unexpected-change rule; the latency watch follows the expected output; `DevExpectation` keeps LT/RT.
@@ -603,11 +911,15 @@ Developer-mode additions:
     the last fall of every expected item; at most one fall (none is allowed: the window may end first). Only then is B
     left out of "unexpected change". Fail messages: "A dropped while View was being pressed (fell N times before the
     last View release)", "A came up after View", "A went down N times (needs 1)".
-  - "cannot judge", for steps with `recordReceiver`: per press the judge takes the standard bits and directions that
-    rose with the key's extra bit, within W reports, from the receiver frames (the observed echo, named in the report).
-    The verdict is split: the pick arriving passes or fails as usual; the claim that the echo was hidden is "cannot
-    judge" when the echo equals the pick, a `background` item or the button pressed during the hold, and "not
-    exercised" when no echo rose. A `builtInEcho` step with no echo is "cannot judge", not a fail.
+  - "cannot judge", for steps with `recordReceiver`: per press the judge takes the item the run's echo filter read for
+    the key (`cur`: seen, confirmed or other; the stored one when unconfirmed) and how it was found, named in the
+    report. The verdict is split: the pick arriving passes or fails as usual; the claim that the echo was hidden is
+    "cannot judge" when that item equals the pick, a `background` item or the item pressed during the hold (reason
+    "same item" or "background"), or when the press was unconfirmed (reason "not seen at its press"); it is "not
+    exercised" when that item is never set in the raw reports from the press report to the last report before the
+    release (for a direction, its diagonals count), as when the controller cancels it against a held opposite. Each
+    verdict names its reason with the wording of UI item 11. A step with no hold that exercises the item gets no
+    conclusive verdict. A `builtInEcho` step with no echo is "cannot judge", not a fail.
   - Rule for templates: a step with several sources on one pad item is split into one step per source (the judge counts
     rises of the item, not which control caused them).
   `triggerRemapSkip` and its wording go (`DevRunCore.swift:172-191`). The `built_in` wording for the six
@@ -615,40 +927,53 @@ Developer-mode additions:
   `dev-run-compare.py` and `docs/protocol/developer-mode-files.md` learn every new key; the compare names the echo per key
   on both paths and fails on a difference.
 
-**10. "Paddles and SAX: what the controller adds (survey)"** (`echo-survey`, S1; steps of kind `record`, no `requires`):
-rest · each of the six keys alone, ten times · hold D-pad up, press each paddle once (same, next and opposite direction
-in the factory profile) · hold paddle outer right, press D-pad up twice (shows "last press wins") · hold paddle outer
-right, press D-pad left twice · hold paddle outer right, press paddle outer left twice (an untouched key with the
-opposite echo) · hold paddle outer right, press paddle inner right twice (a cross pair: right and down) · hold A, press
-SAX left twice · hold SAX left, press A twice · both outer paddles together twice · both inner paddles together twice ·
-SAX left and right together twice · only if Q4 is yes: three blocks, each "hold paddle outer right, press Profile once,
-let go of both, note the light colour", then the six keys three times each.
+**10. "Paddles and SAX: what the controller adds (survey)"** (`echo-survey`, S1; steps of kind `record`, no `requires`;
+41 steps, as built in `Sources/GDHub/Resources/dev-script-echo-survey.json`, which is the source of truth): each of the
+six keys alone, ten times · hold D-pad up, press one paddle once, as four steps in the order inner left (same
+direction), outer right (next), inner right (opposite), outer left (next) · hold paddle outer right, press D-pad up
+twice (shows "last press wins") · hold paddle outer right, press D-pad left twice · hold paddle outer right, press
+paddle outer left twice (an untouched key with the opposite echo) · hold paddle outer right, press paddle inner right
+twice (a cross pair: right and down) · hold A, press SAX left twice · hold SAX left, press A twice · both outer paddles
+together twice · both inner paddles together twice · SAX left and right together twice · only if Q4 is yes (it was):
+three blocks, each "hold paddle outer right, press Profile once, let go of both, note the light colour", then the six
+keys three times each · rest, last (a first rest step cannot know the pad's state).
 Notes: "Do not press Profile except where a step says so." and "After the last block, press Profile until your
 starting colour is back."
-**Gate (S2)**, in every profile seen: for each key pressed alone exactly one extra bit rises, it equals the table entry,
-and no other key's bit moves; each echo changes at most 1 report before its own bit and at most 3 reports after it on
-press, at most 7 on release; in two-key blocks the remaining key's direction comes back at most 7 reports after the
-release; the hat never drops a real direction while a paddle is held; no echo on a stick; after a Profile edge during
-a hold the echo changes within 3 reports or not until release; no combination shows up that the E-cases do not cover.
-Then W = max(1, worst press or Profile-edge lag + 1) and G = max(1, worst release or re-emergence lag + 1): the
-margin, because few edges are measured, costs about 1 ms of swallowed real presses. S = 0x01F803FF. "S2 result"
-records the measured worst values and the chosen W and G separately, the number of profiles and their colours, each
-key's echo per profile, and row 11's probe direction (a direction the survey shows is not paddle outer right's echo in
-any profile seen; up by default) with row 11's picks re-checked against every echo seen. If Q4 is no, W and G come from
-one profile: recorded as a known limit.
-**If the gate fails, or the hat drops a real direction while a paddle is held**: apply the owner's Q8 answer. (b) is
-written out below; for (a), (c) or a failure Q8 does not cover, S2b writes plan v3, which is reviewed against the code,
-and the owner's OK is quoted before S3. For (a), v3 lifts the "no changes to the controller's stored profiles" rule
-and the matching "Not in step 2" line in so many words, adds "Shadow stops forwarding before the run", and re-runs row
-10 after the clearing. For (c), v3 adds a limit kind that the driver level never clears (tag "App drives", "With this
-pick the App drives the controller.", status "Driven by: App (paddle and SAX remaps run in the App)"), a compatibility
-row, and no Driver pass for row 11.
-**Q8 = (b), written out now**: paddles and SAX keep the `.deferred` kind and its note, reworded to "Remapping paddles and
-SAX is not available yet: the controller's own button for these keys could not be hidden reliably. This key sends the
-button the controller's profile gives it, and follows that button's remap." The six stay out of `remappableIDs`; UI
-items 1–5, 8, 9 and 10 are dropped, and row 11. S3's echo filter, S5's echo entry and `gdx_echo_*`, the parity mask and the echo counters are dropped; the GDHM
-v2 version byte and the other three v2 items stay. "Done when" loses its paddle clause. A short v7b is approved before
-S3.
+**Gate (S2), as run**: for each key pressed alone exactly one extra bit, the table entry; echo timing within 1 report
+before and 3 after on press, 7 on release; the remaining key's direction back within 7 reports; the hat never drops a
+real direction while a paddle is held; no echo on a stick; Profile during a hold; W and G derived from the worst lags.
+It failed on one real point, the opposite-direction cancel; its other failed lines came from the reader's attribution
+and from the order of pressing ("S2 result"). W, G and S are no longer used.
+**Gate from v3 on** (any later run of row 10, for example wired mode, another firmware or after an iCUE change; read by
+the fixed `echo-survey.py`), in every state seen. Every gate line reads every attempt, superseded ones included, as
+the S2 numbers were counted; each attempt starts from a fresh state, and a failure names its step and attempt index:
+- each key's presses raise its table bit; any other bit seen in an attempt of an "alone" step is another of the six's
+  table bits (a touched neighbour: reported as "touched <key> N times (attempt i)", and its presses left out of that
+  step), so an owner's slip in a redone attempt never fails the gate, while a timing fault or a clean unconfirmed press
+  in it still does;
+- each key's echo is one receiver button 1–10 or one D-pad direction, the same in every press of that state (never a
+  stick, a trigger, Start, a G key or Profile);
+- every key edge where only that key changes either changes exactly its echo in its own report (the oracle's
+  `changed`: a cancel counts as the opposite direction; a release is read backwards, `changed(report, report before)`,
+  what it took away), or changes nothing because the echo item was already on for at least 8 reports before a press
+  (or stays on for at least 8 reports after a release); anything else is a lag or a lead and fails (S2 copy: 654 such
+  edges, 634 exactly the echo, 20 already on, 0 other);
+- the replay of the v3 rule (`scripts/tools/echo_rule.py`) over every attempt under all 64 hide masks, with the echoes
+  just measured as the stored items: 0 wrong and 0 ghosts against the truth model under "The rule", the number of
+  ambiguous items printed; an unconfirmed press fails only when it is clean (that key is the only one of the six that
+  changed in its report, and nothing else on the pad changed there besides its own echo);
+- no step lost reports to the cap.
+Reported, not judged: Profile during a hold, the hat in each combination, the echo per key and state, the re-emergence
+and Profile-edge lags, unconfirmed presses that are not clean, with their cause ("shared with <key>": two of the six in
+one report; "with <item>": another input in the same report), and row 11's probe direction and picks checked against
+every echo seen. **If this gate fails**: stop for the owner; the facts the rule rests on do not hold for that setup.
+**Q8 = (b), written out** (not applied: the owner chose "Rework the rule"; it stays the other choice of Q10 and Q11):
+paddles and SAX keep the `.deferred` kind and its note, reworded to "Remapping paddles and SAX is not available yet:
+the controller's own button for these keys could not be hidden reliably. This key sends the button the controller's
+profile gives it, and follows that button's remap." The six stay out of `remappableIDs`; UI items 1–5, 8, 9 and 10 are
+dropped, and row 11. S3's echo filter, S5's echo entry and `gdx_echo_*`, the parity word and the echo counters are
+dropped; the GDHM v2 version byte and the other three v2 items stay. "Done when" loses its paddle clause. A short v7b
+is approved before S3.
 
 **11. "Remap check: paddles and SAX (App, then Driver)"** (`remap-paddles`, S4; `recordReceiver: true`). Picks, outside
 every echo seen so far: paddle outer right → R3, paddle outer left → L3, paddle inner left → Nothing, SAX left → View,
@@ -656,10 +981,24 @@ SAX right → Menu; paddle inner right stays on Controller's profile. `requires`
 `built_in` for paddle inner right. Steps, all with written-out expectations: rest · paddle outer right ten times → R3 ·
 paddle outer left ten times → L3 · paddle inner left ten times → nothing · SAX left ten times → View · SAX right ten
 times → Menu · paddle inner right twice → `builtInEcho` · hold paddle outer right, press D-pad up (the S2 probe) twice →
-D-pad up twice, `background` R3 (controls paddle_outer_right, dpad_up) · hold A, press SAX left twice → View twice,
-`background` A (controls a, sax_left) · both outer paddles together twice → R3 and L3, no D-pad · D-pad right twice
-alone → D-pad right · A twice alone → A. Notes list the picks, "Do not press Profile" and end with "Afterwards: Mapping →
-Reset all remaps".
+D-pad up twice, `background` R3 (controls paddle_outer_right, dpad_up) · hold paddle outer right, press D-pad left
+twice → D-pad left twice, `background` R3 (controls paddle_outer_right, dpad_left; expected: the controller sends no
+direction while D-pad left is down, as measured with D-pad left first; the pad must show left) · hold D-pad left, press
+paddle outer right twice → R3 twice, `background` D-pad left (controls dpad_left, paddle_outer_right; D-pad left must
+not drop) · hold A, press SAX left twice → View twice, `background` A (controls a, sax_left) · both outer paddles
+together twice → R3 and L3, no D-pad · D-pad right twice alone → D-pad right · A twice alone → A. Notes list the picks,
+"Do not press Profile", "Press the held control first, as the step says", and end with "Afterwards: Mapping → Reset
+all remaps". The probe (D-pad up) and the picks are outside every echo S2 saw. Each remapped key gets a conclusive
+hiding verdict from its ten-press step. Paddle outer right's echo (D-pad right) is also conclusive in the two steps
+where the paddle is held first (D-pad up and D-pad left). In "hold D-pad left, press paddle outer right" the controller
+cancels right against left, so D-pad right never reaches the receiver: that step's hiding verdict is "not exercised",
+and it proves the recovery (background D-pad left), not the hiding. In "both outer paddles together" the verdict follows
+the order: an echo the controller cancelled through the whole hold is "not exercised". The A-held step is "cannot
+judge" for SAX left by design (its echo is the background item). In S4, before the "hold paddle outer right, press
+D-pad left twice" step is judged, its receiver reports are read for the paddle-first order: hat neutral or left, the
+rule stands; hat right (the paddle's direction, so the first press wins), stop for the owner, write it up as a new limit
+under "What cannot be told apart" (a real direction opposite a held paddle is invisible when the paddle came first) and
+pin it with a V test.
 
 **12. "Remap check: triggers and three sources (App, then Driver)"** (`remap-triggers`, S4). Picks: G1 → LT, LT → RT
 (RT still sends RT), X → A, G5 → A. `requires` on every step: `{g1: lt, lt: rt, x: a, g5: a, a: a, rt: rt}`, so a
@@ -720,19 +1059,62 @@ works), S7 (driver 25, the rollback path, the archive), and the test counts at e
   exists yet); compare the live files with the S1-pre copy (copy again if they changed); `--same-build`; compare after
   the relaunch.
 - **S2** The owner runs row 10 (and the Profile blocks if Q4 is yes); I write "S2 result" with `echo-survey.py`.
-- **S3** (a) `Sources/GDHub/Mapping/EchoFilter.swift` (pure, no AppKit, listed in `EngineIsolationTests`) with
-  `EchoParams` from the S2 result, and its tests. (b) The model changes above; the menu-model part of UI items 1 and 2
-  (in `RemapMenuModel`, the `.deferred` kind and `deferredNote` go, `builtInTitles` gains "Controller's profile (built
-  in)" for the six, the paddle and SAX notes join `notes`) with the rewrites of `RemapMenuTests:111-121` and
-  `RemapMenuItemsTests:71-74`; the `remapLimit` level-1 message with the words table; `signalConflict`; the learn
-  refusal and `learnConflict`; the requires vocabulary and its validation message; the sink stepping in `submit` on the
-  Swift path; the backup rule; DriverManager's `replacing dext` and `request finished` lines (`DriverManager.swift:504,
-  514`) raised from `.info` to `.notice`, so the S4 build (the future S7-pre) logs them at a kept level. Before each S3
-  commit, `grep -rn "deferred\|remappableIDs" Sources Tests` finds no stale use. (c) Native menu look, labels,
-  lighting through the cleaned frame, the Profile note, the hidden Reset items, the conflict hint line, per v7.
-- **S4** (a) Judge changes, `builtInEcho` for untouched keys everywhere, `background`, "cannot judge", the Developer-mode
-  run-long filter, `DevExpectation` for the six, the `built_in` wording, the template checks, `dev-run-compare.py`.
-  (b) Rows 11 and 12 from `DevBuiltins`; row 4's notes reworded. (c) App-only install (copy, `--same-build`, compare).
+- **S2b** Plan v3 (this file). An independent read-only review against the code and the recording: the rule against
+  the oracle and the survey replay, the rule on sequences, the C sketch, the blob and validator, the reset sites, parity
+  and the word check, the App path, the tests, the templates and the slices. Done 2026-11-11: 33 findings, all
+  confirmed, folded in; choices under "Design choices".
+- **S3** First, before any code: the owner answers Q10 and Q11, quoted in a new "S2b answers" section at the end;
+  commit plan v3 (push per Q6); HANDOFF's phase line says S2b done and S3 current.
+  (a) The echo rule on the Swift side, own commit, no UI:
+  - `scripts/tools/echo_rule.py` (standard library): the rule exactly as written above, the truth model under "The
+    rule", a replay over a run report or the fixture, the ghost check and the exhaustive search (V25). It is the
+    reference for Swift and C.
+  - `scripts/tools/echo-fixture.py RUN.json`: writes `Tests/GDHubTests/Fixtures/echo-survey-s2.json` (see "Tests") from
+    the S1-pre copy of the S2 run report. Run once; the output is committed.
+  - `scripts/tools/echo-survey.py`, fixed: `load_run` keeps every attempt with its `superseded` flag and index (in
+    place of the rule at `echo-survey.py:96-97`); an item change belongs to a key only in that key's own edge report,
+    and only when no other of the six changed in that report; a direction a cancel took away counts as the opposite
+    (the oracle's `changed`, read backwards for a release); a change in another report near an edge is listed as "other
+    change, N reports from <key>", never as its echo, and a change in a report where two of the six changed is
+    "shared". So together-sax's A at +5 becomes SAX left's own echo at 0, and together-outer's "lead 1" becomes outer
+    left's. A neighbour bit in an "alone" step is "touched <key> N times (attempt i)" and its presses leave that step's
+    table. The gate becomes "Gate from v3 on" (row 10): kept lines are the table bit, one echo item per key and state,
+    no echo on a stick, no lost reports; changed are the timing line (same report, or "already on" for 8 reports) and
+    the hat line (the replay). Dropped: the lag limits (`echo-survey.py:49-50`, `W_MAX`/`G_MAX`), the `realDirection`
+    call (`:215`), `REAL` and `real_direction` (`:264-291`), the worst-lag accumulators that feed W and G (`:324-325`,
+    `:332-333`) and `w`, `g` (`:338-339`), and the old gate lines in `check_gate` (`:360-377`). Kept as reported output,
+    not judged: `reemergence()` and `profile_edges()` (`:219-261`) and their calls (`:213-214`). The "Chosen: W = …"
+    line (`:451`) becomes "Replay of the v3 rule: N reports × 64 masks: wrong 0, ghosts 0, ambiguous 0, unconfirmed
+    clean 0 (shared S, with-item I)", over all attempts.
+  - `Sources/GDHub/Mapping/EchoFilter.swift` (pure, no AppKit, listed in `EngineIsolationTests`): `EchoParams` (a
+    plain value: hide mask H and stored items S[0..5], with a `factory` item table for tests), `EchoState`, `step`,
+    `apply`. It does not depend on `ControlMapping`; tests build `EchoParams` directly. Tests: V1–V27 in Swift (their
+    Swift halves: V14 with a fresh state, V18 with H = 0, V23 against the written table and the Python oracle), the
+    fixture replay in Swift and Python, the Python tests of the three scripts (with the changes to
+    `test_echo_survey.py` under "Tests").
+  (b) The model changes above (`identityBits`, `echoHideMask`, `echoItem` and `echoParams`, which returns the
+  `EchoParams` of (a), with their `ControlMappingTests`); the menu-model part of UI items 1 and 2 (in `RemapMenuModel`,
+  the `.deferred` kind and `deferredNote` go, `builtInTitles` gains "Controller's profile (built in)" for the six, the
+  notes plumbing and the Controller's-profile note, whose words v7 approved, join `notes`; the remapped-key note stays
+  empty or a marked placeholder until (c)) with the rewrites of `RemapMenuTests:111-121` and `RemapMenuItemsTests:71-74`
+  for kind, groups, reset, re-learn and that note only; the `remapLimit` level-1 message with the words table;
+  `signalConflict`; the learn refusal, the single-direction D-pad learn and `learnConflict`; the requires vocabulary and
+  its validation message; the sink stepping in `submit` on the Swift path; the backup rule; DriverManager's
+  `replacing dext` and `request finished` lines (`DriverManager.swift:504, 514`) raised from `.info` to `.notice`, so
+  the S4 build (the future S7-pre) logs them at a kept level. No install happens before S4, so the empty note is never
+  seen. Before each S3 commit, `grep -rn "deferred\|remappableIDs" Sources Tests` finds no stale use. (c) Mockup v7b
+  first (sent in chat, copy in `docs/mockups`; (a) and (b) do not wait for it, except the remapped-key note, which
+  lands here); after the owner's OK: the remapped-key note's string and its exact-text assertion, native menu look,
+  labels, lighting through the cleaned frame, the Profile note, the hidden Reset items, the conflict hint line, per v7
+  and v7b.
+- **S4** (a) Judge changes, `builtInEcho` for untouched keys everywhere, `background`, "cannot judge" with its three
+  wordings and "not exercised" by the raw reports, the Developer-mode run-long filter, `DevExpectation` for the six, the
+  `built_in` wording, the template checks, `dev-run-compare.py`, the echo counters before and after each step in the run
+  report; the `record` display per v7 (Expected "—", Seen "receiver frames kept: N", the word "recorded" in grey),
+  replacing `fb83ebd`'s interim "recording only" (`DevSession.swift:604`) and the "○" chip
+  (`DeveloperRun.swift:50`, `ControllerView.swift:707`), or keeping the chip if v7b says so.
+  (b) After the v7b OK: rows 11 and 12 from `DevBuiltins`, row 11 as in v7b; row 4's notes reworded. (c) App-only
+  install (copy, `--same-build`, compare).
   I open every paddle and SAX menu through the accessibility ids on Back and Sides, again after cycling Developer →
   Mapping → Edit layout → Mapping on every tab (the anchor-loss regression). Edit layout is left only with Cancel,
   never with "Done (lock layout)" and never by quitting or relaunching; no label is clicked, dragged or selected while
@@ -740,26 +1122,35 @@ works), S7 (driver 25, the rollback path, the archive), and the test counts at e
   layout and mapping byte-equal to the S4 copies; no `layout-backups` file newer than the install. If a check fails,
   stop, leave the app running and ask the owner; never restore over the data folder without the owner's word.
   (d) The owner's sitting, in the order under "Templates and checks". Rows 11 and 12: the App pass must pass, with a
-  conclusive hiding verdict for each remapped key (all "cannot judge": press Profile and run again, or ask); at the
-  Driver pass the prompt "Driver pass cannot be confirmed: …" is expected — press Stop, not Run anyway (that prompt is
-  the check that the new app stands down on build 24). Afterwards I compare the mapping and layout with the copies,
+  conclusive hiding verdict for each remapped key (all "cannot judge": press Profile and run again, or ask), and row
+  11's receiver reports of "hold paddle outer right, press D-pad left twice" are read for the paddle-first cancel as
+  row 11 says, before the step is judged; at the Driver pass the prompt "Driver pass cannot be confirmed: …" is
+  expected — press Stop, not Run anyway (that prompt is the check that the new app stands down on build 24). Afterwards I compare the mapping and layout with the copies,
   check for no before-edit file, and check the engine log for no `driverRefused`, no `fallback:`, no `limiter: tripped`
   and no `breaker: tripped`, and that `tapBreakerTrippedAt` is absent.
 - **S5** (a) Version-gated validator and the echo entry. (b) `gdx_eval` item 20/21 and trigger max, `gdx_echo_next`,
-  `gdx_echo_apply`, `gdx_echo_same`, `gdx_step`, `gdx_reset_delivery`. (c) Encoder versions with `maxVersion: Int = 1`,
-  `remapLimit(_:level:)`, the sink's C core at version 2 through `XlateCore.eval(frame, mask:)` (the Swift filter in
-  `submit` still does the stepping), the `LiveWatch.configure` rule, `EnvisionProDevice.gdhmLevel` and the menu model's
-  level (wired to real values in S6). (d) The `GDHubDefaults.h` generator **appends** a v2 blob and a 128-frame
-  sequence (expected bytes from the Swift oracle: same-report and lag-1 echoes, a lead of 1, combinations, a dropped
-  and returning direction, an echo change between holds, a Profile edge mid-hold, a reset mid-hold) and a plain-C
-  sequence runner that starts from a zeroed state. Exit includes `build-xcode.sh --check`. From here the seeded hash
-  makes the guard refuse `--same-build`: the next install is S7.
+  `gdx_echo_apply`, the echo step inside `gdx_step` and `lastEchoWord`; `gdx_reset` unchanged. (c) Encoder versions
+  with `maxVersion: Int = 1` and the echo entry from `echoParams`, `remapLimit(_:level:)`, the sink's C core at version
+  2 through `XlateCore.eval(frame, word:)` (the Swift filter in `submit` still does the stepping),
+  `EnvisionProDevice.gdhmLevel` and the menu model's level (wired to real values in S6). (d) The `GDHubDefaults.h`
+  generator **appends** a v2 blob (row 11's and row 12's picks plus paddle inner right → Y, so its hide mask is 0x3F
+  and every key is hidden; Y is outside every echo seen and not used by row 12; this golden blob is not row 11's
+  mapping) and a sequence of at least 128 frames (expected bytes from the Swift oracle: V1, V3, V4, V5, V6, V8, V11,
+  V13, V14 with its marked `gdx_reset`, V16, in that order), and the plain-C sequence runner
+  `Dext/GDHubVirtualHID/Core/GDHubSeqCore.c` that starts from a zeroed state (see S6's self-test), with
+  `dependencies: ["GDHubXlate"]` on `GDHubDextCore` in Package.swift. `GDHubXlateEchoTests`: V1–V27 in C on the same
+  scripted sequences as `EchoFilterTests`, including V14 with `gdx_reset`, V18 with a v2 nEcho-0 map byte-identical to
+  the v1 map, and V23 Swift = C = the Python oracle. The fixture replay runs against C too, and `VirtualPadSinkTests`'
+  C-path half. Exit includes `swift build` of `GDHubDextCore`, `DextSourceRulesTests` and `build-xcode.sh --check`.
+  From here the seeded hash makes the guard refuse `--same-build`: the next install is S7.
 - **S6** (a) Cap bit and status2 offsets in `GDHubProtocol.h`, the `DextProtocol.swift` mirror, the status2 writer.
-  (b) Driver C++: hello caps, `loadMap` (counts, echo-entry compare, reset sites), parity mask and counters, self-test;
-  no change in Start, Stop, free/init or SetPowerState. (c) `DextClient`, `TapSupervisor` (`mappingOffer` with
-  `maxVersion`), `EngineService`, `TapStatusReport`, `ParitySampler` (mask applied, skip rule, `FrameRing` filter and
-  `echoMaskDiffs`), the GUI level wiring from `gdhmMax` and the hello caps. (d) Text fixes in the takeover plan §7.1,
-  §7.2 and common rules:
+  (b) Driver C++: hello caps, `loadMap` count checks, the `:564` echo keep, `echoRun`, the parity word and the four echo
+  counters, self-test; no change in Start, Stop, free/init, SetPowerState, `syncMode` or any other `gdx_reset` call.
+  (c) `DextClient`, `TapSupervisor` (`mappingOffer` with `maxVersion`), `EngineService`, `TapStatusReport`,
+  `ParitySampler` (word applied, skip rule, `FrameRing` filter with its `echoRun`, the masked and aligned compare,
+  `echoWordDiffs`, `echoUnarmed`, `echoUnaligned` and `parityEchoOk`, the "now adds" and "not seen" log lines), the GUI
+  level wiring from `gdhmMax` and the hello caps.
+  (d) Text fixes in the takeover plan §7.1, §7.2 and common rules:
   - U5 reads a `scripts/dext-log.sh` capture started before U4; the "build 25 is proven by" check above stands in when
     the root line was missed or after a reboot; U5 uses the N that U3 printed.
   - "If U3 fails" as above; the pre-U1 latch check; a step "copy layout and mapping, compare after the relaunch".
@@ -786,14 +1177,17 @@ works), S7 (driver 25, the rollback path, the archive), and the test counts at e
     armed. If it latches again on build 24, stop and investigate; do not loop.
   - The stale `DriverManager.swift` and `GDHubVirtualHID.cpp` line citations.
   (e) `build-xcode.sh --check` passes, then the independent pre-install review of everything the driver runs on a frame
-  or a mapping ("no crash from any validated v2 map or any 16-byte frame"), the reset sites, capability gating, parity,
-  the encoder's version choice and the Start/Stop/SetPowerState diff. Findings fixed, then `--check` again.
+  or a mapping ("no crash from any validated v2 map or any 16-byte frame"), the echo step in `gdx_step` and its state
+  across every reset site (the `:564` keep included), capability gating, parity and `echoRun`, the encoder's version
+  choice and the Start/Stop/SetPowerState/`syncMode` diff. Findings fixed, then `--check` again.
 - **S7** As under "The replacement (S7)".
 - **S8** The owner's sitting in the order under "Templates and checks". Exit in full: every step passes on both paths
   (untouched paddles and SAX keys by `builtInEcho`, the same echo names on both paths); each remapped key of row 11 had
-  at least one conclusive hiding verdict on App and on Driver; during row 11's Driver pass status2 shows
-  `PARITY_ECHO_VALID` = 1 and `PARITY_ECHO_MASK` ≠ 0 while a remapped key is held, the parity ok count rose with 0
-  mismatches and not every sample was skipped, `ECHO_HIDDEN_FRAMES` > 0 and `echoMaskDiffs` = 0; no `fallback:`,
+  at least one conclusive hiding verdict on App and on Driver, and its two D-pad-left steps passed on both; in row 11's
+  Driver pass the run report shows `echoValid` = 1 at every before and after sample, `echoHiddenFrames` higher after
+  than before for each step that holds a remapped key, `echoRecoveredFrames` higher after than before on the two
+  D-pad-left steps, and, over the whole pass (the counts are in hundreds), `parityEchoOk` and the parity ok count risen
+  with 0 mismatches, not every sample skipped, and `echoWordDiffs` = 0 over aligned armed words; no `fallback:`,
   `limiter: tripped` or `breaker: tripped` line, and `tapBreakerTrippedAt` absent at the end; mapping and layout equal
   to their copies after "Reset all remaps". A Driver-pass failure follows "If the S7 exit fails".
 - **S9** Results into this plan, the compatibility table into takeover §5.7, HANDOFF, remap-plan R6 ticked.
@@ -819,53 +1213,140 @@ but Controller's profile; level 2: nothing marked) and `:235-249` run at both le
 and `remapLimit` · `RemapMenuItemsTests:71-74` · `DevExpectationTests:12-27` (the six resolve to `builtInEcho`) ·
 `DevRunCoreTests:671-696` (skips become judged steps) · `DevTemplateTests:112` (validation message) and `:625-641`
 (hashes of rows 10–12 and row 4's reworded notes; appended order; `remap-` prefix for templates with `requires`) ·
-`InputPathMenuTests:101`, `LiveLifecycleTests:96` (wording only at level 1).
+`InputPathMenuTests:101`, `LiveLifecycleTests:96` (wording only at level 1) · `scripts/tools/test_echo_survey.py`
+(S3(a)): `:115-118` and `:331-346` drop the (W, G) asserts and keep the rest; `:135-163` become one test (a lag of 1
+in its own report fails, "already on for 8 reports" passes, the replay reports the unconfirmed press); `:176-190` the
+re-emergence is reported, not judged, and G goes; `:199-219` `realDirection` goes, the hat case is judged by the
+replay (0 wrong, 0 ghosts); `:221-237` the Profile-edge lag is reported only and the W assert goes; `:311-317` the JSON
+keys lose "W" and "G" and gain the replay line; `:319-327` flips: a superseded attempt with a 5-report lag now fails the
+gate and names the attempt, and a twin where a superseded attempt touched a neighbour passes with "touched" reported.
 
 New:
-- `EchoFilterTests` and `GDHubXlateEchoTests` (Swift oracle and C, the same scripted sequences, cleaned frames and pad
-  bytes compared; every case states its W, G and lags):
-  E1 same-report press and release → only the pick · E2 hidden SAX left (echo A), real A during the hold → not seen,
-  appears G+1 reports after release if still held · E3 A held before SAX left → stays held until release · E4 press lag
-  W hidden, lag W+1 leaks (pins the limit) · E5 release lag G hidden · E6 hidden right plus real up as a diagonal → pick
-  plus D-pad up · E7 two hidden paddles, last press wins → no ghost, with release lag 0 and with release lag above W
-  (W = 1, G = 3) · E8 two hidden keys with the same echo, one released → no ghost · E9 hidden and Controller's-profile
-  keys with different echoes → the latter's echo passes · E10 echo changes between holds (as after a Profile press) →
-  still hidden · E11 reset with a hidden key held → every `S` bit down hidden until let go, a held trigger included ·
-  E12 Swift: `EchoParams` with H = 0 → cleaned frames equal raw frames; C: a hand-built v2 map with nEcho 0 and the same
-  rules as a v1 map → `gdx_echo_next` returns 0 and `gdx_step` output is byte-identical to the v1 map · E13 Start, a G
-  key or Profile in the hidden key's press report → visible · E14 LT/RT echo hidden with the default `S`; a real trigger
-  pull outside the window passes · E15 replay of `02-button-walk.txt` with all six hidden → no echo leaks, frames
-  without a paddle or SAX bit unchanged · E16 opposite directions cancelling → no ghost, also with release lag above W ·
-  E17 the echo direction dropped by a real opposite press (hat 6, and hat 8) and coming back → stays hidden · E18 the
-  same with a perpendicular press on a last-press-wins hat (hat 0) · E19 the echo direction dropped by an untouched
-  paddle's opposite echo and coming back → hidden · E20 two hidden keys with different echoes: after one is let go and
-  its window ends, a real press of its echo passes while the other is held; its echo with release lag 1 does not stay
-  in the echo set · E21 the remaining key's direction coming back at max(W, G) + 1 after a release leaks (pins the
-  limit) · E22 an echo leading its bit by 1 → one-report flash, then hidden for the hold, released cleanly · E23 a lead
-  of 2 → leaks for the whole hold (pins the limit) · E24 a real press one report before the press edge → hidden until
-  let go (pins the cost) · E25 a rise one report before a release edge while another hidden key stays held → not
-  latched · E26 a Profile edge during a hold with the echo changing within W → hidden; at W+1 → leaks · E27 a new map
-  with an identical echo entry pushed mid-hold (A held plus a hidden paddle) → A visible, output byte-identical to no
-  push · E28 a new map with a changed `S`, or after a map without an echo entry → behaves as E11 · E29 W = G = 1 on a
-  lag-0 sequence → the same output as W = G = 0 except a press within one report of an edge.
-- `GDHubXlateSequenceTests.testRandomWalkWithPaddleEchoes`: 100k frames, random per-key echoes that change at random
-  "Profile presses" (also mid-hold), random real presses, hat drops and returns, leads of 0–1, release lags and new-map
-  pushes with equal and changed echo entries; Swift pipeline against C `gdx_step`, byte for byte.
-- `VirtualPadSinkTests`, driven through `submit()`: a still controller (runs of identical reports) and a burst that
-  forces coalescing, with W = G = 1, through row 11's "hold paddle, D-pad up twice" after a still period, E2's grace
-  ending at rest and a coalesced paddle tap → the posted pad states equal what `gdx_step` gives for the same report
-  stream; real A and a remapped paddle held across `setDriverDrives(true → false)` → the first posted frame shows A
-  plus the pick and no D-pad right, on the Swift path and on the C path across the `xlateCache` reset; a paddle let go
-  during LIVE, then a fallback → no stale latch hides a real press; a frame whose mask alone changed still posts.
+- `EchoFilterTests` (S3) and `GDHubXlateEchoTests` (S5) (Swift and C, the same scripted sequences built with the
+  controller model of "Facts"; cleaned frames, words and pad bytes compared; factory stored items and factory echoes
+  unless a case says otherwise; every sequence starts with a report at rest). V2, the second half of V4, V5's
+  paddle-first order, V6 and V7 rest on the controller model, not on the recording (S2 has no real change during a
+  hold): V1 each of the six alone, same-report press and release → only the pick, on press, hold and release; OTHER
+  and UNCONFIRMED never set · V2 SAX left hidden, real A pressed and let go inside the hold → never shown; pressed
+  inside and still held at the release → shown from the release report · V3 A held, SAX left tapped → A without a
+  break; A let go during the hold → A stays until the release (pins the limit) · V4 D-pad up held, paddle inner right
+  hidden → up on every report (the S2 gate case); paddle held first, D-pad up pressed twice → up twice; RECOVERED set ·
+  V5 the opposite cancel for all four paddles in both orders · V6 neighbours: real up + paddle outer right → up; outer
+  right and inner right hidden, real up then real left → up, then left; a real up+left with outer right → up+left · V7
+  the same direction pressed during the hold → hidden until the release; held from before → kept; let go in the very
+  report of the press → kept until the release; rocked to the opposite during the hold → none, then the old direction
+  until the release (pins the limit) · V8 both outer paddles hidden: left-right frozen at its value before (none, and
+  left held from before), up-down passes; the pair pressed in one report → the same (pins Q10) · V9 outer right hidden,
+  outer left untouched, pressed one after the other and held → left; real right held from before → none (the
+  controller's own cancel); the two pressed in one report → outer left's left shows only at outer right's release
+  (pins the limit) · V10 outer right hidden, inner right untouched → down passes, and the reverse → right passes · V11
+  another item at the press (stored D-pad right; the controller adds Y, A, X, B, LB, RB, up, down or left, as after a
+  Profile press) → that item and the stored D-pad right hidden for the hold (a real D-pad right pressed during it shows
+  at the release), no direction worked out, OTHER set; the next hold with the stored item → no OTHER · V12 the item
+  already on at the press (real up held, then inner left; real A held, then SAX left) → the stored item, confirmed;
+  plus one other change in the press report: real right held, outer right + Y → Y passes at once; real A held, SAX
+  left + X → X passes; A and up held, SAX left as up is let go → up gone at once, no D-pad up, no RECOVERED; real right
+  held, outer right + up → up passes, then up let go → right only, no D-pad down; up held, inner left + right → right
+  passes, no D-pad left after it; down held, inner right + left → left passes; A held, SAX left + up → up passes, no
+  D-pad down after it; up+right held, outer right as up is let go → right; in each the key's own item stays until the
+  release (the limit) and no other item appears · V12b after a profile change, the key's new or old button already on
+  at the press (pins Q11 (b)): stored D-pad right, now A, real A held first → UNCONFIRMED, a real right during the hold
+  never shown, A stays until the release, no ghost after it; stored A, now X, real A and real X held first → A and X
+  stay until the release; stored D-pad right, now up, real right held first → up shows for the hold, right while it
+  is held, no other direction; stored A, now X, real A held first → X shows for the hold, A stays · V13 unconfirmed:
+  two of the six pressed in one report with stored items the report contradicts (pins Q11 (a)), and another item
+  changing in the very report of a press after a profile change (stored A, now X, SAX left + Y → X shows for the hold,
+  pins Q11 (c)) → the stored item covered, no direction worked out, UNCONFIRMED set, no ghost on any later report of
+  the hold · V14 a reset
+  (C `gdx_reset`, Swift a fresh state) at every report of a hold → the stored item covered from the first report after;
+  a covered real item held from before drops until the release; a real opposite direction held shows at the release;
+  ARMED clear until a report with no hidden key held; with the actual echo other than the stored one (outer right now
+  adds Y; outer right now adds D-pad left, with a real right during the hold, which shows nothing) → the new button
+  shows until the release and UNCONFIRMED is set (pins Q11 (d)); the same holds with the state kept (the `:564` site,
+  no reset) → the new button stays hidden for the whole hold · V15 a real opposite direction pressed in the very same
+  report as the paddle → shown at the release (pins the limit); another button in that report → passes at once; the
+  opposite let go in the press report and pressed again during the hold (D-pad left held; outer right pressed as left
+  is let go; left again; the same for inner right with up) → the press seen, left (up) shown at once with RECOVERED,
+  UNCONFIRMED never set ·
+  V16 Start, a G key, Profile, LT, RT, buttons 18–19 and the sticks in the press report and during the hold → untouched,
+  byte for byte · V17 Profile pressed and let go during a hold → nothing else changes · V18 Swift: H = 0 → cleaned
+  frames equal raw frames; C: a v2 map with nEcho 0 and the same rules as a v1 map → `gdx_echo_next` returns 0 and
+  `gdx_step` output is byte-identical to the v1 map · V19 only untouched keys held (row 11's set with inner right
+  pressed alone) → output byte-identical to the input · V20 a repeated report gives the same state and the same word
+  except bits 25–26 (set on the first copy only), at every report of the survey fixture with all six hidden, with
+  stored items factory and turned by one key (every press "other"), on the cleared-bindings and two-keys-in-one-report
+  sequences of V13 and V26, and on the random walk; after any report with no remapped key held the state equals a fresh
+  state given that report, all 16 bytes; two different histories ending on the same unheld report give equal states ·
+  V21 three inputs on one axis (real up, untouched inner right, hidden inner left, in each order; and a button pressed
+  in the very report of the hidden paddle's press there → hidden for that hold) and an untouched key adding the same
+  item as a held hidden key → pins both rare limits · V22 timing slips (synthetic, never measured): a release lead of
+  one report → one report of the opposite direction; a release lag → one report of the echo; a press lag →
+  UNCONFIRMED, no ghost; a press lead → the echo shows for the hold (pins the limit text) · V23 the exhaustive per-axis
+  table: for each axis, hidden {+, −, both} × untouched {none, the other one} × real before the press {+, 0, −} × real
+  in the press report {unchanged, let go, pressed} × real during the hold {+, 0, −}, plus the key's item already on
+  with one other change in the press report, the expected direction written out in the test; Swift equals C equals the
+  Python oracle · V24 replay of `02-button-walk.txt` with all six hidden → no echo leaks; frames without a paddle or SAX
+  bit unchanged · V25 (Python, `echo_rule.py`) the exhaustive search: every sequence from rest of 4 reports with up to
+  two input changes per report (the four real D-pad directions, never two opposite, A, X and the keys outer right,
+  outer left, inner right, inner left, SAX left; factory echoes) under hide sets 0x01, 0x09 and 0x3F (0x3F at 3
+  reports): 0 ghosts; S2b measured 0 at 5 reports for 0x01, 0x03, 0x13, 0x30 and 0x3F and at 4 reports with up to
+  three changes for 0x01 and 0x09, while the rule as first written showed ghosts at 4 reports · V26 bindings cleared (the
+  controller adds nothing; pins the limits of "What the owner gets"): D-pad left held, outer right pressed in the very
+  report left is let go → left stays shown until the release; outer right + Y in one report → Y hidden for the hold, no
+  ghost; outer right + up in one report, then up let go → nothing shown; D-pad right pressed in the very report of
+  outer right's press, then let go → D-pad left shows until the release · V27 a key in the hide mask stored with a
+  binding that names no single item (outer right learned as `.hat(1)`, a diagonal) → its stored item is the factory
+  D-pad right; after a reset and after a two-key press D-pad right stays hidden for the whole hold.
+- `EchoReplayTests` (Swift, C from S5) and its Python twin, on a committed fixture made from the survey recording,
+  `Tests/GDHubTests/Fixtures/echo-survey-s2.json`. How it is made, with no private data: `scripts/tools/echo-fixture.py`
+  reads the S1-pre copy of the S2 run report and keeps, per step and attempt, only `stepId`, `controls`, `superseded`
+  and the receiver list as `{n, hex}`. It drops `t`, the header (mapping, builds, decode table), notes, path events,
+  timestamps, metrics, verdicts and the pad side. It refuses any entry that is not a 16-byte report 0x06, and it writes
+  the oracle's expected words for nine hide sets (none, all six, row 11's set, each key alone). The result holds
+  controller reports and words only (789 reports, about 130 KB); it is checked by eye for anything else before the
+  commit. A report the recorder left out equals the one before it, and a repeated report changes no state and no cleaned
+  byte (V20), so the replay needs no filling; each attempt starts from a fresh state. Checks: under all 64 hide masks
+  Swift equals C on every report (masked words, bits 25–26 out, and states); the nine stored sets match the fixture;
+  H = 0 leaves every report unchanged; the Python test replays the oracle against the truth model: 0 wrong and 0 ghosts
+  under all 64 masks, 0 ambiguous items (measured in S2b on the scratch copy with the reviewed rule: 0, 0 and 0, no
+  OTHER and no UNCONFIRMED press; the opposite cancels at n=203344, 234540, 260104 and 260415 come out as D-pad up and
+  left, and under masks that hide one paddle of a pair the cancels at 283080, 283789, 339575, 340181, 345833 and 346261
+  show the untouched paddle's direction; A and up held through SAX left and inner left taps stay held). "0 wrong"
+  covers only holds in which the real controls did not visibly change: S2 has no such change during a hold.
+- `GDHubXlateSequenceTests.testRandomWalkWithPaddleEchoes`: 100k frames of the controller model (buttons ORed, the hat
+  per axis with opposites cancelling, the real D-pad never on two opposite directions, real diagonals allowed), random
+  holds of the six, random real presses; when anything changes, two inputs change in the same report about a third of
+  the time, so key edges often come with another change; echo sets that change between holds, on a report with nothing
+  held, as after a Profile press (the factory set; A X Y B with RB; the directions turned round with LB and X;
+  nothing), stored items = factory, random resets and map pushes; Swift pipeline against C `gdx_step`, byte for byte.
+  No ghost (the truth model's definition, with the walk's known real input): strict while the factory set is in use;
+  under a changed set a held key's actual echo is exempt (the Q11 cases); under the cleared set a direction on a held
+  paddle's axis is exempt (the limit of "What the owner gets"). Real items hidden that are not a held key's stored
+  item are counted and printed, not judged (the rare limits). (S2b, the reviewed rule's Python transcription: 0 ghosts
+  in about 7.4 million factory-set reports over five hide sets, with and without random resets; the rule as first
+  written showed ghosts in the same walk.)
+- `VirtualPadSinkTests`, driven through `submit()` (Swift path in S3(b), C path in S5(c)): a still controller (runs of
+  identical reports) and a burst that forces coalescing, through row 11's "hold paddle outer right, D-pad left twice"
+  and "hold D-pad left, paddle outer right twice" after a still period, and a coalesced paddle tap → the posted pad
+  states equal what the Swift pipeline (`EchoFilter.step`/`apply`, then `PassthroughPadMapper.padState`) gives for the
+  same report stream, and from S5 what C `gdx_step` gives, byte for byte; real A and a remapped SAX left held across
+  `setDriverDrives(true → false)` → the first posted frame shows A plus the pick, on the Swift path and (S5) on the C
+  path across the `xlateCache` reset; a paddle let go during LIVE, then a fallback → nothing stays covered; a duplicate
+  frame is dropped and its word equals the last one apart from bits 25–26.
 - `GDHubXlateBlobTests` v2: versions 1 and 2 accepted, 0 and 3 refused; rules on items 20 and 21 together with item 14
   accepted in v2, refused in v1; 32 rules all on item 20 and 32 all on item 21 accepted; items 15–19 and 22–255 refused
   with `GDX_E_ITEM` before any counter is touched; two trigger entries with distinct fields accepted, same field, 0xFF
-  in a pair or three entries refused; each echo field out of range (bits 10..16 in `S` included) → `GDX_E_ECHO`; v2
+  in a pair or three entries refused; a hideMask of 0 or 0x40, an item code of 15, code 0 for a key inside the mask
+  (mask 0x01 with item[0] = 0), and a non-zero code for a key outside the mask → `GDX_E_ECHO`, the factory codes
+  `0c 0d 0b 0e 01 02` with mask 0x3F accepted; v2
   with nTriggers 3 and a non-zero byte in the 4 padding bytes after the trigger entries → `GDX_E_FLAGS`; nEcho 1 with
   the echo section missing, or followed by 8 extra bytes with `length` patched → `GDX_E_LENGTH`; fuzz with a separate
   v2 corpus. These and the fuzz run once under AddressSanitizer and UBSan in S5.
-- `DextXlateTests`: `gdx_reset` zeroes the echo state and `lastEchoMask`; `gdx_reset_delivery` keeps them;
-  `gdx_echo_same`.
+- `DextXlateTests`: `gdx_reset` zeroes the echo state and `lastEchoWord` with its body unchanged; `gdx_step` on a v1
+  map never touches the echo state; `gdx_echo_apply` changes only buttons 1–10 and the hat nibble; a string check that
+  `shadowFrame`'s LIVE-gate reset keeps `xstate.echo` around `gdx_reset` and that `syncMode` contains no echo code; a C
+  test that the echo state (with ARMED) is unchanged across that keep, so the engine's ring and the driver stay
+  aligned.
 - `GDHubXlateRemapGoldenTests` v2 cases (paddle → Y, paddle → RT, three sources on Y, A → LT, LT and RT → RT, LT ↔ RT);
   `remapLimit(_, level: 2)` nil on random mappings drawn from a new 29-id seed, with paddle and SAX masks from the table.
 - `MapBlobEncoderTests`: every S1 pin still version 1 and byte-identical with `maxVersion: 2`; v2 rule, trigger and
@@ -874,18 +1355,26 @@ New:
   blob for each of the three level-1 kinds); a stray-bit overlap encodes with `remapLimit` nil; the words table equals
   the layout labels; a default mapping with stray bits on `lt`/`rt`, and the same swapped, stays version 1 and
   byte-identical (`triggerFeed` stays `.analog`).
-- `GDHubXlateGoldenTests`: the appended v2 blob and sequence regenerate and pass the C runner the self-test uses.
+- `GDHubXlateGoldenTests`: the appended v2 blob (hide mask 0x3F) and sequence regenerate and pass the C runner the
+  self-test uses (`GDHubSeqCore.c`, called with the same arrays through the `GDHubXlate` module).
 - `GDHubXlateBenchTests`: the worst v2 map (29 rules, echo) in C at or below the Swift mapper.
-- `DextProtocolTests` (bit 12; offsets 676–704) · `TapStatusReport` (missing `gdhmMax` → 1; missing echo keys → 0; the
+- `DextProtocolTests` (bit 12; offsets 676–720) · `TapStatusReport` (missing `gdhmMax` → 1; missing echo keys → 0; the
   line never says "driver update" for a signal conflict) · `TapSupervisor` (caps 0xF01 plus a paddle remap →
   stand-down, no driver call, limiter untouched; bit 12 → v2 pushed; a v1 mapping pushed as v1 on both; the
   `maxVersion` passed to `mappingOffer` at `:445` and `:761` follows the caps; offer re-evaluated on a caps change) ·
-  `ParitySampler` (mask used; blob with echo and record without mask → skipped; `echoMaskDiffs` stays 0 on equal masks,
-  counts a difference, and does not arm before the quiet run) · `LiveWatch` (a same-echo push while enabled keeps the
-  echo state; after a disabled period it resets) · `DextTapTests` (`loadMap` counts; the echo state kept on a same-echo
-  push and reset on a changed or missing echo entry and on a forced reload; parity mask).
+  `ParitySampler` (word applied; blob with echo and record without the echo flag → skipped; `echoWordDiffs` stays 0 on
+  equal words and counts a difference; words that differ only in bits 25–26 are equal; a word without ARMED on either
+  side is not compared and counts in `echoUnarmed`; armed words with different `echoRun` counts are not compared and
+  count in `echoUnaligned`; a ring that skips a press report, or the last unheld report, gives an unaligned record and no
+  word difference; a ring that misses the press report and records its repeat gives no difference; equal counts with
+  different words still count in `echoWordDiffs`; `parityEchoOk` counts matches whose record word has bit 31; the
+  ring's filter and count reset on enable, reset, revision and tap instance) · `LiveWatch` (`configure` resets the echo
+  state with the rest) · `DextTapTests` (`loadMap` counts; the parity word, its flag and `echoRun` in `rec.pad[5]`; the
+  four counters; `echoRun` in C and the ring's count in Swift agree on the V cases).
 - `ControlMappingTests` (`.builtIn` default for the six; Nothing storable; paddle keys decode; `identityBits` with the
-  table written out in the test, 0 for other ids; a stored paddle bit that differs from the table does not move the
+  table written out in the test, 0 for other ids; `echoItem` for every binding kind (a diagonal, a trigger, button 11
+  and a missing binding give the key's factory item, never none) and `echoParams` of the default mapping = mask 0 with
+  the factory items; the learn of a paddle while D-pad up is held stores `.hat(2)`; a stored paddle bit that differs from the table does not move the
   remap to another paddle; `triggerFeed` by bits only for the six; `signalConflict` with a stray face-control bit; the
   learn refusal; `learnConflict` returns "x", not "sax_left", for G1 learned as button 3 while SAX left is stored as
   button 3 with no bits) · `PassthroughPadMapperTests` (paddle inner left → Y: extra = 4 with no echo sends Y only, an
@@ -898,17 +1387,31 @@ New:
   bits, stored as hat 2 and remapped to Y, expects {Y}; an untouched paddle resolves to `builtInEcho`) · `DevJudgeTests`
   (`background`: A rises, View twice, A falls → pass; A still held at the end → pass; A drops between the View presses
   → fail; A drops and comes back within one View press → fail; A rises after the first View → fail; `builtInEcho` passes
-  on A for a stored echo D-pad right and fails on zero or two items; "cannot judge" when the echo equals the pick, a
-  background item or the probe button; "not exercised" with no echo; trigger items; trigger by mapped output) ·
+  on A for a stored echo D-pad right and fails on zero or two items; "cannot judge" with the "same item" wording when
+  the filter's item equals the pick, a background item or the probe button, and with the "not seen at its press"
+  wording when the press was unconfirmed (a press that changed nothing with a stored D-pad right gives that, never "not
+  exercised"); "not exercised" when the covered item never reaches the raw reports during the hold: row 11's D-pad-left
+  held frames (raw hat 6, then 8 with extra bit 0, as at survey n=257613..260515) give "not exercised" for D-pad right
+  and pass on background D-pad left, while a hold where the covered item shows raw only after the other paddle of the
+  pair is let go (survey n=339575..339761) is conclusive; row 11's two D-pad-left steps pass on the cleaned frames and
+  fail on raw ones; trigger items; trigger by mapped output) ·
   `DevRunCoreTests` (the run-long filter: for paddle → Y with factory echo hat 2 the reference holds Y without D-pad
   right, `refChanges` counts no echo edges, a D-pad-right step does not open its window during a hidden hold; `record`
   steps: the window opens on a listed control, no early end while an echo bit is still set, early end after the rest
   time, `noMovement` fires; the `built_in` skip text for a paddle and a SAX key) · `DevRequirementCheckTests` (the
   unmet list and start block for the six) · `MappingStoreTests` (after a paddle entry is added beside g1, a backup holds
   `paddle_outer_right`; changing a paddle's pick also writes one; pruning keeps the newest "new" backup) · run-report
-  decode of `receiver`.
-- Python: `echo-survey.py` on a synthetic run and on `02-button-walk.txt` converted (16 of 16 edges same-report, bits
-  equal to the table); `dev-run-compare.py` new keys and the per-key echo compare; the build guard (missing hash refuses,
+  decode of `receiver`; the run report's echo counters before and after each step; the `record` display per v7.
+- Python: `echo_rule.py` (V23's table, V22's slips, V25's exhaustive search, the fixture replay: 0 wrong, 0 ghosts and
+  0 ambiguous items under all 64 masks); `echo-fixture.py` (keeps only the listed keys, refuses a non-0x06 entry,
+  writes the nine sets); `echo-survey.py` on synthetic runs (SAX left and right pressed 5 reports apart → both echoes
+  at 0, none attributed across; outer pair one report apart → no lead; a neighbour touch in an alone step → reported,
+  the gate passes; a one-report lag and a one-report lead → the gate fails; a release read backwards passes; together-
+  outer with both paddles in one report → the gate passes and lists 'shared' unconfirmed presses under the 32 masks
+  with exactly one of bits 0 and 3; an opposite D-pad direction pressed in the same report as a paddle → listed 'with
+  <item>', the gate passes), on the fixture (the v3 gate passes; the replay line reads "Replay of the v3 rule: N
+  reports × 64 masks: wrong 0, ghosts 0, ambiguous 0, unconfirmed clean 0" over all attempts) and on
+  `02-button-walk.txt` converted (16 of 16 edges same-report, bits equal to the table); `dev-run-compare.py` new keys and the per-key echo compare; the build guard (missing hash refuses,
   a stale number refuses, a hash mismatch refuses, a match passes, a bump rewrites it, `--check` is allowed and leaves
   `Xcode/build-number` alone, `--same-build` refuses when the build differs from the `activated enabled` one, a failed
   build leaves the number unchanged).
@@ -937,28 +1440,91 @@ New:
 
 ## Design choices (for the reviewers)
 
+Plan v3, the new rule (three designs: a fixed table with no state; a learned table saved into the mapping; a small
+state), one line per decision:
+- Spine: the small-state design (a covered item keeps its value from before; an opposite direction only for a stored
+  item seen or confirmed at the press): it kept every survey report right and never shows a ghost when the stored item
+  is wrong.
+- Not the fixed table with no state: it drops a button held from before at every tap (10 survey reports: A through
+  SAX left, D-pad up through inner left) and turns a wrong table into a ghost for the whole hold.
+- Not the learned table saved into the mapping: GDHub never rewrites the owner's mapping file by itself.
+- Grafted from the learned-table design: the press is read as well as the stored binding, so a Profile press between
+  holds is noticed at the next clean press; unlike v3 as first written, the stored item stays covered and only the
+  stored item ever works out a direction (below).
+- Grafted from the fixed-table design: the stored items travel in the blob, never in driver code; one word carries
+  the cleaned buttons and hat, so parity, the App path and apply need no state.
+- The press reading is per axis (a direction a cancel took away counts as the opposite, and a straight move from one
+  direction to its opposite counts as the new one): it sees exactly the case that failed the v2 gate, and the
+  opposite let go in the press report.
+- A key whose item cannot be seen or confirmed still has its stored item covered, with no direction worked out: after
+  a reset the stored item stays covered, and a wrong stored item can only hide, never invent.
+- No window, grace or latch set: S2 measured no lag and no lead; same-report timing is now a gate fact of row 10.
+- `gdx_reset` stays the only reset function, with its body unchanged, no new call site and no keep rules outside the
+  frame path: the state matters only during a hold. This removes `gdx_reset_delivery`, the `loadMap` compare,
+  LiveWatch's and the App's keep rules from the driver change.
+- Untouched keys get code 0 in the blob: they never depend on stored data; the cost is the rare three-input case.
+- A key in the hide mask always has a stored item (the factory one when its binding names none; the validator refuses
+  code 0): with code 0 a press the rule cannot read would cover nothing, and the echo would show for the hold.
+- Triggers are never touched: no trigger echo was ever seen, and v2's zeroing would cost real pulls.
+- The duplicate drop stays on `(frame, revision)`: a repeated report gives the same state and applies the same bits
+  0–13 and 31.
+- The engine's word check compares only armed, aligned words with bits 25–26 masked: both states are equal after one
+  report with no remapped key held when both sides stepped the same reports, so no quiet-run length is needed.
+- No new app text for a changed echo: the rule adapts at the next press, and the engine log and run reports name it.
+- The fixture is trimmed to receiver bytes and words: the public repository gets controller reports only.
+
+Plan v3 review (S2b), where findings conflicted or left a choice, and why this way:
+- A real change in the same report as a key whose own item was already on (three findings, three fixes): the press is
+  read only when the stored item was not already on in the report before (two of the fixes), not "the stored item
+  first whenever the report agrees with it" (the third): it is one check on the report before, and the agreement test
+  stays where it was, in the stored path. The third fix's AMBIGUOUS bit, with the key left unconfirmed, is not taken:
+  confirming the stored item lets a real opposite pressed later in the hold show, and after a profile change it keeps
+  the old direction from sticking. The cost all three accepted is listed as Q11 (b): after a profile change, the key
+  pressed while its old button is held lets the new button show for that hold.
+- Added beyond the findings: an item a press shows that is not the stored one ("other") is covered together with the
+  stored item and never used to work out a direction. With "other" items used to work out directions, as first written
+  and with only the three fixes, an exhaustive search of short sequences with two changes per report found ghosts with
+  the measured echoes (for example D-pad right held against an untouched paddle outer left, then D-pad up pressed in
+  the very report of a remapped paddle outer right's press, then up let go: a D-pad down nobody pressed). With this
+  rule it finds none. Cost: after a profile change a real press of the old button is hidden during that key's hold, and
+  a real opposite of a new D-pad direction is not shown (Q11).
+- Repeated reports (three findings): OTHER and UNCONFIRMED stay press-report flags, not flags held through the hold
+  (they count presses in the counters and the log), and the guarantee is worded as "the same state, the same word
+  except bits 25–26"; `cur` is cleared on the report a hold ends, so "a fresh state for a report with no key held"
+  holds byte for byte.
+- The engine's word check after a missed frame: the step count `echoRun` is kept by the tap and by the ring, outside
+  the rule, not in the rule's state as the finding proposed (`pad[2]`): a count inside the state would change on every
+  repeated report and break the guarantee above.
+- A reset during a hold after a profile change: the echo state is kept only at the frame path's LIVE gate reset
+  (`:564`), where `gdx_step` saw every frame. Not at LIVE turned on (`:434`), which the finding also proposed: that is
+  in `syncMode`, whose body another finding keeps untouched, and it happens once per engine start. Map loads, pause
+  end, power on, tap open and the SHADOW change keep the full reset and are listed under Q11 (d).
+- The driver self-test's golden blob (two findings): row 11's and row 12's picks plus paddle inner right → Y (mask
+  0x3F), not row 11's mask 0x3D with V1, V4, V5 and V6 rewritten: the S2 gate case on paddle inner right then runs
+  inside the driver too, and the cases stay as written. The S7 v2 soak still uses the owner's real row 11 and 12 picks.
+- The paddle-first cancel order: read from row 11's receiver reports in S4, not in an extra sitting before S3; a
+  different answer only adds a limit and a V test, and S4 is app-only.
+- The unconfirmed-press gate line: it fails only on a clean press; shared and with-item presses are reported with their
+  cause, because they are accepted limits, not broken facts (the other proposal, dropping the line, would leave a
+  clean press lag to the timing line alone).
+- "Not exercised" (two findings) is decided by the raw reports of the hold, not by "no item stored": every key in the
+  hide mask now has a stored item, so the old condition could never hold.
+- The remapped-key note: its words wait for v7b and land in S3(c); the rest of S3(b) does not wait (the other proposal,
+  S3(b) waiting for v7b as a whole, would hold back model work that shows nothing).
+- Corrections to "S1 notes" and "S2 result" (v7 approved during S2, not S1; the survey has run; three steps reversed,
+  not two) go into the ledger and "Facts", because those two sections stay as written at the time.
+
+Kept from plan v2:
 - Spine: the risk-first order (measure, then the App path in Swift, then C, then one replacement), with the owner-first
   menu and the smallest-change blob. Why: the C and driver code are written against an oracle the owner's hands checked.
 - Untouched keys default to `.builtIn` (all three designs): the factory blob and today's behaviour stay as they are.
-- Echo hiding by an edge latch learned from the press (all three), never the stored echo: a Profile press would make a
-  stored echo wrong.
-- One echo entry with one hide mask, W, G and a latch set, not up to eight per-key entries: the C stays small and no
-  per-key lag difference has been seen.
-- A hidden bit is freed as soon as it goes off; a per-hold echo set re-hides what the hat brings back; after a release
-  the set follows what is still hidden for max(W, G) reports: fewer real presses swallowed with two keys held, and no
-  ghost when the hat shows the last press.
-- A one-report "before" window on press edges only: a lead of one shows for one report; a longer lead stops the gate.
-- Start, the G keys and Profile are never in the latch set (the validator enforces it): they cannot be swallowed. LT and
-  RT always are: a profile the survey missed can echo a trigger.
-- W and G are the measured worst lag plus one, at least 1: few edges are measured, and one report costs about 1 ms.
-- Parity carries the applied mask in the record's six spare bytes (not nothing, not the full state): F5 keeps checking
-  the posted bytes and the seqlock record does not grow. A separate engine-side mask check covers what parity cannot
-  see, and S7's judged App-path check covers the shared C, which parity runs on both sides.
-- The echo state survives the LIVE gate and a same-echo map push, and clears on a tap open, a SHADOW change, a forced
-  reload or a changed echo entry: delivery re-opening mid-hold must not leak the echo, and a stale state must not
-  outlive a gap in stepping.
+- One echo entry with one hide mask and one item per key, not up to eight entries: the C stays small.
+- Start, the G keys and Profile have no item code (the validator enforces it): they cannot be hidden.
+- Parity carries the echo word in the record's six spare bytes (not nothing, not the full state): F5 keeps checking the
+  posted bytes and the seqlock record does not grow. A separate engine-side word check covers what parity cannot see,
+  and S7's judged App-path check covers the shared C, which parity runs on both sides.
 - The App path steps its filter at `submit` on every report, also while the posting gate is closed, so App and Driver
-  masks match report by report; only one filter instance steps there.
+  words match report by report; only one filter instance steps there.
 - The driver's level reaches the GUI as an integer `gdhmMax`, not a flag: step 3 can add a version without a new key.
 - The app-first install keeps `Shared/` and `Dext/` untouched, guarded by a seeded source hash: two different driver
   binaries never carry the same build number, and the rollback archive is provably build 24.
@@ -966,7 +1532,7 @@ New:
   few picks. Profile-dependent evidence becomes "cannot judge", never a pass or a fail.
 - The self-test stays all-or-nothing: a half-passing self-test would be a third state to test. Accepted knowing that a
   v2-only failure also takes v1 mappings off the driver (compatibility table).
-- Software mode and clearing onboard bindings stay out: the latch works with or without the echo.
+- Software mode and clearing onboard bindings stay out: the rule works with or without the echo.
 
 Where review findings conflicted, and why this way:
 - Identity of the six comes only from the fixed table, not stored bits first: the table is measured hardware identity,
@@ -976,23 +1542,18 @@ Where review findings conflicted, and why this way:
 - S7 soaks in SHADOW, not 10 min LIVE: the new frame code must be proven before it posts.
 - The GUI level is nil until known, not 1: a default of 1 would flash "needs a driver update" on build 25.
 - Remapped-key expectations set identity bits only, not a filter run on the simulated frame: same result, less code.
-- `gdx_reset` stays the full reset and `loadMap` keeps the echo state only for a same-echo content push: both the
-  "reset on every load" and "keep when unchanged" findings hold, because forced reloads clear `haveMap` first.
-- `tapNeutral` and power on keep the full reset, not the delivery reset: Stop, SetPowerState and the timer reach no
-  new code; a key held at sleep or silence is the E11 case.
-- LiveWatch keeps the loadMap rule while it runs and resets fully after a disabled period: its state does not advance
-  while disabled.
+- `tapNeutral` and power on keep the full reset: Stop, SetPowerState and the timer reach no new code; a key held at
+  sleep or silence is the V14 case.
+- Only the frame path's LIVE gate reset keeps the echo state: there `gdx_step` stepped every frame; the other reset
+  sites miss frames or change the map, so a kept state could misread the next press.
 - `maxVersion` defaults to 1, not "no default": build 24 can never get v2, and ten unchanged call sites stay unchanged.
-- The App echo state is not reset when the gate reopens: a reset would bring back the leak the driver avoids.
-- The release window of max(W, G) and the per-hold echo set are both kept: the rebuilt set alone would leak the other
-  key's returning direction.
-- A Profile edge during a hold always reopens the window, whatever S2 shows: one line, and it costs at most W+1 reports
-  after a Profile press during a hold.
+- The App echo state is not reset when the gate reopens: it keeps stepping at `submit` all along, so it needs no reset.
 - Row 1's Driver pass stays in S4: it is the build-24 baseline for the new trigger judge.
 - S7's App-path check uses row 1 on App only, not rows 1 and 4: row 4's Driver pass would go LIVE before the soak.
 - Row 11 remaps five keys with picks outside every echo seen and keeps paddle inner right on Controller's profile: it
   covers the most keys while keeping one untouched key for `builtInEcho`.
-- v7 is approved in S1 before the `record` display, not in S0: the owner reviews it on the phone with the real layout.
+- v7 is approved before the `record` display, not in S0: the owner reviews it on the phone with the real layout (the
+  OK came during S2; the interim display coded before it is aligned in S4(a)).
 - The signal conflict is a note, not a learn-time refusal between two of the six: with the fixed table two of the six
   can never share a signal.
 - The rollback guard compares with the `activated enabled` build instead of writing 24 back by hand: a hand edit is
@@ -1001,27 +1562,64 @@ Where review findings conflicted, and why this way:
 ## Not in step 2
 
 - Removing the echo at the controller: clearing onboard paddle bindings (iCUE or Bragi key-assignment writes) and Bragi
-  software mode (takeover open question 11). If done later, the filter finds nothing to hide; no change needed.
-- Reading which onboard profile is active; showing the last echo seen in a menu.
-- Hiding an echo that lands on a stick; an echo that arrives two or more reports before its bit (the gate stops).
+  software mode (takeover open question 11). If done later, a press shows nothing and the stored item is still hidden
+  while the key is held, with the limits under "What the owner gets" (a direction on a remapped paddle's axis can show
+  as its opposite or stay shown until the paddle is let go). The follow-up then turns the hiding off for keys with no
+  echo (a mapping option that leaves them out of the hide mask; clearing the stored bindings alone no longer does it,
+  because a key in the mask always has a stored item).
+- Reading which onboard profile is active; showing the last echo seen in a menu (the engine log and run reports name
+  it).
+- Saving a changed echo into the owner's mapping by itself.
+- Showing the D-pad axis between two held paddles of a pair (Q10): the controller does not send it.
+- Hiding an echo that lands on a stick, a trigger, Start, a G key or Profile; an echo that is not in the same report as
+  its bit (row 10's gate stops).
 - Repairing controls that carry a paddle bit from an old learn without the owner (S1 lists them; Q9 decides).
 - A time limit on DriverManager's terminate deferral (RB4a–c handle it by procedure; a code change would risk U4).
 - The −1 quirk fix (takeover open question 9), the RSUGD rename, step 3 (keyboard, mouse, macros, R7 with T11),
   per-game profiles, removing the `xlateCore` key.
-- A wired (USB-C) timing run; the S1 recorder makes it a later template if wanted.
+- A wired (USB-C) timing run; row 10 read with the v3 gate covers it later if wanted.
 
 ## Done when
 
 The owner remaps paddles and SAX keys from the menu and the controller's own button no longer reaches the pad: row 11
-passes on App and on Driver with a conclusive hiding verdict for each of its five remapped keys, and every key's
-signal matched the table in S2. Untouched paddles and SAX keys behave as before (rows 1 and 4 by `builtInEcho`, the
-same echoes on both paths). Row 12 passes on App and on Driver. Rows 1, 4, 5 and 6 pass on both paths in S8 and row 7
+passes on App and on Driver with a conclusive hiding verdict for each of its five remapped keys, and its two D-pad-left
+steps (D-pad left held through paddle outer right presses, and the reverse: the opposite cancel worked out) passed,
+and every key's signal matched the table in S2. The survey replay is green in Swift, C and Python, and the exhaustive
+search finds no ghost. Untouched paddles and SAX keys behave as
+before (rows 1 and 4 by `builtInEcho`, the same echoes on both paths). Row 12 passes on App and on Driver. Rows 1, 4, 5 and 6 pass on both paths in S8 and row 7
 in S4. The factory blob, the existing `GDHubDefaults.h` arrays, `default.json` and `mappingHash` are unchanged. A mapping
 that needs v2 on build 24 leaves the App driving with no fallback entry. One driver replacement was made (or the
 owner's decision after a failed S7 is recorded). After the checks the owner's mapping and layout equal their copies.
 `swift test` and the Python tests are green.
 
+## Questions for the owner (v3)
+
+Only the two limits that are new in plan v3 (see "The limits in v3 against Q3"); everything else the owner accepted in
+S0 stands or got smaller. Asked at the start of S3, before any code; the answers go into "S2b answers".
+
+Q10. **Both paddles of a pair, remapped and held together.** Recommended: accept. If you remap both outer paddles (or
+     both inner paddles) and hold the two together, the controller itself reports no left or right (or no up or down)
+     on the D-pad, whatever you press. GDHub then keeps that D-pad direction as it was just before you pressed the
+     pair, until you let go of one of them; the other D-pad direction works. No software can read it. Row 11 remaps
+     both outer paddles, so you will feel it there. Other choice: paddles and SAX keys stay as today for this step
+     (Q8 b).
+
+Q11. **What a Profile press can still upset.** Recommended: accept. If a Profile press changes the button the
+     controller adds for a remapped key (seen once, on 9 November; the survey saw no change), GDHub notices it at your
+     next press of that key and hides the new button too, together with the old one, for that hold: pressing the old
+     button yourself then shows only when you let go of the key, and if the new button is a D-pad direction, the
+     opposite direction does not work while you hold the key. In four cases it cannot notice, and the new button can
+     show next to your pick until you let go of the key: (a) you press two remapped keys in the very same millisecond; (b) you
+     were already holding the new button, or the key's old button, when you pressed the key (an ordinary move, no exact
+     timing needed); the button you were holding then also stays on until you let go of the key; (c) another button or
+     D-pad direction changes in the very same millisecond as the key; (d) GDHub restarts its reading while you hold the
+     key (the mapping changes, the controller goes quiet or reconnects, the Mac wakes, GDHub's driver path starts). The
+     next clean press of the key picks the new button up again. Other choice: Q8 (b).
+
 ## Questions for the owner
+
+Asked and answered in S0 ("OK all", see "S0 answers"). In plan v3, Q3's list is replaced by "The limits in v3 against
+Q3", and Q8 was not applied (the owner chose "Rework the rule"; Q8 (b) is the other choice of Q10 and Q11).
 
 Two earlier questions are settled by the owner's own rules and are no longer asked: mockup v7 is drawn from the
 layout copy the S1 install backup takes (the real layout; the drawing never opens the data folder), and both Reset items
