@@ -31,7 +31,10 @@ struct ControllerView: View {
             // pushed the top of an overflowing run above the window edge).
             VStack(alignment: .leading, spacing: 12) {
                 if let dev = device.dev {
-                    DevPanel(session: dev)
+                    DevPanel(session: dev, onDone: {
+                        if dev.isRunning { dev.stop() }
+                        device.endDeveloper()
+                    })
                         .layoutPriority(2)
                 }
                 // One scale factor for all four views: each gets a width proportional to its image,

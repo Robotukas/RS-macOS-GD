@@ -61,6 +61,7 @@ extension DevTarget {
 /// The bar above the drawing while Developer mode is on: Record on, Template, Start / Stop, and the notes.
 struct DeveloperBar: View {
     @ObservedObject var session: DevSession
+    var onDone: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -70,6 +71,9 @@ struct DeveloperBar: View {
                 templateControl
                 Spacer(minLength: 8)
                 startStop
+                Button("Developer ✓ Done", action: onDone)
+                    .help("Leave Developer mode (a run in progress is stopped first)")
+                    .accessibilityIdentifier("developer.done")
             }
             notes
             if let prompt = session.prompt {

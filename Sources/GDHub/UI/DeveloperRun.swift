@@ -289,9 +289,20 @@ struct DevChips: View {
                         Text(row.target.shortName).font(.caption.weight(.semibold)).foregroundStyle(DevPalette.purple)
                             .frame(width: 96, alignment: .leading)
                     }
-                    DevFlowLayout {
-                        ForEach(row.chips) { chip in
-                            chipView(chip, pass: row.pass, canRerun: canRerun && chip.status.canRerun)
+                    // One line that scrolls sideways (the owner's rule, 2026-11-11: no block of step names above the
+                    // controller). A chip is the step's number; its name is the tooltip and the table's Step column.
+                    ScrollViewReader { proxy in
+                        ScrollView(.horizontal, showsIndicators: true) {
+                            HStack(spacing: 4) {
+                                ForEach(row.chips) { chip in
+                                    chipView(chip, pass: row.pass, canRerun: canRerun && chip.status.canRerun)
+                                        .id(chip.index)
+                                }
+                            }
+                            .padding(.bottom, 9)                 // room for the scroll bar under the chips
+                        }
+                        .onChange(of: row.chips.first(where: { $0.status == .current })?.index) { current in
+                            if let current { withAnimation { proxy.scrollTo(current, anchor: .center) } }
                         }
                     }
                 }
@@ -302,20 +313,23 @@ struct DevChips: View {
 
     @ViewBuilder private func chipView(_ chip: DevChip, pass: Int, canRerun: Bool) -> some View {
         let color = DevPalette.color(for: chip.status)
-        let label = Text(chip.status.symbol + chip.title)
-            .font(.caption)
-            .padding(.horizontal, 8).padding(.vertical, 1)
+        let label = Text(DevChips.label(chip))
+            .font(.caption.monospacedDigit())
+            .padding(.horizontal, 6).padding(.vertical, 1)
             .foregroundStyle(chip.status == .pending ? Color.secondary : color)
             .background(color.opacity(chip.status == .pending ? 0.12 : 0.22), in: Capsule())
             .overlay(Capsule().stroke(color.opacity(chip.status == .current ? 1 : 0.5), lineWidth: chip.status == .current ? 1.5 : 1))
         if canRerun {
             Button { session.rerun(index: chip.index, pass: pass) } label: { label }
                 .buttonStyle(.plain)
-                .help("Run \(chip.title) again")
+                .help("Run \(chip.index + 1). \(chip.title) again")
         } else {
-            label.help(chip.title)
+            label.help("\(chip.index + 1). \(chip.title)")
         }
     }
+
+    /// "✓ 7": the status symbol and the step's number, as in the table's first column.
+    static func label(_ chip: DevChip) -> String { chip.status.symbol + "\(chip.index + 1)" }
 }
 
 // MARK: - Result table
@@ -361,10 +375,12 @@ struct DevResultTable: View {
 /// Everything above the drawing in Developer mode.
 struct DevPanel: View {
     @ObservedObject var session: DevSession
+    /// Leaves Developer mode (stops a run first). Shown in the bar at the top, which is never cut off.
+    var onDone: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 8) {
-            DeveloperBar(session: session)
+            DeveloperBar(session: session, onDone: onDone)
             if session.isRunning || session.prompt != nil {
                 DevInstructionBox(session: session)
             }
