@@ -186,7 +186,10 @@ struct ControlMapping: Equatable {
 
     func isActive(_ controlId: String, _ frame: GamepadFrame) -> Bool {
         // Physical identity wins: a paddle lights only when that paddle is pressed, not when the
-        // button it is mapped to is pressed on the face.
+        // button it is mapped to is pressed on the face. The six paddle and SAX keys are known by the fixed table
+        // (`identityBits`), never by what a learn stored; every other control by its stored bits, if any.
+        let fixed = Self.identityBits(controlId)
+        if fixed != 0 { return frame.extra & fixed == fixed }
         if let bits = physicalBits[controlId], bits != 0 {
             return frame.extra & bits == bits
         }
@@ -281,21 +284,46 @@ struct ControlMapping: Equatable {
 // MARK: Remaps
 
 extension ControlMapping {
-    /// The controls whose output can be changed, in the order the UI and `sources(of:)` use.
+    /// The paddle and SAX keys, in the order of their extra bits (bit 0 paddle outer right … bit 5 SAX right).
+    static let echoKeyIDs: [String] = ["paddle_outer_right", "paddle_inner_right", "paddle_inner_left", "paddle_outer_left",
+                                       "sax_left", "sax_right"]
+
+    /// The controls whose output can be changed, in the order the UI and `sources(of:)` use. The six paddle and SAX
+    /// keys come last, so the source order and rule order of every older remap stay where they were.
     static let remappableIDs: [String] = [
         "a", "b", "x", "y", "lb", "rb", "lt", "rt", "view", "menu", "l3", "r3",
         "dpad_up", "dpad_right", "dpad_down", "dpad_left", "start", "profile", "g1", "g2", "g3", "g4", "g5",
-    ]
+    ] + echoKeyIDs
 
     private static let remappableSet = Set(remappableIDs)
 
-    /// Controls on which `ControlOutput.builtIn` (the volume function) is valid.
-    static let builtInIDs: Set<String> = ["g2", "g3", "g4"]
+    /// Controls on which `ControlOutput.builtIn` is valid: the volume function on G2-G4, and on the paddle and SAX keys
+    /// "what the controller's own profile sends" (their default).
+    static let builtInIDs: Set<String> = Set(["g2", "g3", "g4"] + echoKeyIDs)
+
+    /// The physical identity of the six paddle and SAX keys: always the fixed table (paddle outer right 1, inner right 2,
+    /// inner left 4, outer left 8, SAX left 16, SAX right 32; hardware positions, measured). 0 for every other control.
+    /// What a learn stored in `physicalBits` for these keys is never used for identity: a stored value that differs from
+    /// the table is a mis-learn.
+    static func identityBits(_ id: String) -> UInt16 { identityTable[id] ?? 0 }
+
+    private static let identityTable: [String: UInt16] = {
+        var t: [String: UInt16] = [:]
+        for (k, id) in echoKeyIDs.enumerated() { t[id] = UInt16(1) << UInt16(k) }
+        return t
+    }()
+
+    func identityBits(_ id: String) -> UInt16 { Self.identityBits(id) }
+
+    /// The paddle or SAX key whose table bit is `bits` exactly, or nil.
+    static func keyWithIdentity(_ bits: UInt16) -> String? { echoKeyIDs.first { identityBits($0) == bits } }
 
     func defaultOutput(_ id: String) -> ControlOutput {
         switch id {
         case "start": return .pad(.guide)
         case "g2", "g3", "g4": return .builtIn
+        // On a paddle or SAX key `.builtIn` is what the controller's profile sends, and follows that button's remap.
+        case _ where Self.identityBits(id) != 0: return .builtIn
         case "guide": return .nothing
         default:
             if Self.remappableSet.contains(id), let p = PadOutput(rawValue: id) { return .pad(p) }
@@ -360,6 +388,9 @@ extension ControlMapping {
     /// How `source` feeds the pad trigger `trigger` (`.lt` or `.rt`). Judged by the learned binding, not by the control id.
     /// The default owner contributes exactly what it did before remaps (`triggerValue ?? 0`).
     func triggerFeed(from source: String, into trigger: PadOutput) -> TriggerFeed {
+        // A paddle or SAX key sent to LT / RT feeds full scale by its identity bits, before its stored binding is looked at
+        // (a binding is only its echo).
+        if Self.identityBits(source) != 0, case .pad(let p) = effectiveOutput(source), p.isTrigger { return .fullScale }
         if case .trigger(let field)? = buttons[source] { return .analog(field) }
         return defaultOutput(source) == .pad(trigger) ? .nothing : .fullScale
     }
@@ -367,6 +398,8 @@ extension ControlMapping {
     /// Learn guard (remap plan): in a single-control learn, an assignment of a whole control with a binding and no
     /// physical bits is refused when another control already has that binding and no physical bits of its own
     /// (paddles and SAX carry bits, so they never count as owners). Returns the lowest such control id.
+    /// The six paddle and SAX keys are never owners of a binding at all, whatever is stored for them: they never feed
+    /// the pad through it (their binding is only the button the controller adds for them, their "echo").
     /// Guided "Learn all" simply does not call this.
     func learnConflict(_ a: LearnAssignment) -> String? {
         guard a.target == .whole, let binding = a.binding, a.physicalBits == 0 else { return nil }
@@ -374,8 +407,58 @@ extension ControlMapping {
         // refused: two ordinary buttons learned crosswise (A as B, B as A) must stay repairable one at a time.
         if case .pad = defaultOutput(a.controlId) { return nil }
         return buttons.filter { id, b in
-            id != a.controlId && b == binding && (physicalBits[id] ?? 0) == 0
+            id != a.controlId && Self.identityBits(id) == 0 && b == binding && (physicalBits[id] ?? 0) == 0
         }.keys.min()
+    }
+
+    /// The paddle or SAX key `assignment` takes the signal of, when it learns one of the six with another key's table
+    /// bit (the bit that rose is not its own). Nil for every other assignment, including one with no extra bit.
+    func learnSignalOwner(_ a: LearnAssignment) -> String? {
+        guard a.target == .whole, Self.identityBits(a.controlId) != 0, a.physicalBits != 0,
+              a.physicalBits != Self.identityBits(a.controlId) else { return nil }
+        return Self.keyWithIdentity(a.physicalBits)
+    }
+
+    // MARK: Hiding the controller's own button (remap step 2)
+
+    /// OR of `identityBits` over the paddle and SAX keys whose effective output is not `.builtIn` (Nothing included): the
+    /// keys whose own button the controller adds and GDHub hides.
+    var echoHideMask: UInt8 {
+        var mask: UInt8 = 0
+        for (k, id) in Self.echoKeyIDs.enumerated() where effectiveOutput(id) != .builtIn { mask |= 1 << UInt8(k) }
+        return mask
+    }
+
+    /// The stored echo of one of the six, as an item code (1...10 receiver buttons A...R3, 11 D-pad up, 12 right, 13 down,
+    /// 14 left), read from its binding: `.button(1...10)` and `.hat(0/2/4/6)` give that item, anything else (no binding, a
+    /// diagonal, a trigger, an axis, buttons 11...19) gives the key's factory item, never none. 0 for every other control.
+    func echoItem(_ id: String) -> UInt8 {
+        guard let k = Self.echoKeyIDs.firstIndex(of: id) else { return 0 }
+        switch buttons[id] {
+        case .button(let n)? where (1...10).contains(n): return UInt8(n)
+        case .hat(let h)? where h == 0 || h == 2 || h == 4 || h == 6: return 11 + h / 2
+        default: return EchoParams.factoryItems[k]
+        }
+    }
+
+    /// The only input of every echo filter and of the encoder's echo entry: `echoHideMask` and the stored item of each key
+    /// in it (0 for a key outside it).
+    var echoParams: EchoParams {
+        EchoParams(hideMask: echoHideMask, items: Self.echoKeyIDs.map { echoItem($0) })
+    }
+
+    /// A remapped paddle or SAX key whose table bit is also stored in the `physicalBits` of a control outside the six (an
+    /// old learn): "<Other> was learned with <Paddle>'s signal: re-learn <Other>." Nil when there is none. The same on every
+    /// driver build; a note and a hint line, never a driver limit (App and driver do the same thing with it). `label` gives
+    /// a control's layout label ("G1", "Paddle outer right"); pass it, the default is the raw id.
+    func signalConflict(label: (String) -> String = { $0 }) -> String? {
+        let hidden = echoHideMask
+        for (k, key) in Self.echoKeyIDs.enumerated() where (hidden >> UInt8(k)) & 1 == 1 {
+            let bit = Self.identityBits(key)
+            let others = physicalBits.filter { id, bits in Self.identityBits(id) == 0 && bits == bit }.keys.sorted()
+            if let other = others.first { return "\(label(other)) was learned with \(label(key))'s signal: re-learn \(label(other))." }
+        }
+        return nil
     }
 }
 
@@ -414,7 +497,7 @@ extension ControlMapping: Codable {
                 continue
             }
             if value == .builtIn && !Self.builtInIDs.contains(key.stringValue) {
-                print("ControlMapping: dropped built_in for \"\(key.stringValue)\": only valid on g2, g3, g4.")
+                print("ControlMapping: dropped built_in for \"\(key.stringValue)\": only valid on g2, g3, g4 and the paddle and SAX keys.")
                 continue
             }
             setOutput(value, for: key.stringValue)   // also drops entries equal to the default

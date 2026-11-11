@@ -33,18 +33,15 @@ extension PadOutput {
     }
 }
 
-/// What the click menu of one control shows (remap plan, "UI (R2)"; mockup v6). Pure: the native `NSMenu` is built from it
-/// top to bottom as: header, note, the groups with a separator between them, the footnote, a separator, "Reset to
-/// default", a separator, the re-learn item. Sticks and the controls that are not remappable yet get header, note, a
-/// separator and the re-learn item only.
+/// What the click menu of one control shows (remap plan, "UI (R2)"; mockups v6, v7 and v7b). Pure: the native `NSMenu` is
+/// built from it top to bottom as: header, note, the groups with a separator between them, the footnote, a separator,
+/// "Reset to default", a separator, the re-learn item. A stick gets header, note, a separator and the re-learn item only.
 struct RemapMenuModel: Equatable {
     enum Kind: Equatable {
-        /// One of `ControlMapping.remappableIDs`: the full menu.
+        /// One of `ControlMapping.remappableIDs` (paddles and SAX keys included): the full menu.
         case remappable
         /// A stick: not remappable in this feature.
         case stick
-        /// Paddles and SAX (step 2): they follow the pad button the controller's profile gives them.
-        case deferred
     }
 
     struct Entry: Equatable, Identifiable {
@@ -73,7 +70,13 @@ struct RemapMenuModel: Equatable {
     static let limitTag = "App drives *"
     static let footnoteText = "* With this pick the App drives the controller until the next driver update."
     static let stickNote = "Sticks are not remappable in this feature."
-    static let deferredNote = "Remapping paddles and SAX comes next. Until then this key sends the button the controller's profile gives it, and follows that button's remap."
+    /// A paddle or SAX key left on "Controller's profile (built in)": mockup v7 (and v7b), word for word.
+    static let controllersProfileNote = "Sends the button the controller's profile gives it, and follows that button's remap."
+    /// PLACEHOLDER(S3c): the note of a remapped paddle or SAX key. Its words are in mockup v7b ("Sends only your pick. ...");
+    /// S3(c) puts them here and adds the exact-text assertion. Until then the menu shows this marker (no install happens
+    /// before S4, so nobody sees it).
+    static let remappedKeyNote = "[placeholder: the remapped-key note comes with S3(c)]"
+    static let controllersProfileTitle = "Controller's profile (built in)"
     static let resetTitle = "Reset to default"
 
     var controlID: String
@@ -100,9 +103,11 @@ struct RemapMenuModel: Equatable {
         [.guide],
     ]
 
-    private static let builtInTitles: [String: String] = [
-        "g2": "Volume down (built in)", "g3": "Volume up (built in)", "g4": "Mute (built in)",
-    ]
+    private static let builtInTitles: [String: String] = {
+        var t = ["g2": "Volume down (built in)", "g3": "Volume up (built in)", "g4": "Mute (built in)"]
+        for id in ControlMapping.echoKeyIDs { t[id] = controllersProfileTitle }
+        return t
+    }()
 
     private static let notes: [String: String] = [
         "g2": "Mapped: G2 no longer changes the volume.",
@@ -120,18 +125,21 @@ struct RemapMenuModel: Equatable {
         header = "\(label) sends"
         relearnTitle = layoutKind == .stick ? "Re-learn stick…" : "Re-learn button…"
         guard ControlMapping.remappableIDs.contains(id) else {
-            let isStick = layoutKind == .stick
-            kind = isStick ? .stick : .deferred
-            note = isStick ? Self.stickNote : Self.deferredNote
+            // Only the sticks are left (every button is remappable); any other control that is not gets no menu text.
+            kind = .stick
+            note = layoutKind == .stick ? Self.stickNote : nil
             groups = []
             footnote = nil
             reset = nil
             return
         }
         kind = .remappable
-        note = Self.notes[id]
         let current = mapping.effectiveOutput(id)
         let fallback = mapping.defaultOutput(id)
+        // A paddle or SAX key: its note follows its pick; every other control has one fixed note, or none.
+        note = ControlMapping.identityBits(id) != 0
+            ? (current == .builtIn ? Self.controllersProfileNote : Self.remappedKeyNote)
+            : Self.notes[id]
         // The mockup marks a pick only while the mapping has no limit yet.
         let alreadyLimited = MapBlobEncoder.remapLimit(mapping) != nil
 

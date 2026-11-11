@@ -441,7 +441,7 @@ struct DevTemplate: Codable, Equatable {
                 if !ControlMapping.remappableIDs.contains(cid) {
                     v.errors.append("\(at): requires names \(cid), which has no output that can be remapped")
                 } else if output == .builtIn, !ControlMapping.builtInIDs.contains(cid) {
-                    v.errors.append("\(at): requires built_in for \(cid), but only g2, g3 and g4 have a built-in function")
+                    v.errors.append("\(at): requires built_in for \(cid), but built_in is valid only for g2, g3, g4 and the paddle and SAX keys")
                 }
             }
             if let items = step.expect?.items {

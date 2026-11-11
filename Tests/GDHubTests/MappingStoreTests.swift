@@ -85,4 +85,68 @@ final class MappingStoreTests: XCTestCase {
         XCTAssertEqual(store.loadMovingUnreadableAside { notes.append($0) }, .default)
         XCTAssertTrue(notes.isEmpty)
     }
+
+    // MARK: Paddle and SAX remaps: the new bytes are kept too (a step-1 app would drop them)
+
+    private func newBackups() -> [URL] { store.backups().filter { $0.lastPathComponent.hasSuffix(" new.json") } }
+
+    func testAddingAPaddleEntryBesideG1KeepsTheOldFileAndTheNewBytes() throws {
+        store.save(remapped())                          // g1 only: today's trigger, nothing before it
+        XCTAssertTrue(store.backups().isEmpty)
+        var m = remapped()
+        m.setOutput(.pad(.y), for: "paddle_outer_right")
+        store.save(m)
+        let news = newBackups()
+        XCTAssertEqual(news.count, 1)
+        let text = String(decoding: try Data(contentsOf: news[0]), as: UTF8.self)
+        XCTAssertTrue(text.contains("paddle_outer_right"), "the backup holds the new entry")
+        XCTAssertEqual(try Data(contentsOf: news[0]), try Data(contentsOf: store.url), "the new bytes, as written")
+        XCTAssertEqual(store.backups().count, 1, "outputs was there before and after: no copy of the old file")
+    }
+
+    func testTheFirstPaddleRemapKeepsBothTheOldFileAndTheNewBytes() throws {
+        store.save(.default)
+        let old = try Data(contentsOf: store.url)
+        var m = ControlMapping.default
+        m.setOutput(.nothing, for: "sax_left")
+        store.save(m)
+        XCTAssertEqual(store.backups().count, 2, "today's backup of the file without remaps, and the new bytes")
+        XCTAssertEqual(newBackups().count, 1)
+        let plain = store.backups().first { !$0.lastPathComponent.hasSuffix(" new.json") }
+        XCTAssertEqual(try plain.map { try Data(contentsOf: $0) }, old)
+    }
+
+    func testChangingAPaddlesPickWritesAnotherNewBackupAndOtherChangesDoNot() {
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "paddle_inner_left")
+        store.save(m)
+        XCTAssertEqual(newBackups().count, 1)
+        store.save(m)                                    // nothing changed
+        XCTAssertEqual(newBackups().count, 1)
+        m.setOutput(.pad(.x), for: "paddle_inner_left")  // a changed pick on a key that was already remapped
+        store.save(m)
+        XCTAssertEqual(newBackups().count, 2)
+        m.setOutput(.pad(.a), for: "g1")                 // not a paddle change, but outputs differ and a paddle entry is there
+        store.save(m)
+        XCTAssertEqual(newBackups().count, 3, "outputs differ from the file in ids and the new file holds a paddle entry")
+        var noPaddle = ControlMapping.default
+        noPaddle.setOutput(.pad(.a), for: "g1")
+        store.save(noPaddle)                             // removes the paddle entry: no new copy (nothing a step-1 app would drop)
+        XCTAssertEqual(newBackups().count, 3)
+    }
+
+    func testPruningNeverDeletesTheNewestNewBackup() throws {
+        store.save(remapped())
+        let fm = FileManager.default
+        try fm.createDirectory(at: store.backupsDirectory, withIntermediateDirectories: true)
+        let ancient = store.backupsDirectory.appendingPathComponent("mapping 2019-01-01 00-00-00 new.json")
+        try Data("{}".utf8).write(to: ancient)
+        for i in 0..<45 {
+            try Data("{}".utf8).write(to: store.backupsDirectory.appendingPathComponent(String(format: "mapping 2099-01-01 00-00-%02d.json", i)))
+        }
+        store.save(.default)                             // outputs disappears: a plain backup, then the prune
+        let names = store.backups().map(\.lastPathComponent)
+        XCTAssertTrue(names.contains("mapping 2019-01-01 00-00-00 new.json"), "the only new backup is the oldest and survives")
+        XCTAssertEqual(names.count, MappingStore.backupsKept + 1)
+    }
 }

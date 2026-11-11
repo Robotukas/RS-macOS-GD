@@ -63,15 +63,31 @@ final class RemapMenuItemsTests: XCTestCase {
         XCTAssertEqual(s[2].pick, .output(.builtIn))
     }
 
-    func testStickAndPaddleMenusAreHeaderNoteSeparatorRelearn() throws {
+    func testStickMenuIsHeaderNoteSeparatorRelearn() throws {
         let stick = try specs("left_stick")
         XCTAssertEqual(kinds(stick), [.header, .note, .separator, .relearn])
         XCTAssertEqual(stick[1].title, RemapMenuModel.stickNote)
         XCTAssertEqual(stick[3].title, "Re-learn stick…")
+    }
+
+    func testPaddleMenuIsAFullMenuWithControllersProfileFirstAndTheNote() throws {
         let paddle = try specs("paddle_outer_left")
-        XCTAssertEqual(kinds(paddle), [.header, .note, .separator, .relearn])
-        XCTAssertEqual(paddle[1].title, RemapMenuModel.deferredNote)
-        XCTAssertEqual(paddle[3].title, "Re-learn button…")
+        XCTAssertEqual(Array(paddle.prefix(4).map(\.kind)), [.header, .note, .entry, .separator])
+        XCTAssertEqual(paddle[0].title, "Paddle outer left sends")
+        XCTAssertEqual(paddle[1].title, RemapMenuModel.controllersProfileNote)
+        XCTAssertFalse(paddle[1].isEnabled)
+        XCTAssertEqual(paddle[2].title, "Controller's profile (built in)")
+        XCTAssertEqual(paddle[2].tags, ["default"])
+        XCTAssertTrue(paddle[2].isOn)
+        XCTAssertEqual(paddle[2].pick, .output(.builtIn))
+        // The tail: footnote (the level-1 marks), separator, Reset to default, separator, Re-learn.
+        let tail = kinds(paddle).suffix(5)
+        XCTAssertEqual(Array(tail), [.footnote, .separator, .reset, .separator, .relearn])
+        XCTAssertEqual(paddle.last?.title, "Re-learn button…")
+        // Every pick but Controller's profile carries the App-drives tag at level 1.
+        for spec in paddle where spec.kind == .entry && spec.pick != .output(.builtIn) {
+            XCTAssertTrue(spec.tags.contains(RemapMenuModel.limitTag), spec.title)
+        }
     }
 
     func testRelearnFollowsTheGate() throws {

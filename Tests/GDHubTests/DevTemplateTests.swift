@@ -104,12 +104,17 @@ final class DevTemplateTests: XCTestCase {
         }
         for ok in ["y", "dpad_up", "lt", "rt", "guide", "l3", "nothing"] { XCTAssertEqual(errors("g1", ok), [], ok) }
         for ok in ["g2", "g3", "g4"] { XCTAssertEqual(errors(ok, "built_in"), [], ok) }
+        for ok in ControlMapping.echoKeyIDs {       // the paddle and SAX keys take every pick, built_in (Controller's profile) too
+            XCTAssertEqual(errors(ok, "built_in"), [], ok)
+            XCTAssertEqual(errors(ok, "y"), [], ok)
+            XCTAssertEqual(errors(ok, "nothing"), [], ok)
+        }
         let unknown = "full.json step 1: requires names unknown output \"Y\" (use a pad output such as y or dpad_up, nothing, or built_in)"
         XCTAssertEqual(errors("g1", "Y"), [unknown], "case-sensitive lowercase")
         XCTAssertEqual(errors("g1", "NOTHING").count, 1)
         XCTAssertEqual(errors("g1", "").count, 1)
         XCTAssertEqual(errors("g1", "volume").count, 1)
-        XCTAssertEqual(errors("g1", "built_in"), ["full.json step 1: requires built_in for g1, but only g2, g3 and g4 have a built-in function"])
+        XCTAssertEqual(errors("g1", "built_in"), ["full.json step 1: requires built_in for g1, but built_in is valid only for g2, g3, g4 and the paddle and SAX keys"])
         XCTAssertEqual(errors("a", "built_in").count, 1)
         XCTAssertEqual(errors("g9", "y"), ["full.json step 1: unknown control g9 in requires"])
         XCTAssertEqual(errors("left_stick", "nothing"), ["full.json step 1: requires names left_stick, which has no output that can be remapped"])

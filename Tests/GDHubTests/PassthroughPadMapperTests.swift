@@ -239,9 +239,32 @@ final class PassthroughPadMapperTests: XCTestCase {
 
     func testControlsOutsideTheRemappableListNeverRemap() {
         var r = ControlMapping.default
-        r.outputs["paddle_inner_left"] = .pad(.y)                   // hand-written, as a stray file entry
+        r.outputs["left_stick"] = .pad(.y)                          // hand-written, as a stray file entry
         XCTAssertEqual(PassthroughPadMapper.padState(down(), r), .neutral)
         var f = GamepadFrame(); f.extra = 4
         XCTAssertEqual(PassthroughPadMapper.padState(f, r).buttons, [], "the paddle sends nothing of its own")
+        XCTAssertEqual(PassthroughPadMapper.padState(f, r), .neutral)
+    }
+
+    func testARemappedPaddleSendsItsPickByItsOwnBitAndNothingElse() {
+        var r = ControlMapping.default
+        r.setOutput(.pad(.y), for: "paddle_inner_left")             // the controller adds D-pad up for this key
+        var f = GamepadFrame(); f.extra = 4                        // the key's bit, no echo (already hidden)
+        XCTAssertEqual(PassthroughPadMapper.padState(f, r).buttons, .y, "Y only")
+        f.hat = 0                                                  // with its echo in the frame: the echo is not the key's signal
+        XCTAssertEqual(PassthroughPadMapper.padState(f, r).buttons, [.y, .dpadUp], "the D-pad owner still reads the hat; hiding it is the filter's job")
+        var echoOnly = GamepadFrame(); echoOnly.hat = 0
+        XCTAssertEqual(PassthroughPadMapper.padState(echoOnly, r).buttons, .dpadUp, "no key bit: the paddle sends nothing")
+        // Nothing silences the key.
+        r.setOutput(.nothing, for: "paddle_inner_left")
+        var g = GamepadFrame(); g.extra = 4
+        XCTAssertEqual(PassthroughPadMapper.padState(g, r), .neutral)
+        // Sent to a trigger, the key pulls it fully.
+        r.setOutput(.pad(.rt), for: "paddle_inner_left")
+        XCTAssertEqual(PassthroughPadMapper.padState(g, r).rt, 1)
+        // A paddle left on Controller's profile follows the button its echo gives it, as before.
+        let plain = ControlMapping.default
+        var h = GamepadFrame(); h.extra = 4; h.hat = 0
+        XCTAssertEqual(PassthroughPadMapper.padState(h, plain).buttons, .dpadUp)
     }
 }

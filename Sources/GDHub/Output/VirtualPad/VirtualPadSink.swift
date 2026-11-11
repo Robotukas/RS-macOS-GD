@@ -205,12 +205,21 @@ final class VirtualPadSink: @unchecked Sendable {
     // Frame mailbox (any thread). Controller frames arrive at ~1 kHz, mostly identical at rest; identical frames are
     // dropped before they cost a queue hop, and a busy queue only ever processes the newest frame.
     private struct Mailbox {
-        var slot: (frame: GamepadFrame, mapping: ControlMapping)?
+        /// The newest frame, the mapping it came with and its echo word (`EchoState.step` of that report).
+        var slot: (frame: GamepadFrame, mapping: ControlMapping, word: UInt32)?
         var tK: UInt64 = 0, tC: UInt64 = 0          // oldest stamp since the last drain; valid while `slot` is set
         var last: (frame: GamepadFrame, revision: Int)?
         var drainScheduled = false
         var received = 0
         var gateClosed = false                      // T7: the driver's tap drives the pad; the engine posts nothing
+        // The rule that hides a remapped paddle or SAX key's own button (`EchoFilter`). One state steps on EVERY report
+        // `submit` gets, also while the gate is closed and before the duplicate drop, so what the filter has seen never
+        // depends on how many reports were coalesced or dropped. The parameters are the mapping's `echoParams`, worked out
+        // when `revision` changes; the state is reset only when they change (never by `setDriverDrives`,
+        // `resetDeliveryState` or a rebuilt `xlateCache`).
+        var echo = EchoState()
+        var echoParams = EchoParams.none
+        var echoRevision: Int?
     }
     private let mailbox = OSAllocatedUnfairLock(initialState: Mailbox())
 
@@ -516,11 +525,17 @@ final class VirtualPadSink: @unchecked Sendable {
     func submit(frame: GamepadFrame, mapping: ControlMapping, revision: Int = 0, tK: UInt64 = 0, tC: UInt64 = 0) {
         let schedule: Bool = mailbox.withLock { m in
             m.received += 1
+            if m.echoRevision != revision {                  // the mapping changed: new parameters, a fresh state only if they differ
+                m.echoRevision = revision
+                let params = mapping.echoParams
+                if params != m.echoParams { m.echoParams = params; m.echo.reset() }
+            }
+            let word = m.echo.step(m.echoParams, frame: frame)
             if m.gateClosed { return false }            // the driver drives the pad: nothing to post, nothing to remember
             if let l = m.last, l.frame == frame, l.revision == revision { return false }
             m.last = (frame, revision)
             if m.slot == nil { m.tK = tK; m.tC = tC }
-            m.slot = (frame, mapping)
+            m.slot = (frame, mapping, word)
             if m.drainScheduled { return false }
             m.drainScheduled = true
             return true
@@ -530,23 +545,28 @@ final class VirtualPadSink: @unchecked Sendable {
 
     private func drainMailbox() {
         let tD = clock()
-        let item = mailbox.withLock { m -> (frame: GamepadFrame, mapping: ControlMapping, tK: UInt64, tC: UInt64)? in
+        let item = mailbox.withLock { m -> (frame: GamepadFrame, mapping: ControlMapping, word: UInt32, tK: UInt64, tC: UInt64)? in
             m.drainScheduled = false
             defer { m.slot = nil }
             guard let s = m.slot else { return nil }
-            return (s.frame, s.mapping, m.tK, m.tC)
+            return (s.frame, s.mapping, s.word, m.tK, m.tC)
         }
         if let item {
             // Unstamped frames (tests, anything not from the timestamped HID callback) count from the drain.
             let stamp = LatencyStamp(tK: item.tK == 0 ? tD : item.tK, tC: item.tC == 0 ? tD : item.tC, tD: tD)
-            handle(frame: item.frame, mapping: item.mapping, stamp: stamp)
+            handle(frame: item.frame, mapping: item.mapping, word: item.word, stamp: stamp)
         }
     }
 
     /// Queue-confined body of the frame path. While the test pattern runs, frames are ignored.
-    func handle(frame: GamepadFrame, mapping: ControlMapping, stamp: LatencyStamp? = nil) {
+    /// `word` is the report's echo word, stepped in `submit` (never here: a second state would see only the reports that
+    /// survived coalescing). It is applied to the frame first, so both translators map the cleaned report; 0 (nothing
+    /// hidden, or called without one) leaves the frame as it is. A mapping that hides an echo is not expressible in the
+    /// driver's GDHM v1 blob, so it runs on the Swift mapper (until the C core takes version 2).
+    func handle(frame raw: GamepadFrame, mapping: ControlMapping, word: UInt32 = 0, stamp: LatencyStamp? = nil) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard created, !isPatternRunning, !driverDrives else { return }
+        let frame = EchoFilter.apply(word, to: raw)
         if let core = xlateCore(for: mapping) {
             let pad = core.eval(frame)                  // already snapped by the C core
             let same = lastSentState.map { core.unchanged(pad, XlateCore.pad(from: $0)) } ?? false

@@ -11,6 +11,10 @@ enum LearnGuard {
     /// The result line when `assignment` would take another control's binding, else nil. `label` maps a control id to its
     /// layout label.
     static func refusal(mapping: ControlMapping, assignment: LearnAssignment, label: (String) -> String) -> String? {
+        // A paddle or SAX key learned with another one's signal (the wrong key was pressed): refused before anything else.
+        if let other = mapping.learnSignalOwner(assignment) {
+            return "That was \(label(other))'s signal: press \(label(assignment.controlId)) itself."
+        }
         guard let owner = mapping.learnConflict(assignment) else { return nil }
         let o = label(owner), c = label(assignment.controlId)
         return "That is \(o)'s button. To make \(c) send \(o) use Mapping \u{2192} \(o)."
@@ -77,6 +81,8 @@ final class LearnSession: ObservableObject {
     private var risenButtons: [Int] = []      // 1-based, in order of appearance
     private var risenExtra: UInt16 = 0
     private var hatCounts: [UInt8: Int] = [:]
+    /// Single D-pad directions (item bits 10...13: up, right, down, left) that changed against the baseline, and in how many frames.
+    private var hatDirections: [Int: Int] = [:]
     private var peakDelta: [String: Int] = [:] // field -> signed delta with largest magnitude
     private var axisMin: [String: Int] = [:]   // raw extremes seen during a circle capture
     private var axisMax: [String: Int] = [:]
@@ -145,6 +151,7 @@ final class LearnSession: ObservableObject {
             risenButtons = []
             risenExtra = 0
             hatCounts = [:]
+            hatDirections = [:]
             peakDelta = [:]
             axisMin = [:]
             axisMax = [:]
@@ -194,6 +201,14 @@ final class LearnSession: ObservableObject {
             if newExtra != 0 { risenExtra = newExtra & (~newExtra &+ 1) }
         }
         if f.hat != 8 && f.hat != baseline.hat { hatCounts[f.hat, default: 0] += 1 }
+        // The D-pad echo of a key, read per axis against the baseline: the one direction that changed, so a key learned while
+        // D-pad up is held is stored as right (the controller sends up-right), never as the diagonal; a direction the
+        // controller cancelled counts as the opposite (D-pad left held, the key's right cancels it: right).
+        if f.hat != baseline.hat {
+            let changed = EchoFilter.changed(EchoFilter.items(word: 0, buttons: baseline.buttons, hat: baseline.hat),
+                                             EchoFilter.items(word: 0, buttons: f.buttons, hat: f.hat))
+            for bit in 10...13 where (changed >> UInt16(bit)) & 1 == 1 { hatDirections[bit, default: 0] += 1 }
+        }
         for name in GamepadFrame.axisNames {
             if let v = f.axis(name), let b = baseline.axis(name) {
                 recordPeak(name, v - b)
@@ -212,16 +227,19 @@ final class LearnSession: ObservableObject {
 
     private func finishStep() {
         let step = steps[stepIndex]
+        // Extra bits identify only the six paddle and SAX keys; on any other control they are not attached (they are a
+        // neighbouring key brushed, or the wrong key, and would tie the control to that key's signal).
+        let bits = ControlMapping.identityBits(step.control.id) != 0 ? risenExtra : 0
         var assignment = LearnAssignment(controlId: step.control.id, target: step.target,
-                                         binding: nil, physicalBits: risenExtra)
+                                         binding: nil, physicalBits: bits)
         switch step.control.kind {
         case .button:
             if step.control.id.hasPrefix("dpad_"), let hat = hatCounts.max(by: { $0.value < $1.value })?.key {
                 assignment.binding = .hat(hat)
             } else if let first = risenButtons.first {
                 assignment.binding = .button(first)
-            } else if let hat = hatCounts.max(by: { $0.value < $1.value })?.key {
-                assignment.binding = .hat(hat)
+            } else if let dir = hatDirections.sorted(by: { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }).first?.key {
+                assignment.binding = .hat(UInt8((dir - 10) * 2))        // up 0, right 2, down 4, left 6
             }
         case .trigger:
             let best = ["lt", "rt"].compactMap { n in peakDelta[n].map { (n, $0) } }
@@ -246,8 +264,8 @@ final class LearnSession: ObservableObject {
             lastResult = "\(label): \(desc)"
             if s.horizontal == nil || s.vertical == nil { lastResult += " (only one axis moved; rotate the full circle)" }
         } else if let b = assignment.binding {
-            lastResult = "\(label): \(b.summary)" + (risenExtra != 0 ? " (+ extra bits)" : "")
-        } else if risenExtra != 0 {
+            lastResult = "\(label): \(b.summary)" + (assignment.physicalBits != 0 ? " (+ extra bits)" : "")
+        } else if assignment.physicalBits != 0 {
             lastResult = "\(label): only extra bits seen (stored as physical bits)"
         } else {
             lastResult = "\(label): nothing usable detected"

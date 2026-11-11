@@ -501,7 +501,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
                              actionForReplacingExtension existing: OSSystemExtensionProperties,
                              withExtension ext: OSSystemExtensionProperties) -> OSSystemExtensionRequest.ReplacementAction {
         Logger(subsystem: "com.interlinked.gdhub", category: "vhid")
-            .info("replacing dext \(existing.bundleVersion, privacy: .public) -> \(ext.bundleVersion, privacy: .public)")
+            .notice("replacing dext \(existing.bundleVersion, privacy: .public) -> \(ext.bundleVersion, privacy: .public)")
         return .replace
     }
 
@@ -511,7 +511,7 @@ final class DriverManager: NSObject, ObservableObject, OSSystemExtensionRequestD
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
         MainActor.assumeIsolated {
-            Self.log.info("request finished: \(result.rawValue)")
+            Self.log.notice("request finished: \(result.rawValue)")
             if result == .willCompleteAfterReboot { self.set(.rebootRequired); self.engineSettled(clearUpdate: true); return }
             if self.state == .uninstalling { self.set(.notInstalled); self.engineSettled(clearUpdate: true); return }
             self.queryProperties()

@@ -7,10 +7,10 @@ import Foundation
 /// - What each control sends is `mapping.effectiveOutput`. A pad button is held when any of `sources(of:)` is active
 ///   (`isActive`); `.nothing` and `.builtIn` feed nothing. By default G1…G5 and Profile (buttons 12…17) send nothing,
 ///   and "Profile" stays unbound (output-layer plan §3.5).
-/// - Paddles and SAX buttons reach the pad only through the controller's own factory echo: paddles arrive as hat
-///   directions (D-pad), SAX left / right as buttons 1 / 2 (A / B). The mapper never reads `physicalBits`
-///   itself (`ControlMapping.isActive` gives them precedence only for the paddle / SAX controls), so the echo
-///   is counted once.
+/// - A paddle or SAX key left on Controller's profile reaches the pad only through the controller's own echo: paddles
+///   arrive as hat directions (D-pad), SAX left / right as buttons 1 / 2 (A / B). The mapper never reads `physicalBits`
+///   itself (`ControlMapping.isActive` knows the six by their fixed identity bits), so the echo is counted once. A remapped
+///   one sends its pick by its own bit; the echo it adds is removed from the frame before this runs (`EchoFilter`).
 /// - Opposite D-pad directions are both reported here; the report builders cancel them (`GDX_ENC_HAT8`).
 enum PassthroughPadMapper {
     static func padState(_ f: GamepadFrame, _ m: ControlMapping) -> PadState {

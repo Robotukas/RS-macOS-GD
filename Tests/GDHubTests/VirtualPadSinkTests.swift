@@ -848,6 +848,119 @@ final class VirtualPadSinkTests: XCTestCase {
         XCTAssertEqual(sink.framesReceived, 50)
     }
 
+    // MARK: The echo filter at the sink (remap step 2)
+
+    private func echoFrame(buttons: UInt32 = 0, hat: UInt8 = 8, extra: UInt16 = 0) -> GamepadFrame {
+        var f = GamepadFrame(); f.buttons = buttons; f.hat = hat; f.extra = extra
+        return f
+    }
+
+    /// Paddle outer right sends R3 (its own button, D-pad right, is hidden); SAX left sends View.
+    private func paddleMapping() -> ControlMapping {
+        var m = ControlMapping.default
+        m.setOutput(.pad(.r3), for: "paddle_outer_right")
+        m.setOutput(.pad(.view), for: "sax_left")
+        return m
+    }
+
+    private func pad(_ items: PadButtons) -> [UInt8] { report1(PadState(buttons: items)) }
+
+    func testARemappedPaddleSendsOnlyItsPickWithTheControllersOwnButtonHidden() {
+        let sink = publishedSink()
+        let m = paddleMapping()
+        // The controller sends the paddle's bit and its own D-pad right in the same report.
+        sink.submit(frame: echoFrame(), mapping: m, revision: 1)                       // at rest: nothing to post
+        for (frame, want) in [(echoFrame(hat: 2, extra: 1), PadButtons.rs),
+                              (echoFrame(), PadButtons())] {
+            sink.submit(frame: frame, mapping: m, revision: 1)
+            queue.sync { env.advance(by: 10) }
+            XCTAssertEqual(transport.posts.last, pad(want))
+        }
+        XCTAssertFalse(transport.posts.contains(pad(.dpadRight)), "D-pad right never reaches the pad")
+        XCTAssertFalse(transport.posts.contains(pad([.rs, .dpadRight])))
+        // The mapping needs the echo hidden: the driver's v1 blob cannot say it, so the Swift mapper runs.
+        XCTAssertTrue(sink.xlateStatus.hasPrefix("swift (fallback"), sink.xlateStatus)
+        // Untouched paddle on Controller's profile: its D-pad right passes as before.
+        let plain = publishedSink()
+        transport.clear()
+        plain.submit(frame: echoFrame(hat: 2, extra: 1), mapping: .default, revision: 1)
+        queue.sync { env.advance(by: 10) }
+        XCTAssertEqual(transport.posts.last, pad(.dpadRight))
+    }
+
+    func testTheFilterSeesEveryReportAlthoughTheSinkOnlyProcessesTheNewest() {
+        let sink = publishedSink()
+        let m = paddleMapping()
+        sink.submit(frame: echoFrame(), mapping: m, revision: 1)                       // at rest
+        sink.submit(frame: echoFrame(hat: 6), mapping: m, revision: 1)                 // D-pad left held
+        queue.sync { env.advance(by: 10) }
+        XCTAssertEqual(transport.posts.last, pad(.dpadLeft))
+        let gate = DispatchSemaphore(value: 0)
+        queue.async { gate.wait() }                                                    // a busy queue: reports are coalesced
+        // Paddle outer right goes down: the controller cancels left against its own right (no direction), then X is pressed.
+        sink.submit(frame: echoFrame(hat: 8, extra: 1), mapping: m, revision: 1)
+        sink.submit(frame: echoFrame(buttons: 1 << 2, hat: 8, extra: 1), mapping: m, revision: 1)
+        gate.signal()
+        queue.sync {}
+        queue.sync { env.advance(by: 10) }
+        XCTAssertEqual(transport.posts.last, pad([.dpadLeft, .x, .rs]), "the cancel was worked out from the dropped report: left stays")
+        XCTAssertEqual(sink.framesReceived, 4)
+    }
+
+    func testARepeatedReportIsDroppedAndChangesNothing() {
+        let sink = publishedSink()
+        let m = paddleMapping()
+        sink.submit(frame: echoFrame(), mapping: m, revision: 1)
+        for _ in 0..<50 { sink.submit(frame: echoFrame(hat: 2, extra: 1), mapping: m, revision: 1) }
+        queue.sync { env.advance(by: 10) }
+        XCTAssertEqual(transport.posts.filter { $0 == pad(.rs) }.count, 1)
+        XCTAssertEqual(transport.posts.last, pad(.rs))
+        XCTAssertEqual(sink.framesReceived, 51)
+    }
+
+    func testAHeldButtonAndARemappedKeyAcrossTheGateKeepTheirState() {
+        let sink = publishedSink()
+        let m = paddleMapping()
+        sink.submit(frame: echoFrame(), mapping: m, revision: 1)
+        sink.submit(frame: echoFrame(buttons: 1), mapping: m, revision: 1)             // A held
+        queue.sync { env.advance(by: 10) }
+        XCTAssertEqual(transport.posts.last, pad(.a))
+        queue.sync { sink.setDriverDrives(true) }                                      // the driver drives: the engine posts nothing
+        transport.clear()
+        sink.submit(frame: echoFrame(buttons: 1, extra: 16), mapping: m, revision: 1)  // SAX left down (the controller adds A, already on)
+        sink.submit(frame: echoFrame(buttons: 0, extra: 16), mapping: m, revision: 1)  // A let go during the hold
+        queue.sync { env.advance(by: 10) }
+        XCTAssertTrue(transport.posts.isEmpty)
+        queue.sync { sink.setDriverDrives(false) }                                     // fallback: the next report posts in full
+        sink.submit(frame: echoFrame(buttons: 0, hat: 8, extra: 16), mapping: m, revision: 1)
+        queue.sync { env.advance(by: 10) }
+        XCTAssertTrue(transport.posts.contains(pad([.a, .view])), "A stays on until the key is let go, and the key sends its pick")
+        sink.submit(frame: echoFrame(), mapping: m, revision: 1)
+        queue.sync { env.advance(by: 10) }
+        XCTAssertEqual(transport.posts.last, pad([]), "nothing stays covered after the key is let go")
+    }
+
+    func testTheFilterKeepsItsStateAcrossAMappingChangeWithTheSameParametersAndResetsWhenTheyChange() {
+        func run(_ second: ControlMapping) -> [UInt8]? {
+            let sink = publishedSink()
+            let first = paddleMapping()
+            sink.submit(frame: echoFrame(), mapping: first, revision: 1)
+            sink.submit(frame: echoFrame(hat: 6), mapping: first, revision: 1)         // D-pad left held
+            sink.submit(frame: echoFrame(hat: 8, extra: 1), mapping: first, revision: 1)   // paddle down: the cancel, left recovered
+            queue.sync { env.advance(by: 10) }
+            XCTAssertEqual(transport.posts.last, pad([.dpadLeft, .rs]))
+            sink.submit(frame: echoFrame(buttons: 1 << 2, hat: 8, extra: 1), mapping: second, revision: 2)
+            queue.sync { env.advance(by: 10) }
+            return transport.posts.last
+        }
+        var sameParams = paddleMapping()
+        sameParams.setOutput(.pad(.a), for: "g1")                                       // another remap: the echo parameters are the same
+        XCTAssertEqual(run(sameParams), pad([.dpadLeft, .x, .rs]), "the state went on: left is still worked out")
+        var otherParams = paddleMapping()
+        otherParams.setOutput(.pad(.b), for: "paddle_outer_left")                       // the hide mask changes: a fresh state
+        XCTAssertEqual(run(otherParams), pad([.x, .rs]), "a reset in the middle of a hold loses the worked-out direction")
+    }
+
     func testTestPatternRunsAndIgnoresControllerFrames() {
         let sink = publishedSink()
         var f = GamepadFrame(); f.buttons = 1 << 3

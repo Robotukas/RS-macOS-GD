@@ -157,10 +157,19 @@ enum MapBlobEncoder {
 
     /// What GDHM v1 cannot say about the mapping's remaps (`outputs`), in the owner's words, or nil. v1 takes 0, 1 or 2
     /// OR-ed rules per pad button and exactly one field per pad trigger, so it cannot send one pad button from three
-    /// controls, a button to a trigger, or two controls to one trigger. Never non-nil for a mapping with empty
-    /// `outputs`. Pure; the menu uses it to mark picks the driver cannot do yet (the App drives the pad then).
+    /// controls, a button to a trigger, or two controls to one trigger; and it has no echo entry, so it cannot hide the
+    /// button the controller adds for a remapped paddle or SAX key. This is the level-1 answer (a driver that takes GDHM
+    /// v1 only, build 24). Never non-nil for a mapping with empty `outputs`. Pure; the menu uses it to mark picks the
+    /// driver cannot do yet (the App drives the pad then).
     static func remapLimit(_ mapping: ControlMapping) -> String? {
         guard !mapping.outputs.isEmpty else { return nil }
+        // A remapped paddle or SAX key first, so that no message below can name one of them by its raw id.
+        for id in ControlMapping.echoKeyIDs {
+            let output = mapping.effectiveOutput(id)
+            if output != .builtIn {
+                return "\(keyWords[id] ?? id) sends \(label(output)): this driver version cannot hide the controller's own press"
+            }
+        }
         for output in PadOutput.allCases {
             let sources = mapping.sources(of: output)
             if output.isTrigger {
@@ -175,6 +184,21 @@ enum MapBlobEncoder {
             }
         }
         return nil
+    }
+
+    /// The owner's words for the six paddle and SAX keys (the layout labels), used only in the hide-the-echo message.
+    private static let keyWords: [String: String] = [
+        "paddle_outer_right": "Paddle outer right", "paddle_inner_right": "Paddle inner right",
+        "paddle_inner_left": "Paddle inner left", "paddle_outer_left": "Paddle outer left",
+        "sax_left": "SAX left", "sax_right": "SAX right",
+    ]
+
+    private static func label(_ o: ControlOutput) -> String {
+        switch o {
+        case .pad(let p): return label(p)
+        case .nothing: return "Nothing"
+        case .builtIn: return "its built-in function"
+        }
     }
 
     private static func label(_ o: PadOutput) -> String {
@@ -246,7 +270,8 @@ enum MapBlobEncoder {
     /// `ControlMapping.isActive` for one button control, as a single GDHM rule.
     private static func buttonRule(item: UInt8, control cid: String, _ m: ControlMapping) throws -> GDHMTable.Button {
         var r = GDHMTable.Button(item: item, kind: UInt8(GDX_KIND_NONE))
-        r.physMask = m.physicalBits[cid] ?? 0
+        // The six paddle and SAX keys are known by the fixed table, never by what a learn stored (`identityBits`).
+        r.physMask = m.identityBits(cid) != 0 ? m.identityBits(cid) : (m.physicalBits[cid] ?? 0)
         var inexpressible: String?
         if let b = m.buttons[cid] {
             switch b {

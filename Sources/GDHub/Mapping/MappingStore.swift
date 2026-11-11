@@ -98,6 +98,23 @@ struct MappingStore {
         return onDisk != willWrite
     }
 
+    /// True when `mapping` holds a remap a step-1 app does not know (a paddle or SAX key, which it would drop at its next
+    /// save) and its `outputs` differ from the file on disk in ids or in values. A missing or unreadable file counts as
+    /// having no `outputs`.
+    static func newBackupNeeded(existing: Data?, saving mapping: ControlMapping) -> Bool {
+        guard mapping.outputs.keys.contains(where: { ControlMapping.echoKeyIDs.contains($0) }) else { return false }
+        var onDisk: [String: String] = [:]
+        if let existing, let obj = (try? JSONSerialization.jsonObject(with: existing)) as? [String: Any],
+           let o = obj["outputs"] as? [String: String] {
+            onDisk = o
+        }
+        return onDisk != mapping.outputs.mapValues(\.string)
+    }
+
+    /// Ends of a backup of the new bytes: `mapping <stamp> new.json` (and `mapping <stamp>-2 new.json` for a second one in
+    /// the same second).
+    static let newBackupSuffix = " new.json"
+
     func save(_ mapping: ControlMapping) {
         do {
             let fm = FileManager.default
@@ -106,22 +123,32 @@ struct MappingStore {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(mapping)
             // Remaps are new in file format v2; an older app reading it would drop them, so the previous file is kept
-            // (timestamped, last `backupsKept`) whenever a save adds or removes `outputs`.
+            // (timestamped, last `backupsKept`) whenever a save adds or removes `outputs`. A step-1 app also drops the
+            // paddle and SAX entries it does not know, so whenever such an entry is added or changed the new bytes are kept
+            // too (`mapping <stamp> new.json`), and the newest of those is never pruned.
             // Best effort: a backup that cannot be written must never cost the save itself.
-            if let existing = try? Data(contentsOf: url), Self.outputsKeyChanges(existing: existing, saving: mapping) {
+            let existing = try? Data(contentsOf: url)
+            let backUpOld = existing.map { Self.outputsKeyChanges(existing: $0, saving: mapping) } ?? false
+            let backUpNew = Self.newBackupNeeded(existing: existing, saving: mapping)
+            if backUpOld || backUpNew {
                 do {
                     try fm.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
                     let f = DateFormatter()
                     f.locale = Locale(identifier: "en_US_POSIX")
                     f.dateFormat = "yyyy-MM-dd HH-mm-ss"
                     let stamp = f.string(from: Date())
-                    var backup = backupsDirectory.appendingPathComponent("mapping \(stamp).json")
-                    var n = 2
-                    while fm.fileExists(atPath: backup.path) {      // two changes in one second: keep both
-                        backup = backupsDirectory.appendingPathComponent("mapping \(stamp)-\(n).json"); n += 1
+                    func free(_ suffix: String) -> URL {
+                        var candidate = backupsDirectory.appendingPathComponent("mapping \(stamp)\(suffix)")
+                        var n = 2
+                        while fm.fileExists(atPath: candidate.path) {      // two changes in one second: keep both
+                            candidate = backupsDirectory.appendingPathComponent("mapping \(stamp)-\(n)\(suffix)"); n += 1
+                        }
+                        return candidate
                     }
-                    try existing.write(to: backup, options: .atomic)
-                    for old in backups().dropFirst(Self.backupsKept) { try? fm.removeItem(at: old) }
+                    if backUpOld, let existing { try existing.write(to: free(".json"), options: .atomic) }
+                    if backUpNew { try data.write(to: free(Self.newBackupSuffix), options: .atomic) }
+                    let newest = backups().first { $0.lastPathComponent.hasSuffix(Self.newBackupSuffix) }
+                    for old in backups().dropFirst(Self.backupsKept) where old != newest { try? fm.removeItem(at: old) }
                 } catch {
                     Self.log.error("could not back up \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
                 }

@@ -148,6 +148,11 @@ struct EchoState: Equatable {
             | EchoFilter.itemsHat[Int((out >> 10) & 15)] << 10 | UInt32(out & 0x3FF)
     }
 
+    /// One parsed frame through the rule (the same as its 16 bytes).
+    mutating func step(_ params: EchoParams, frame: GamepadFrame) -> UInt32 {
+        step(params, buttons: frame.buttons, hat: frame.hat, extra: frame.extra)
+    }
+
     /// One 16-byte report 0x06 through the rule; anything else (a bad frame) passes unchanged: word 0, state untouched.
     mutating func step(_ params: EchoParams, report: [UInt8]) -> UInt32 {
         guard let f = EchoFilter.fields(report) else { return 0 }
@@ -219,6 +224,16 @@ enum EchoFilter {
     static func items(word: UInt32, buttons: UInt32, hat: UInt8) -> UInt16 {
         if word == 0 { return UInt16(buttons & 0x3FF) | hatItems[Int(hat & 15)] << 10 }
         return UInt16(word & 0x3FF) | hatItems[Int((word >> 10) & 15)] << 10
+    }
+
+    /// `apply` on a parsed frame: with bit 31 set, buttons 1..10 and the hat become the word's; every other field (the extra
+    /// bits, buttons 11..19, triggers, sticks) stays. A word of 0 gives the frame unchanged.
+    static func apply(_ word: UInt32, to frame: GamepadFrame) -> GamepadFrame {
+        guard word & wordApplied != 0 else { return frame }
+        var out = frame
+        out.buttons = (frame.buttons & ~0x3FF) | (word & 0x3FF)
+        out.hat = UInt8((word >> 10) & 0xF)
+        return out
     }
 
     /// With bit 31 set: receiver buttons 1..10 (byte 12 and bits 0-1 of byte 13) := word bits 0..9 and the hat nibble (the

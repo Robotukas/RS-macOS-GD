@@ -109,16 +109,52 @@ final class RemapMenuTests: XCTestCase {
         XCTAssertEqual(try menu("left_stick").header, "Left stick sends")
     }
 
-    func testPaddleAndSaxMenusHaveOnlyTheNoteAndReLearn() throws {
-        for id in ["paddle_outer_left", "paddle_inner_right", "sax_left", "sax_right"] {
+    private let sixIDs = ["paddle_outer_right", "paddle_inner_right", "paddle_inner_left", "paddle_outer_left", "sax_left", "sax_right"]
+
+    func testPaddleAndSaxMenusAreFullMenusStartingOnControllersProfile() throws {
+        for id in sixIDs {
             let m = try menu(id)
-            XCTAssertEqual(m.kind, .deferred, id)
-            XCTAssertEqual(m.note, "Remapping paddles and SAX comes next. Until then this key sends the button the controller's profile gives it, and follows that button's remap.")
-            XCTAssertTrue(m.groups.isEmpty)
-            XCTAssertNil(m.reset)
-            XCTAssertEqual(m.relearnTitle, "Re-learn button…")
+            XCTAssertEqual(m.kind, .remappable, id)
+            XCTAssertEqual(titles(m), [["Controller's profile (built in)"]] + padTitles + [["Nothing"]], id)
+            XCTAssertEqual(m.note, "Sends the button the controller's profile gives it, and follows that button's remap.", id)
+            let profile = try entry(m, .builtIn)
+            XCTAssertTrue(profile.isCurrent, id)
+            XCTAssertTrue(profile.isDefault, id)
+            XCTAssertEqual(m.entries.filter(\.isCurrent).count, 1, id)
+            XCTAssertEqual(m.entries.filter(\.isDefault).count, 1, id)
+            XCTAssertFalse(try entry(m, .nothing).isDefault, "Nothing is a pick of its own on these keys")
+            XCTAssertEqual(m.reset, RemapMenuModel.Reset(title: "Reset to default", isEnabled: false), id)
+            XCTAssertEqual(m.relearnTitle, "Re-learn button…", id)
+            XCTAssertEqual(m.entries.count, 1 + 4 + 4 + 4 + 4 + 1 + 1, id)
         }
         XCTAssertEqual(try menu("sax_left").header, "SAX left sends")
+        XCTAssertEqual(try menu("paddle_outer_left").header, "Paddle outer left sends")
+    }
+
+    func testARemappedPaddleTicksItsPickAndHasTheRemappedNote() throws {
+        var map = ControlMapping.default
+        map.setOutput(.pad(.y), for: "paddle_outer_right")
+        let m = try menu("paddle_outer_right", map)
+        XCTAssertTrue(try entry(m, .pad(.y)).isCurrent)
+        XCTAssertFalse(try entry(m, .builtIn).isCurrent)
+        XCTAssertTrue(try entry(m, .builtIn).isDefault, "the default tag stays on Controller's profile")
+        XCTAssertEqual(m.note, RemapMenuModel.remappedKeyNote, "words of the remapped-key note come with S3(c)")
+        XCTAssertEqual(m.reset?.isEnabled, true)
+        // Nothing is a pick too.
+        map.setOutput(.nothing, for: "paddle_outer_right")
+        XCTAssertTrue(try entry(try menu("paddle_outer_right", map), .nothing).isCurrent)
+        // A paddle left alone keeps the Controller's-profile note next to a remapped one.
+        XCTAssertEqual(try menu("paddle_outer_left", map).note, RemapMenuModel.controllersProfileNote)
+        // Picking Controller's profile again clears the remap.
+        let back = RemapMenuModel.mapping(map, picking: .builtIn, for: "paddle_outer_right")
+        XCTAssertFalse(back.isRemapped("paddle_outer_right"))
+        XCTAssertEqual(back, ControlMapping.default)
+    }
+
+    func testThereIsNoDeferredKindAnyMore() throws {
+        XCTAssertEqual(try menu("left_stick").kind, .stick)
+        XCTAssertEqual(try menu("right_stick").kind, .stick)
+        for id in sixIDs { XCTAssertEqual(try menu(id).kind, .remappable, id) }
     }
 
     func testEveryRemappableControlGetsAFullMenuAndNothingElseDoes() throws {
@@ -171,6 +207,8 @@ final class RemapMenuTests: XCTestCase {
             switch id {
             case "lt": expected = [.pad(.rt)]
             case "rt": expected = [.pad(.lt)]
+            // A paddle or SAX key: every pick but Controller's profile needs the echo hidden, which this driver version cannot do.
+            case _ where sixIDs.contains(id): expected = Set(PadOutput.allCases.map { ControlOutput.pad($0) } + [.nothing])
             default: expected = [.pad(.lt), .pad(.rt)]       // a button cannot pull a trigger in this driver version
             }
             XCTAssertEqual(marked, expected, id)

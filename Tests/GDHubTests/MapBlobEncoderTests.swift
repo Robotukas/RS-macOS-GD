@@ -253,6 +253,47 @@ final class MapBlobEncoderTests: XCTestCase {
         XCTAssertNotNil(blob(remapped([("lt", .nothing)])))
     }
 
+    func testARemappedPaddleOrSaxKeyIsUnsupportedAtLevelOneInTheOwnersWords() throws {
+        let layout = try XCTUnwrap(ControlLayout.loadFromBundle())
+        for id in ControlMapping.echoKeyIDs {
+            let words = try XCTUnwrap(layout.control(id: id)).label        // the words table equals the layout labels
+            let m = remapped([(id, .pad(.y))])
+            let why = "\(words) sends Y: this driver version cannot hide the controller's own press"
+            XCTAssertEqual(MapBlobEncoder.remapLimit(m), why)
+            XCTAssertEqual(reason(m), why)
+            XCTAssertEqual(MapBlobEncoder.remapLimit(remapped([(id, .nothing)])),
+                           "\(words) sends Nothing: this driver version cannot hide the controller's own press", "Nothing hides it too")
+            XCTAssertEqual(MapBlobEncoder.remapLimit(remapped([(id, .pad(.dpad_left))])),
+                           "\(words) sends D-pad left: this driver version cannot hide the controller's own press")
+            XCTAssertEqual(MapBlobEncoder.remapLimit(remapped([(id, .pad(.lt))])),
+                           "\(words) sends LT: this driver version cannot hide the controller's own press")
+        }
+        XCTAssertEqual(MapBlobEncoder.remapLimit(remapped([("sax_left", .pad(.y))])),
+                       "SAX left sends Y: this driver version cannot hide the controller's own press")
+    }
+
+    func testThePaddleMessageComesFirstSoNoRawIdIsEverNamed() {
+        let m = remapped([("g1", .pad(.y)), ("g2", .pad(.y)), ("paddle_inner_right", .pad(.y)), ("paddle_outer_left", .pad(.x))])
+        XCTAssertEqual(MapBlobEncoder.remapLimit(m), "Paddle inner right sends Y: this driver version cannot hide the controller's own press",
+                       "the first of the six in table order")
+        // With the paddles back on Controller's profile the step-1 message is the same bytes as before.
+        XCTAssertEqual(MapBlobEncoder.remapLimit(remapped(m, [("paddle_inner_right", .builtIn), ("paddle_outer_left", .builtIn)])),
+                       "three buttons send Y: y, g1, g2")
+    }
+
+    func testPaddlesOnControllersProfileEncodeLikeTheFactoryMappingAndAStrayBitIsNoLimit() throws {
+        XCTAssertEqual(blob(remapped([("paddle_outer_right", .builtIn)])), blob(.default))
+        var stray = ControlMapping.default
+        stray.physicalBits["g1"] = 1                       // an old learn: G1 with paddle outer right's signal
+        stray.setOutput(.pad(.y), for: "g1")
+        XCTAssertNil(MapBlobEncoder.remapLimit(stray), "encodes; the signal conflict is a note, not a driver limit")
+        XCTAssertNotNil(blob(stray))
+        // The pin: stray bits on lt / rt stay version-1 and byte-identical to the default blob.
+        var bits = ControlMapping.default
+        bits.physicalBits["lt"] = 1; bits.physicalBits["rt"] = 0x20
+        XCTAssertEqual(blob(bits), blob(.default))
+    }
+
     func testNoRemapLimitWithoutRemaps() {
         XCTAssertNil(MapBlobEncoder.remapLimit(.default))
         XCTAssertNil(MapBlobEncoder.remapLimit(ControlMapping()))
