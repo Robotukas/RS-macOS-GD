@@ -157,4 +157,44 @@ final class RemapLightingTests: XCTestCase {
         XCTAssertEqual(levels(frame(buttons: [13]), m), ["g2": .pressed, "y": .linked, "g1": .linked])
         XCTAssertEqual(levels(frame(buttons: [12, 13]), m), ["g1": .pressed, "g2": .pressed, "y": .linked])
     }
+
+    // MARK: Through the cleaned frame (remap step 2)
+
+    /// The screen's own step of the rule: the report cleaned the way `EnvisionProDevice.ingest` does.
+    private func shown(_ reports: [GamepadFrame], _ m: ControlMapping) -> GamepadFrame {
+        var state = EchoState()
+        var out = GamepadFrame()
+        for f in reports { out = EchoFilter.apply(state.step(m.echoParams, frame: f), to: f) }
+        return out
+    }
+
+    func testARemappedPaddleLightsItselfAndYAsLinkedNotDpadRight() {
+        let m = mapped([("paddle_outer_right", .pad(.y))])
+        let raw = frame(hat: 2, extra: 1)                              // the controller adds D-pad right for the paddle
+        XCTAssertEqual(levels(raw, m)["dpad_right"], .pressed, "the raw report would light the controller's own button")
+        let cleaned = shown([.idle, raw], m)
+        XCTAssertEqual(cleaned.hat, 8)
+        XCTAssertEqual(levels(cleaned, m), ["paddle_outer_right": .pressed, "y": .linked])
+    }
+
+    func testAPaddleOnControllersProfileStillLightsDpadRight() {
+        let m = mapped([("paddle_outer_left", .pad(.y))])             // another key is remapped
+        let raw = frame(hat: 2, extra: 1)
+        let cleaned = shown([.idle, raw], m)
+        XCTAssertEqual(cleaned, raw, "the untouched paddle's report is not changed")
+        XCTAssertEqual(levels(cleaned, m), ["paddle_outer_right": .pressed, "dpad_right": .pressed])
+    }
+
+    func testRealDpadRightHeldBeforeTheRemappedPaddleStaysLit() {
+        let m = mapped([("paddle_outer_right", .pad(.y))])
+        let cleaned = shown([.idle, frame(hat: 2), frame(hat: 2, extra: 1)], m)
+        XCTAssertEqual(levels(cleaned, m), ["paddle_outer_right": .pressed, "dpad_right": .pressed, "y": .linked])
+    }
+
+    func testRemappingAKeyDoesNotMoveARemappedSaxKey() {
+        // A is remapped to B; SAX left is remapped to View: SAX left sends View only, and neither A nor B lights for it.
+        let m = mapped([("a", .pad(.b)), ("sax_left", .pad(.view))])
+        let cleaned = shown([.idle, frame(buttons: [1], extra: 16)], m)
+        XCTAssertEqual(levels(cleaned, m), ["sax_left": .pressed, "view": .linked])
+    }
 }

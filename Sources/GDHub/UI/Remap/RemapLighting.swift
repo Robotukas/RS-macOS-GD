@@ -9,6 +9,10 @@ import Foundation
 ///   and G1 (linked). A control mapped away from an item is not linked to it. "Actually sending" is judged from the
 ///   mapper's own output (`PassthroughPadMapper.padState`), so opposite D-pad directions that cancel light nothing.
 ///   Controls mapped to Nothing or to the built-in function feed no item and are never linked.
+///
+/// The frame given is the one the screen draws (`EnvisionProDevice.frame`): the report with the button the controller adds for a
+/// remapped paddle or SAX key already hidden (`EchoFilter`), so a remapped key lights itself and its pick (linked), never the
+/// button it used to send. A key left on Controller's profile is not cleaned and still lights that button.
 enum RemapLighting {
     enum Level: Equatable { case pressed, linked }
 

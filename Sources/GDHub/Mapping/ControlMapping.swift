@@ -452,13 +452,18 @@ extension ControlMapping {
     /// driver build; a note and a hint line, never a driver limit (App and driver do the same thing with it). `label` gives
     /// a control's layout label ("G1", "Paddle outer right"); pass it, the default is the raw id.
     func signalConflict(label: (String) -> String = { $0 }) -> String? {
-        let hidden = echoHideMask
-        for (k, key) in Self.echoKeyIDs.enumerated() where (hidden >> UInt8(k)) & 1 == 1 {
-            let bit = Self.identityBits(key)
-            let others = physicalBits.filter { id, bits in Self.identityBits(id) == 0 && bits == bit }.keys.sorted()
-            if let other = others.first { return "\(label(other)) was learned with \(label(key))'s signal: re-learn \(label(other))." }
-        }
+        for key in Self.echoKeyIDs { if let text = signalConflict(forKey: key, label: label) { return text } }
         return nil
+    }
+
+    /// The same for one key: the note in that key's own menu. Nil when the key is not remapped or no other control carries
+    /// its table bit.
+    func signalConflict(forKey key: String, label: (String) -> String = { $0 }) -> String? {
+        guard let k = Self.echoKeyIDs.firstIndex(of: key), (echoHideMask >> UInt8(k)) & 1 == 1 else { return nil }
+        let bit = Self.identityBits(key)
+        let others = physicalBits.filter { id, bits in Self.identityBits(id) == 0 && bits == bit }.keys.sorted()
+        guard let other = others.first else { return nil }
+        return "\(label(other)) was learned with \(label(key))'s signal: re-learn \(label(other))."
     }
 }
 

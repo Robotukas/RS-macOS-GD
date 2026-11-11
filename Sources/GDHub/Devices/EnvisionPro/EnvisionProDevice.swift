@@ -28,7 +28,10 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     /// While editing, every change is written to the user layout file shortly after it happens, so a
     /// crash or relaunch never loses work; Done only locks, Cancel restores the snapshot taken at start.
     @Published var layout: ControlLayout? {
-        didSet { if editor.isEditing { scheduleLayoutAutosave() } }
+        didSet {
+            if editor.isEditing { scheduleLayoutAutosave() }
+            refreshRemapConflict()
+        }
     }
     let editor = LayoutEditor()
     private var autosaveWork: DispatchWorkItem?
@@ -42,7 +45,12 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
+    /// What the screen draws: the controller's report with the button the controller adds for a remapped paddle or SAX key
+    /// hidden (`EchoFilter`), so a remapped key lights itself and its pick, not the button it used to send. Equal to the
+    /// raw report when nothing is remapped. `rawFrame` is the report as it came.
     @Published private(set) var frame = GamepadFrame()
+    /// The latest report exactly as the controller sent it (the input monitor's line).
+    var rawFrame: GamepadFrame { latestFrame }
     @Published private(set) var status: Status = .disconnected {
         didSet { if status != oldValue { onStatusChange?(status) } }
     }
@@ -65,10 +73,30 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     private(set) var remapSources: [PadOutput: [String]] = ControlMapping.default.sourcesByOutput()
     /// What the driver cannot do for the current mapping yet (`RemapHint.limit`), recomputed only when the mapping changes.
     private(set) var remapLimit: String?
+    /// "<Other> was learned with <Paddle>'s signal: re-learn <Other>." for the toolbar, or nil (`RemapHint.conflict`). Worked
+    /// out with the layout's labels, so it never shows a raw id; recomputed when the mapping or the layout changes.
+    private(set) var remapConflict: String?
 
     private func refreshRemapCaches() {
         remapSources = mapping.sourcesByOutput()
         remapLimit = RemapHint.limit(of: mapping)
+        refreshRemapConflict()
+        // The screen's own copy of the rule: new parameters mean a fresh state, and the report on screen is cleaned again
+        // with them (the next report may be a while away).
+        let params = mapping.echoParams
+        if params != echoParams {
+            echoParams = params
+            echoState.reset()
+            guard hasFrame else { return }
+            let word = echoState.step(echoParams, frame: latestFrame)
+            latestShown = EchoFilter.apply(word, to: latestFrame)
+            if frame != latestShown { frame = latestShown }
+        }
+    }
+
+    private func refreshRemapConflict() {
+        let found = RemapHint.conflict(of: mapping) { id in layout?.control(id: id)?.label ?? id }
+        if found != remapConflict { remapConflict = found }
     }
 
     // MARK: Mapping mode (remap plan, "UI (R2)")
@@ -111,7 +139,12 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
     private var mappingWatcher: MappingWatcher?
     private var adoptingExternalMapping = false
     private static let watcherQueue = DispatchQueue(label: "gdhub.gui.mapping-watch", qos: .utility)
+    /// The latest report as it came (the event log, a learn's baseline and the input monitor read this one).
     private var latestFrame = GamepadFrame()
+    /// The same report cleaned by `echoState` (what `frame` shows).
+    private var latestShown = GamepadFrame()
+    private var echoState = EchoState()
+    private var echoParams = EchoParams.none
     private var hasFrame = false
     private var lastReportAt: Date?
     private var interfaces: [Int: Int] = [:]
@@ -231,9 +264,12 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         for e in new.diff(from: previous) { log(e.text, at: now) }
         latestFrame = new
         hasFrame = true
+        // The screen steps its own copy of the rule on every report (not at the publish rate); the pad feed, the developer
+        // tap and a learn keep reading the raw report.
+        latestShown = EchoFilter.apply(echoState.step(echoParams, frame: new), to: new)
         onFrame?(new, mapping, stamp)
         frameTap?(new, stamp.tK != 0 ? stamp.tK : LatencyMeter.nowNs())
-        publish(new)
+        publish(latestShown)
         learn?.feed(new, now: now)
     }
 
@@ -531,7 +567,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
                     guard let self else { return }
                     self.flushScheduled = false
                     self.lastPublish = Date()
-                    if self.frame != self.latestFrame { self.frame = self.latestFrame }
+                    if self.frame != self.latestShown { self.frame = self.latestShown }
                 }
             }
         }
@@ -541,7 +577,7 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         if status == .active, let last = lastReportAt, Date().timeIntervalSince(last) > asleepAfter {
             status = .asleep
             // Make sure the UI shows the last frame.
-            if frame != latestFrame { frame = latestFrame }
+            if frame != latestShown { frame = latestShown }
         }
         learn?.tick()
     }

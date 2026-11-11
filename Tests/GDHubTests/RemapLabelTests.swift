@@ -76,4 +76,22 @@ final class RemapLabelTests: XCTestCase {
         m.setOutput(.pad(.dpad_right), for: "g4")
         XCTAssertEqual(label("G4", "g4", m).fullText, "G4 → D-pad right")
     }
+
+    func testPaddleAndSaxLabelsShowTheirPickInWords() {
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "paddle_outer_right")
+        m.setOutput(.nothing, for: "sax_left")
+        m.setOutput(.pad(.dpad_up), for: "paddle_inner_right")
+        let paddle = label("Paddle outer right", "paddle_outer_right", m, .mapping)
+        XCTAssertEqual(paddle.fullText, "Paddle outer right → Y")
+        XCTAssertEqual(paddle.suffix?.style, .remapped)
+        let sax = label("SAX left", "sax_left", m, .mapping)
+        XCTAssertEqual(sax.fullText, "SAX left → Nothing")
+        XCTAssertEqual(sax.suffix?.style, .nothing, "grey")
+        XCTAssertEqual(label("Paddle inner right", "paddle_inner_right", m).fullText, "Paddle inner right → D-pad up")
+        // Keys left on Controller's profile keep the plain label; Edit layout shows the plain label for all.
+        XCTAssertEqual(label("Paddle outer left", "paddle_outer_left", m, .mapping).fullText, "Paddle outer left")
+        XCTAssertEqual(label("SAX right", "sax_right", m).fullText, "SAX right")
+        XCTAssertEqual(label("Paddle outer right", "paddle_outer_right", m, .editLayout).fullText, "Paddle outer right")
+    }
 }

@@ -16,14 +16,18 @@ final class RemapMenuItemsTests: XCTestCase {
         let s = try specs("g1")
         XCTAssertEqual(s.first, RemapMenuItemSpec(kind: .header, title: "G1 sends", isEnabled: false))
         // header, 4 + 4 + 4 + 4 + 1 pad entries in 5 groups with separators, a separator and Nothing, footnote, separator,
-        // Reset, separator, re-learn
+        // re-learn (no Reset item: nothing is remapped)
         var expected: [RemapMenuItemSpec.Kind] = [.header]
         for (i, n) in [4, 4, 4, 4, 1].enumerated() {
             if i > 0 { expected.append(.separator) }
             expected += Array(repeating: .entry, count: n)
         }
-        expected += [.separator, .entry, .footnote, .separator, .reset, .separator, .relearn]
+        expected += [.separator, .entry, .footnote, .separator, .relearn]
         XCTAssertEqual(kinds(s), expected)
+        // Remapped: Reset to default appears between two separators, above the re-learn item.
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "g1")
+        XCTAssertEqual(Array(kinds(try specs("g1", m)).suffix(5)), [.footnote, .separator, .reset, .separator, .relearn])
         XCTAssertEqual(s.last?.title, "Re-learn button…")
         XCTAssertEqual(s.last?.pick, .relearn)
     }
@@ -38,8 +42,9 @@ final class RemapMenuItemsTests: XCTestCase {
         XCTAssertEqual(nothing.tags, ["default"], "Nothing is G1's default")
         let reset = try XCTUnwrap(s.first { $0.kind == .reset })
         XCTAssertTrue(reset.isEnabled, "G1 is remapped")
+        XCTAssertEqual(reset.title, "Reset to default")
         XCTAssertEqual(reset.pick, .reset)
-        XCTAssertFalse(try XCTUnwrap(specs("g1").first { $0.kind == .reset }).isEnabled, "nothing to reset")
+        XCTAssertNil(try specs("g1").first { $0.kind == .reset }, "nothing to reset: no item, not a greyed one")
         XCTAssertTrue(entries.allSatisfy(\.isEnabled))
     }
 
@@ -80,9 +85,16 @@ final class RemapMenuItemsTests: XCTestCase {
         XCTAssertEqual(paddle[2].tags, ["default"])
         XCTAssertTrue(paddle[2].isOn)
         XCTAssertEqual(paddle[2].pick, .output(.builtIn))
-        // The tail: footnote (the level-1 marks), separator, Reset to default, separator, Re-learn.
-        let tail = kinds(paddle).suffix(5)
-        XCTAssertEqual(Array(tail), [.footnote, .separator, .reset, .separator, .relearn])
+        // The tail: footnote (the level-1 marks), separator, Re-learn (no Reset item while the key is on Controller's profile).
+        let tail = kinds(paddle).suffix(3)
+        XCTAssertEqual(Array(tail), [.footnote, .separator, .relearn])
+        // Remapped: the tail gains Reset to default, and the second note is the remapped-key one.
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "paddle_outer_left")
+        let remapped = try specs("paddle_outer_left", m)
+        // (the mapping already has its limit, so no entry is marked and there is no footnote)
+        XCTAssertEqual(Array(kinds(remapped).suffix(5)), [.entry, .separator, .reset, .separator, .relearn])
+        XCTAssertEqual(remapped[1].title, RemapMenuModel.remappedKeyNote)
         XCTAssertEqual(paddle.last?.title, "Re-learn button…")
         // Every pick but Controller's profile carries the App-drives tag at level 1.
         for spec in paddle where spec.kind == .entry && spec.pick != .output(.builtIn) {
@@ -110,7 +122,7 @@ final class RemapMenuItemsTests: XCTestCase {
             switch spec.kind {
             case .separator:
                 XCTAssertTrue(item.isSeparatorItem)
-            case .header, .note, .footnote:
+            case .header, .note, .conflict, .footnote:
                 XCTAssertFalse(item.isEnabled, spec.title)
                 if spec.kind != .header { XCTAssertNotNil(item.view, "a note wraps in its own view") }
             case .entry, .reset, .relearn:
@@ -134,6 +146,31 @@ final class RemapMenuItemsTests: XCTestCase {
         XCTAssertEqual(picks, [.output(.pad(.y)), .reset])
         // The tick is on Y.
         XCTAssertEqual(menu.items.filter { $0.state == .on }.map(\.title), ["Y"])
+    }
+
+    func testConflictNoteIsASecondDisabledNoteInTheWarningColour() throws {
+        var m = ControlMapping.default
+        m.physicalBits["dpad_right"] = 1
+        m.setOutput(.pad(.y), for: "paddle_outer_right")
+        let layout = try XCTUnwrap(ControlLayout.loadFromBundle())
+        let c = try XCTUnwrap(layout.control(id: "paddle_outer_right"))
+        let model = RemapMenuModel(controlID: c.id, label: c.label, kind: c.kind, mapping: m,
+                                   labelOf: { layout.control(id: $0)?.label ?? $0 })
+        let list = model.itemSpecs()
+        XCTAssertEqual(Array(list.prefix(3).map(\.kind)), [.header, .note, .conflict])
+        XCTAssertEqual(list[1].title, RemapMenuModel.remappedKeyNote)
+        XCTAssertEqual(list[2].title, "D-pad right was learned with Paddle outer right's signal: re-learn D-pad right.")
+        XCTAssertFalse(list[2].isEnabled)
+        XCTAssertTrue(list[2].tags.isEmpty, "no limit tag on the conflict note")
+        let menu = RemapNSMenuBuilder.menu(for: list, target: RemapMenuTarget { _ in })
+        let item = menu.items[2]
+        XCTAssertFalse(item.isEnabled)
+        let label = try XCTUnwrap(item.view?.subviews.compactMap { $0 as? NSTextField }.first)
+        XCTAssertEqual(label.stringValue, list[2].title)
+        XCTAssertEqual(label.textColor?.usingColorSpace(.sRGB), RemapNSMenuBuilder.warningColor.usingColorSpace(.sRGB))
+        // The ordinary note keeps its own colour.
+        let note = try XCTUnwrap(menu.items[1].view?.subviews.compactMap { $0 as? NSTextField }.first)
+        XCTAssertEqual(note.textColor, .systemOrange)
     }
 
     func testPresenterPopsNothingWithoutAnAnchorAndTheModeOff() throws {

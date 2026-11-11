@@ -10,7 +10,7 @@ struct InputMonitorView: View {
     }()
 
     private var rawLine: String {
-        let f = device.frame
+        let f = device.rawFrame
         return "x \(f.x) y \(f.y) z \(f.z) rz \(f.rz) lt \(f.lt) rt \(f.rt) hat \(f.hat) "
             + "btn \(String(f.buttons, radix: 2).leftPadded(to: 19)) "
             + "extra \(String(f.extra, radix: 2).leftPadded(to: 13))"

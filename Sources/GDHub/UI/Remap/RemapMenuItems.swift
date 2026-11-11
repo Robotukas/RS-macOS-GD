@@ -19,6 +19,8 @@ struct RemapMenuItemSpec: Equatable {
         case header
         /// A disabled, wrapped line of explanation under the header.
         case note
+        /// A disabled, wrapped line in the warning colour under the note: an old learn gave another control this key's signal.
+        case conflict
         /// A choice: `pick` is `.output`.
         case entry
         case separator
@@ -39,13 +41,14 @@ struct RemapMenuItemSpec: Equatable {
 }
 
 extension RemapMenuModel {
-    /// The rows top to bottom: header, note, the groups with a separator between them, the footnote, then for a
-    /// remappable control a separator, "Reset to default" and a separator, then the re-learn item. A stick or a control
-    /// that is not remappable yet gets header, note, a separator and the re-learn item.
+    /// The rows top to bottom: header, note, the conflict note, the groups with a separator between them, the footnote,
+    /// then for a remappable control a separator, "Reset to default" (only while remapped) and a separator, then the
+    /// re-learn item. A stick or a control that is not remappable yet gets header, note, a separator and the re-learn item.
     /// - Parameter relearnEnabled: `ModeGate.canLearn`.
     func itemSpecs(relearnEnabled: Bool = true) -> [RemapMenuItemSpec] {
         var out: [RemapMenuItemSpec] = [RemapMenuItemSpec(kind: .header, title: header, isEnabled: false)]
         if let note { out.append(RemapMenuItemSpec(kind: .note, title: note, isEnabled: false)) }
+        if let conflictNote { out.append(RemapMenuItemSpec(kind: .conflict, title: conflictNote, isEnabled: false)) }
         for (i, group) in groups.enumerated() {
             if i > 0 { out.append(RemapMenuItemSpec(kind: .separator)) }
             for e in group {
@@ -59,7 +62,7 @@ extension RemapMenuModel {
         if let footnote { out.append(RemapMenuItemSpec(kind: .footnote, title: footnote, isEnabled: false)) }
         out.append(RemapMenuItemSpec(kind: .separator))
         if let reset {
-            out.append(RemapMenuItemSpec(kind: .reset, title: reset.title, isEnabled: reset.isEnabled, pick: .reset))
+            out.append(RemapMenuItemSpec(kind: .reset, title: reset.title, pick: .reset))
             out.append(RemapMenuItemSpec(kind: .separator))
         }
         out.append(RemapMenuItemSpec(kind: .relearn, title: relearnTitle, isEnabled: relearnEnabled, pick: .relearn))

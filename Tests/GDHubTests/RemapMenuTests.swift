@@ -27,7 +27,7 @@ final class RemapMenuTests: XCTestCase {
         XCTAssertNil(m.note)
         XCTAssertEqual(titles(m), padTitles + [["Nothing"]])
         XCTAssertEqual(m.relearnTitle, "Re-learn button…")
-        XCTAssertEqual(m.reset, RemapMenuModel.Reset(title: "Reset to default", isEnabled: false))
+        XCTAssertNil(m.reset, "nothing remapped: no Reset item")
         XCTAssertEqual(m.footnote, RemapMenuModel.footnoteText, "LT and RT are marked on every button's menu")
         XCTAssertEqual(try entry(m, .pad(.guide)).title, "Guide (Xbox button)")
     }
@@ -62,7 +62,7 @@ final class RemapMenuTests: XCTestCase {
         XCTAssertTrue(try entry(m, .nothing).isCurrent)
         XCTAssertFalse(try entry(m, .builtIn).isCurrent)
         XCTAssertTrue(try entry(m, .builtIn).isDefault)
-        XCTAssertTrue(m.reset?.isEnabled == true)
+        XCTAssertEqual(m.reset, RemapMenuModel.Reset(title: "Reset to default"))
     }
 
     func testOrdinaryButtonMenuTicksItselfAsDefault() throws {
@@ -92,7 +92,7 @@ final class RemapMenuTests: XCTestCase {
 
     func testProfileMenuNote() throws {
         let m = try menu("profile")
-        XCTAssertEqual(m.note, "Each press also switches the controller's own profile, which changes what the paddles and SAX keys send.")
+        XCTAssertEqual(m.note, "Each press also switches the controller's own profile. Paddles and SAX keys left on Controller's profile change with it; remapped ones keep sending only your pick.")
         XCTAssertTrue(try entry(m, .nothing).isDefault)
     }
 
@@ -123,7 +123,7 @@ final class RemapMenuTests: XCTestCase {
             XCTAssertEqual(m.entries.filter(\.isCurrent).count, 1, id)
             XCTAssertEqual(m.entries.filter(\.isDefault).count, 1, id)
             XCTAssertFalse(try entry(m, .nothing).isDefault, "Nothing is a pick of its own on these keys")
-            XCTAssertEqual(m.reset, RemapMenuModel.Reset(title: "Reset to default", isEnabled: false), id)
+            XCTAssertNil(m.reset, id)
             XCTAssertEqual(m.relearnTitle, "Re-learn button…", id)
             XCTAssertEqual(m.entries.count, 1 + 4 + 4 + 4 + 4 + 1 + 1, id)
         }
@@ -138,8 +138,16 @@ final class RemapMenuTests: XCTestCase {
         XCTAssertTrue(try entry(m, .pad(.y)).isCurrent)
         XCTAssertFalse(try entry(m, .builtIn).isCurrent)
         XCTAssertTrue(try entry(m, .builtIn).isDefault, "the default tag stays on Controller's profile")
-        XCTAssertEqual(m.note, RemapMenuModel.remappedKeyNote, "words of the remapped-key note come with S3(c)")
-        XCTAssertEqual(m.reset?.isEnabled, true)
+        XCTAssertEqual(m.note, RemapMenuModel.remappedKeyNote)
+        XCTAssertEqual(m.note, "Sends only your pick. The controller's own button for this key is hidden while you hold it, so pressing that same button yourself shows only when you let go.",
+                       "mockup v7b NOTE_RM, word for word")
+        XCTAssertFalse(m.note?.contains("PLACEHOLDER") ?? true)
+        XCTAssertFalse(m.note?.contains("placeholder") ?? true)
+        XCTAssertEqual(m.reset, RemapMenuModel.Reset(title: "Reset to default"))
+        // Nothing is a remap too, with the same note.
+        var none = ControlMapping.default
+        none.setOutput(.nothing, for: "sax_left")
+        XCTAssertEqual(try menu("sax_left", none).note, RemapMenuModel.remappedKeyNote)
         // Nothing is a pick too.
         map.setOutput(.nothing, for: "paddle_outer_right")
         XCTAssertTrue(try entry(try menu("paddle_outer_right", map), .nothing).isCurrent)
@@ -176,19 +184,59 @@ final class RemapMenuTests: XCTestCase {
         XCTAssertFalse(try entry(m, .nothing).isCurrent)
         XCTAssertTrue(try entry(m, .nothing).isDefault)
         XCTAssertFalse(try entry(m, .pad(.y)).isDefault)
-        XCTAssertEqual(m.reset?.isEnabled, true)
+        XCTAssertNotNil(m.reset)
         XCTAssertEqual(map.effectiveOutput("g1"), .pad(.y))
     }
 
-    func testResetIsEnabledOnlyWhileRemapped() throws {
+    func testResetIsThereOnlyWhileRemapped() throws {
         var map = ControlMapping.default
-        XCTAssertEqual(try menu("a", map).reset?.isEnabled, false)
+        XCTAssertNil(try menu("a", map).reset)
         map.setOutput(.pad(.b), for: "a")
-        XCTAssertEqual(try menu("a", map).reset?.isEnabled, true)
-        XCTAssertEqual(try menu("b", map).reset?.isEnabled, false, "only the remapped control can be reset")
+        XCTAssertNotNil(try menu("a", map).reset)
+        XCTAssertNil(try menu("b", map).reset, "only the remapped control can be reset")
         map = RemapMenuModel.mappingAfterReset(map, for: "a")
-        XCTAssertEqual(try menu("a", map).reset?.isEnabled, false)
+        XCTAssertNil(try menu("a", map).reset)
         XCTAssertEqual(map, ControlMapping.default)
+        // The same for the six and for a volume key.
+        for id in sixIDs + ["g2"] {
+            XCTAssertNil(try menu(id).reset, id)
+            var m = ControlMapping.default
+            m.setOutput(.pad(.y), for: id)
+            XCTAssertNotNil(try menu(id, m).reset, id)
+        }
+    }
+
+    // MARK: The signal-conflict note
+
+    private func menu(_ id: String, _ m: ControlMapping, words: Bool) throws -> RemapMenuModel {
+        let layout = try XCTUnwrap(ControlLayout.loadFromBundle())
+        let c = try XCTUnwrap(layout.control(id: id))
+        return RemapMenuModel(controlID: id, label: c.label, kind: c.kind, mapping: m,
+                              labelOf: { layout.control(id: $0)?.label ?? $0 })
+    }
+
+    func testSignalConflictNoteIsOnTheRemappedKeysMenuInWords() throws {
+        var map = ControlMapping.default
+        map.physicalBits["dpad_right"] = 1                    // an old learn gave D-pad right paddle outer right's signal
+        XCTAssertNil(try menu("paddle_outer_right", map, words: true).conflictNote, "not remapped: nothing hidden, no conflict")
+        map.setOutput(.pad(.y), for: "paddle_outer_right")
+        let m = try menu("paddle_outer_right", map, words: true)
+        XCTAssertEqual(m.conflictNote, "D-pad right was learned with Paddle outer right's signal: re-learn D-pad right.")
+        XCTAssertEqual(m.note, RemapMenuModel.remappedKeyNote, "the conflict is a second note, the first stays")
+        let text = try XCTUnwrap(m.conflictNote)
+        XCTAssertFalse(text.contains("dpad_right"), "never a raw id")
+        XCTAssertFalse(text.contains("paddle_outer_right"))
+        XCTAssertFalse(text.contains("App drives"))
+        XCTAssertFalse(text.contains("driver update"))
+        // Only that key's menu, and not the other control's.
+        XCTAssertNil(try menu("paddle_inner_right", map, words: true).conflictNote)
+        XCTAssertNil(try menu("dpad_right", map, words: true).conflictNote)
+        // Without a label lookup the raw id is the fallback, but the menu presenter always passes the layout's.
+        XCTAssertEqual(try menu("paddle_outer_right", map).conflictNote,
+                       "dpad_right was learned with paddle_outer_right's signal: re-learn dpad_right.")
+        // Back on Controller's profile: no conflict note.
+        map.setOutput(.builtIn, for: "paddle_outer_right")
+        XCTAssertNil(try menu("paddle_outer_right", map, words: true).conflictNote)
     }
 
     func testPickingTheDefaultClearsTheRemap() throws {

@@ -1348,9 +1348,9 @@ private struct LayoutToolbar: View {
                     }
                     .help("Record what the virtual pad sends while the app tells you what to press")
                 }
-                if device.isRemapping {
+                // Nothing remapped, nothing to reset: the button is not shown (the owner's rule, 2026-11-10).
+                if device.isRemapping && !device.mapping.outputs.isEmpty {
                     Button("Reset all remaps") { device.resetAllRemaps() }
-                        .disabled(device.mapping.outputs.isEmpty)
                         .help("Every button sends what it did before; learned buttons stay")
                         .accessibilityIdentifier("toolbar.resetAllRemaps")
                 }
@@ -1370,8 +1370,8 @@ private struct LayoutToolbar: View {
     }
 }
 
-/// The line next to the Mapping button: what a click does now, who drives the controller when the driver cannot do the
-/// mapping yet, and the flash after a click in the live view.
+/// The line next to the Mapping button: what a click does now, a signal conflict, who drives the controller when the driver
+/// cannot do the mapping yet, and the flash after a click in the live view (in that order of priority).
 private struct RemapHintLine: View {
     @ObservedObject var device: EnvisionProDevice
 
@@ -1379,6 +1379,11 @@ private struct RemapHintLine: View {
         let flashing = !device.isRemapping && device.remapHintFlashing
         if flashing {
             Text(RemapHint.flash).font(.caption).foregroundStyle(RemapColors.flash).lineLimit(1).truncationMode(.tail)
+        } else if let conflict = device.remapConflict {
+            // An old learn gave another control a remapped key's signal: the warning colour, no "Driven by" prefix.
+            Text(conflict)
+                .font(.caption.weight(.semibold)).foregroundStyle(RemapColors.warning).lineLimit(1).truncationMode(.tail)
+                .help(conflict)
         } else if let limit = device.remapLimit {
             Text("Driven by: App (mapping needs a driver update: \(limit))")
                 .font(.caption).foregroundStyle(RemapColors.flash).lineLimit(1).truncationMode(.tail)

@@ -34,8 +34,9 @@ extension PadOutput {
 }
 
 /// What the click menu of one control shows (remap plan, "UI (R2)"; mockups v6, v7 and v7b). Pure: the native `NSMenu` is
-/// built from it top to bottom as: header, note, the groups with a separator between them, the footnote, a separator,
-/// "Reset to default", a separator, the re-learn item. A stick gets header, note, a separator and the re-learn item only.
+/// built from it top to bottom as: header, note, the conflict note, the groups with a separator between them, the
+/// footnote, a separator, "Reset to default" (only while remapped) and a separator, the re-learn item. A stick gets header, note, a separator and
+/// the re-learn item only.
 struct RemapMenuModel: Equatable {
     enum Kind: Equatable {
         /// One of `ControlMapping.remappableIDs` (paddles and SAX keys included): the full menu.
@@ -60,9 +61,9 @@ struct RemapMenuModel: Equatable {
         var limit: String?
     }
 
+    /// The "Reset to default" item: present only while the control is remapped (nothing to reset, nothing shown).
     struct Reset: Equatable {
         var title: String
-        var isEnabled: Bool
     }
 
     static let defaultTag = "default"
@@ -72,10 +73,8 @@ struct RemapMenuModel: Equatable {
     static let stickNote = "Sticks are not remappable in this feature."
     /// A paddle or SAX key left on "Controller's profile (built in)": mockup v7 (and v7b), word for word.
     static let controllersProfileNote = "Sends the button the controller's profile gives it, and follows that button's remap."
-    /// PLACEHOLDER(S3c): the note of a remapped paddle or SAX key. Its words are in mockup v7b ("Sends only your pick. ...");
-    /// S3(c) puts them here and adds the exact-text assertion. Until then the menu shows this marker (no install happens
-    /// before S4, so nobody sees it).
-    static let remappedKeyNote = "[placeholder: the remapped-key note comes with S3(c)]"
+    /// A remapped paddle or SAX key: mockup v7b (`NOTE_RM`), word for word, approved on 11 November.
+    static let remappedKeyNote = "Sends only your pick. The controller's own button for this key is hidden while you hold it, so pressing that same button yourself shows only when you let go."
     static let controllersProfileTitle = "Controller's profile (built in)"
     static let resetTitle = "Reset to default"
 
@@ -84,11 +83,14 @@ struct RemapMenuModel: Equatable {
     /// "<Label> sends"
     var header: String
     var note: String?
+    /// A remapped paddle or SAX key whose signal an old learn also gave to another control: "<Other> was learned with
+    /// <Key>'s signal: re-learn <Other>." (a second note under the first, in the warning colour); nil otherwise.
+    var conflictNote: String?
     /// Groups of entries; a separator between groups. Empty unless `kind == .remappable`.
     var groups: [[Entry]]
     /// Present when any entry has a `limit`.
     var footnote: String?
-    /// nil for a control that has no remap.
+    /// nil unless the control is remapped.
     var reset: Reset?
     /// "Re-learn button…" or "Re-learn stick…".
     var relearnTitle: String
@@ -114,14 +116,18 @@ struct RemapMenuModel: Equatable {
         "g3": "Mapped: G3 no longer changes the volume.",
         "g4": "Mapped: G4 no longer changes the volume.",
         "start": "Holding Start still switches the controller off.",
-        "profile": "Each press also switches the controller's own profile, which changes what the paddles and SAX keys send.",
+        "profile": "Each press also switches the controller's own profile. Paddles and SAX keys left on Controller's profile change with it; remapped ones keep sending only your pick.",
     ]
 
     /// - Parameters:
     ///   - label: the control's label as the layout shows it ("G1").
     ///   - kind: the control's layout kind; only `.stick` changes the wording ("Re-learn stick…").
-    init(controlID id: String, label: String, kind layoutKind: ControlLayout.Kind, mapping: ControlMapping) {
+    ///   - labelOf: the layout label of any control, for the signal-conflict note (it names a control in words; the raw id
+    ///     is only the fallback for a control the layout does not draw).
+    init(controlID id: String, label: String, kind layoutKind: ControlLayout.Kind, mapping: ControlMapping,
+         labelOf: (String) -> String = { $0 }) {
         controlID = id
+        conflictNote = nil
         header = "\(label) sends"
         relearnTitle = layoutKind == .stick ? "Re-learn stick…" : "Re-learn button…"
         guard ControlMapping.remappableIDs.contains(id) else {
@@ -140,6 +146,7 @@ struct RemapMenuModel: Equatable {
         note = ControlMapping.identityBits(id) != 0
             ? (current == .builtIn ? Self.controllersProfileNote : Self.remappedKeyNote)
             : Self.notes[id]
+        conflictNote = mapping.signalConflict(forKey: id, label: labelOf)
         // The mockup marks a pick only while the mapping has no limit yet.
         let alreadyLimited = MapBlobEncoder.remapLimit(mapping) != nil
 
@@ -157,7 +164,7 @@ struct RemapMenuModel: Equatable {
         built.append([entry("Nothing", .nothing)])
         groups = built
         footnote = built.joined().contains { $0.limit != nil } ? Self.footnoteText : nil
-        reset = Reset(title: Self.resetTitle, isEnabled: mapping.isRemapped(id))
+        reset = mapping.isRemapped(id) ? Reset(title: Self.resetTitle) : nil
     }
 
     /// The mapping after the pick (the same value `ControlMapping.setOutput` makes; a pick equal to the default clears the remap).

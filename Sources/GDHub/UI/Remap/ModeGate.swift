@@ -82,4 +82,8 @@ enum RemapHint {
 
     /// What the driver cannot do for this mapping yet, or nil (`MapBlobEncoder.remapLimit`).
     static func limit(of mapping: ControlMapping) -> String? { MapBlobEncoder.remapLimit(mapping) }
+
+    /// The signal-conflict line (an old learn gave another control a remapped paddle or SAX key's signal), in the warning
+    /// colour, with no "Driven by" prefix: it is the same on every driver build. `label` gives layout labels.
+    static func conflict(of mapping: ControlMapping, label: (String) -> String) -> String? { mapping.signalConflict(label: label) }
 }

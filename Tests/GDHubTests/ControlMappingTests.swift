@@ -439,4 +439,20 @@ final class ControlMappingTests: XCTestCase {
         // The same on every driver build: no limit text from it.
         XCTAssertNil(MapBlobEncoder.remapLimit(m)?.range(of: "re-learn"))
     }
+
+    func testSignalConflictForOneKeyNamesOnlyThatKey() {
+        func label(_ id: String) -> String { ["g1": "G1", "a": "A", "paddle_outer_right": "Paddle outer right", "sax_left": "SAX left"][id] ?? id }
+        var m = ControlMapping.default
+        m.physicalBits["a"] = 1                                       // A carries paddle outer right's signal
+        m.physicalBits["g1"] = 16                                     // G1 carries SAX left's signal
+        XCTAssertNil(m.signalConflict(forKey: "paddle_outer_right", label: label), "not remapped")
+        m.setOutput(.pad(.y), for: "paddle_outer_right")
+        XCTAssertEqual(m.signalConflict(forKey: "paddle_outer_right", label: label), "A was learned with Paddle outer right's signal: re-learn A.")
+        XCTAssertNil(m.signalConflict(forKey: "sax_left", label: label), "SAX left is not remapped, so G1's bit is no conflict yet")
+        m.setOutput(.nothing, for: "sax_left")
+        XCTAssertEqual(m.signalConflict(forKey: "sax_left", label: label), "G1 was learned with SAX left's signal: re-learn G1.")
+        XCTAssertEqual(m.signalConflict(label: label), "A was learned with Paddle outer right's signal: re-learn A.", "the toolbar names the first key")
+        XCTAssertNil(m.signalConflict(forKey: "g1", label: label), "only the six")
+        XCTAssertNil(m.signalConflict(forKey: "paddle_inner_left", label: label))
+    }
 }

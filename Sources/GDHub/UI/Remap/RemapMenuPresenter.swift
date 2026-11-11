@@ -12,6 +12,8 @@ enum RemapColors {
     static let off = Color(red: 138.0 / 255, green: 138.0 / 255, blue: 148.0 / 255)
     /// The dashed border every label gets while Mapping is on.
     static let mappingBorder = Color(red: 109.0 / 255, green: 143.0 / 255, blue: 196.0 / 255)
+    /// `--warn`: the conflict note in a menu and the conflict hint line in the toolbar (mockup v7b).
+    static let warning = Color(red: 232.0 / 255, green: 179.0 / 255, blue: 57.0 / 255)
     /// `--new`: the outline on the label and button whose menu is open.
     static let selection = Color(red: 76.0 / 255, green: 157.0 / 255, blue: 1.0)
     /// `.hint.flash`.
@@ -69,6 +71,8 @@ final class RemapPickBox: NSObject {
 @MainActor
 enum RemapNSMenuBuilder {
     static let noteWidth: CGFloat = 250
+    /// The warning amber of the conflict note (`RemapColors.warning`).
+    static let warningColor = NSColor(srgbRed: 232.0 / 255, green: 179.0 / 255, blue: 57.0 / 255, alpha: 1)
 
     static func menu(for specs: [RemapMenuItemSpec], target: RemapMenuTarget) -> NSMenu {
         let menu = NSMenu()
@@ -90,10 +94,14 @@ enum RemapNSMenuBuilder {
                 .foregroundColor: NSColor.secondaryLabelColor,
             ])
             return item
-        case .note, .footnote:
+        case .note, .footnote, .conflict:
             let item = NSMenuItem(title: spec.title, action: nil, keyEquivalent: "")
             item.isEnabled = false
-            item.view = wrappedLabel(spec.title, color: spec.kind == .note ? .systemOrange : .secondaryLabelColor)
+            switch spec.kind {
+            case .note: item.view = wrappedLabel(spec.title, color: .systemOrange)
+            case .conflict: item.view = wrappedLabel(spec.title, color: warningColor, weight: .semibold)
+            default: item.view = wrappedLabel(spec.title, color: .secondaryLabelColor)
+            }
             return item
         case .entry, .reset, .relearn:
             let item = NSMenuItem(title: spec.title, action: #selector(RemapMenuTarget.choose(_:)), keyEquivalent: "")
@@ -114,9 +122,9 @@ enum RemapNSMenuBuilder {
     }
 
     /// A disabled item cannot wrap its title, so a long note is a small wrapping label in a custom view.
-    private static func wrappedLabel(_ text: String, color: NSColor) -> NSView {
+    private static func wrappedLabel(_ text: String, color: NSColor, weight: NSFont.Weight = .regular) -> NSView {
         let label = NSTextField(wrappingLabelWithString: text)
-        label.font = NSFont.systemFont(ofSize: 11)
+        label.font = NSFont.systemFont(ofSize: 11, weight: weight)
         label.textColor = color
         label.preferredMaxLayoutWidth = noteWidth - 28
         let size = label.sizeThatFits(NSSize(width: noteWidth - 28, height: .greatestFiniteMagnitude))
@@ -176,7 +184,8 @@ final class RemapMenuPresenter: ObservableObject {
             Self.log.error("no menu for \(controlID, privacy: .public): mapping=\(device.isRemapping) open=\(self.isOpen) anchor=\(found != nil) inWindow=\(found?.window != nil)")
             return
         }
-        let model = RemapMenuModel(controlID: controlID, label: control.label, kind: control.kind, mapping: device.mapping)
+        let model = RemapMenuModel(controlID: controlID, label: control.label, kind: control.kind, mapping: device.mapping,
+                                   labelOf: { device.layout?.control(id: $0)?.label ?? $0 })
         let specs = model.itemSpecs(relearnEnabled: device.modeGate.canLearn)
         let target = RemapMenuTarget { [weak device] pick in
             guard let device else { return }
