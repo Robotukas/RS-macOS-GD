@@ -220,14 +220,24 @@ enum DevJudge {
         }
 
         // What a pass proves about hiding the controller's own button for a remapped key (never changes the verdict).
-        if let evidence = input.hiding, let hiding = DevJudge.judgeHiding(evidence, expected: input.expected.items, background: input.background) {
+        if let evidence = input.hiding, var hiding = DevJudge.judgeHiding(evidence, expected: input.expected.items, background: input.background) {
+            // The check reads the receiver and the run's filter, never the pad: a step that did not pass (the controller's own
+            // button leaked, say) cannot claim the button was hidden.
+            if outcome.verdict != .pass, hiding.presses.contains(where: { $0.result == "hidden" }) {
+                for i in hiding.presses.indices where hiding.presses[i].result == "hidden" {
+                    hiding.presses[i].result = "cannot judge"
+                    hiding.presses[i].reason = Self.cannotJudgeFailedStep
+                }
+                hiding.conclusive = false
+                hiding.line = "controller's own button hidden: cannot judge: \(Self.cannotJudgeFailedStep)"
+            }
             outcome.hiding = hiding
             outcome.metrics.detail += (outcome.metrics.detail.isEmpty ? "" : " ") + hiding.line.prefix(1).uppercased() + hiding.line.dropFirst() + "."
         }
 
         // Per-event latency: every kind but rest, when the receiver frames are known. The pad side is read from a
         // timeline that runs past the end of the release tail, so an edge near the end still finds its report.
-        if let ref = input.reference, !ref.frames.isEmpty, let watch = latencyWatch(input, kind: kind) {
+        if let ref = input.reference, !ref.frames.isEmpty, let watch = latencyWatch(input, kind: kind, timeline: tl, rules: rules) {
             var wide = input
             wide.endNs = UInt64.max
             let wl = Timeline(input: wide, entry: entry, decoder: decoder)
@@ -264,7 +274,7 @@ enum DevJudge {
     }
 
     /// What the latency measurement watches for a step, or nil when the step names nothing it can watch.
-    private static func latencyWatch(_ input: Input, kind: DevKind) -> DevLatency.Watch? {
+    private static func latencyWatch(_ input: Input, kind: DevKind, timeline tl: Timeline, rules: Rules) -> DevLatency.Watch? {
         let step = input.step
         switch kind {
         case .rest, .record:
@@ -277,12 +287,20 @@ enum DevJudge {
             }
         case .trigger:
             // The pad trigger (or button) the pull is mapped to; with nothing worked out, the control's own trigger.
+            if input.expected.mappedToNothing { return nil }
             var w = DevLatency.Watch(items: input.expected.items, triggers: input.expected.triggers)
             if w.triggers.isEmpty && w.items.isEmpty {
                 w.triggers = step.controls.compactMap { $0 == "lt" ? .left : ($0 == "rt" ? .right : nil) }
             }
             return w.triggers.isEmpty && w.items.isEmpty ? nil : w
         case .digital:
+            // A paddle or SAX key left on Controller's profile has no expectation (the controller decides what it adds): it
+            // watches the items and triggers the pad actually showed in the window.
+            if input.builtInEcho {
+                var w = DevLatency.Watch(items: tl.trace(rules: rules).touched)
+                w.triggers = [PadTrigger.left, .right].filter { t in tl.states.contains { $0.value(of: t) >= rules.latencyTriggerEdge } }
+                return w.items.isEmpty && w.triggers.isEmpty ? nil : w
+            }
             return DevLatency.Watch(items: input.expected.items, triggers: input.expected.triggers)
         case .held:
             guard let targets = DevExpectation.heldTargets(step: step, expected: input.expected) else { return nil }
@@ -564,6 +582,20 @@ enum DevJudge {
 
         func judgeTrigger(_ input: Input, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
             let cid = input.step.controls.first
+            if input.expected.mappedToNothing {
+                // The control is sent to Nothing: neither pad trigger may move and no item may change.
+                let tr = trace(rules: rules)
+                var fails: [String] = []
+                if let bad = states.first(where: { !$0.triggersBelow(rules.triggerRelease) }) {
+                    fails.append("a trigger moved although it is sent to Nothing (\(DevJudge.describeOffences(bad, rules: rules)))")
+                }
+                let (unexpected, unexpectedText) = unexpectedFail(tr, allowed: input.background)
+                if let unexpectedText { fails.append(unexpectedText) }
+                fails += backgroundFails(input.background, expected: [], tr: tr)
+                m.values = ["unexpected": Double(unexpected.count)]
+                let summary = "Nothing was expected on the pad (the trigger is sent to Nothing); \(m.padReports) pad reports, \(m.padChanged) changed."
+                return finish(fails, passText: summary, summary: summary, &m)
+            }
             // The pad trigger the control is mapped to (LT sent to RT judges RT); with nothing worked out, its own.
             var expectedTriggers = input.expected.triggers
             if expectedTriggers.isEmpty && input.expected.items.isEmpty {
@@ -912,6 +944,8 @@ enum DevJudge {
     static let cannotJudgeUnseen = "the controller's button for this key was not seen at its press (it sent none or several)"
     static func cannotJudgeSame(_ item: String) -> String { "the controller's current profile sends \(item) for this key" }
     static func notExercised(_ item: String) -> String { "the controller sent no \(item) during the hold" }
+
+    static let cannotJudgeFailedStep = "the step did not pass"
 
     /// The hiding claim of a step, press by press: the item the filter read for the key is
     /// - "cannot judge" when the press was not seen (`unconfirmed`), or when the item is what the step expects, a background

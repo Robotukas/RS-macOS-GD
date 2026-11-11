@@ -191,4 +191,56 @@ final class DevExpectationTests: XCTestCase {
         XCTAssertNil(linked("lt"))
         XCTAssertEqual(DevExpectation.linkedOutputControls(for: DevExpectedItems(hat: "NE")), ["dpad_up", "dpad_right"])
     }
+
+    // MARK: LT or RT sent to Nothing (review of S4, findings 1 and 9)
+
+    /// A trigger sent to Nothing is not "nothing worked out": the step expects a still pad, and a held step has nothing to
+    /// hold. Only a control that is still its own trigger falls back to the trigger itself.
+    func testATriggerSentToNothingIsNotTheSameAsNothingWorkedOut() {
+        var m = mapping
+        m.setOutput(.nothing, for: "lt")
+        let trig = DevStep(id: "lt", kind: .trigger, controls: ["lt"], title: "t")
+        let held = DevStep(id: "h", kind: .held, controls: ["lt"], title: "t")
+        let want = DevExpectation.resolve(step: trig, mapping: m, layout: layout)
+        XCTAssertTrue(want.mappedToNothing)
+        XCTAssertEqual(want.summary, "nothing on the pad")
+        XCTAssertEqual(DevExpectation.heldTargets(step: held, expected: DevExpectation.resolve(step: held, mapping: m, layout: layout)), [],
+                       "no own-trigger fallback")
+        // the factory mapping and an LT sent elsewhere are not the case
+        XCTAssertFalse(DevExpectation.resolve(step: trig, mapping: mapping, layout: layout).mappedToNothing)
+        var toRT = mapping
+        toRT.setOutput(.pad(.rt), for: "lt")
+        XCTAssertFalse(DevExpectation.resolve(step: trig, mapping: toRT, layout: layout).mappedToNothing)
+        // RT sent to Nothing is the same for the RT step; LT's own step is untouched by it
+        var rtNothing = mapping
+        rtNothing.setOutput(.nothing, for: "rt")
+        XCTAssertTrue(DevExpectation.resolve(step: DevStep(id: "rt", kind: .trigger, controls: ["rt"], title: "t"), mapping: rtNothing, layout: layout).mappedToNothing)
+        XCTAssertFalse(DevExpectation.resolve(step: trig, mapping: rtNothing, layout: layout).mappedToNothing)
+        // a G key sent to Nothing has no trigger to judge: still the plain empty expectation
+        var g = mapping
+        g.setOutput(.nothing, for: "g2")
+        XCTAssertFalse(DevExpectation.resolve(step: DevStep(id: "g2", kind: .trigger, controls: ["g2"], title: "t"), mapping: g, layout: layout).mappedToNothing)
+    }
+
+    /// Row 1's `lt` step and row 8 under the picks that used to be skipped by `triggerRemapSkip`.
+    func testRowsOneAndEightUnderATriggerRemap() throws {
+        let all = DevBuiltins.generate(layout: layout)
+        let full = try XCTUnwrap(all.first { $0.id == "full" })
+        var nothing = mapping
+        nothing.setOutput(.nothing, for: "lt")
+        let steps = DevResolvedStep.resolve(template: full, mapping: nothing, layout: layout)
+        let lt = try XCTUnwrap(steps.first { $0.step.id == "lt" })
+        XCTAssertNil(lt.skipReason)
+        XCTAssertTrue(lt.expected.mappedToNothing, "judged as a still pad, not as a failing LT pull")
+
+        let t7 = try XCTUnwrap(all.first { $0.id == "t7-rt-hold-toggle" })
+        XCTAssertNil(DevResolvedStep.resolve(template: t7, mapping: mapping, layout: layout)[0].skipReason, "RT left alone: it runs")
+        for out in [ControlOutput.pad(.lt), .nothing, .pad(.a)] {
+            var m = mapping
+            m.setOutput(out, for: "rt")
+            let step = DevResolvedStep.resolve(template: t7, mapping: m, layout: layout)[0]
+            XCTAssertNotNil(step.skipReason, "RT sent to \(out): the step has no RT to hold, so it is skipped and not failed")
+            XCTAssertEqual(DevRequirementCheck.startBlock(template: t7, mapping: m, layout: layout) != nil, true)
+        }
+    }
 }

@@ -111,4 +111,15 @@ final class DeveloperViewsTests: XCTestCase {
         let row = DevResultRow(index: 0, title: "t", expected: "e", seen: "s", loss: "", onset: "", frames: "", verdict: .fail("why"), attempts: 1, note: "n")
         XCTAssertEqual(row.help, "why n")
     }
+
+    /// Review of S4, finding 7: a part that already ends in a full stop is not followed by a second one.
+    func testTheEndOfRunHintHasOneFullStopBetweenItsSentences() {
+        let stood = "Driver pass not run: this driver version cannot take this mapping (x). The App pass is the result of this run."
+        XCTAssertEqual(DevSession.joinedHint([stood, "Report saved: run.json"]),
+                       "Driver pass not run: this driver version cannot take this mapping (x). The App pass is the result of this run. Report saved: run.json")
+        XCTAssertFalse(DevSession.joinedHint([stood, "Path put back to engine", "Report saved: a.json"])!.contains(".."))
+        XCTAssertEqual(DevSession.joinedHint(["The pad reader lost reports.", "Report saved: a.json"]), "The pad reader lost reports. Report saved: a.json")
+        XCTAssertEqual(DevSession.joinedHint(["A", "B"]), "A. B")
+        XCTAssertNil(DevSession.joinedHint([]))
+    }
 }

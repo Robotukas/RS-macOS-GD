@@ -82,13 +82,16 @@ final class EnvisionProDevice: ObservableObject, DeviceModule {
         remapLimit = RemapHint.limit(of: mapping)
         refreshRemapConflict()
         // The screen's own copy of the rule: new parameters mean a fresh state, and the report on screen is cleaned again
-        // with them (the next report may be a while away).
+        // with them (the next report may be a while away). The persistent state stays fresh: the pad feed resets on the
+        // next report it is given and steps that one first, so this state must step the same one first, not the stale
+        // report on screen. The redraw is worked out on a throwaway copy.
         let params = mapping.echoParams
         if params != echoParams {
             echoParams = params
             echoState.reset()
             guard hasFrame else { return }
-            let word = echoState.step(echoParams, frame: latestFrame)
+            var probe = EchoState()
+            let word = probe.step(echoParams, frame: latestFrame)
             latestShown = EchoFilter.apply(word, to: latestFrame)
             if frame != latestShown { frame = latestShown }
         }

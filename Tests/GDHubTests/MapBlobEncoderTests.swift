@@ -219,21 +219,24 @@ final class MapBlobEncoderTests: XCTestCase {
     func testThreeSourcesAreUnsupportedWithTheirNames() {
         let m = remapped([("g1", .pad(.y)), ("g2", .pad(.y))])
         XCTAssertEqual(MapBlobEncoder.remapLimit(m), "three buttons send Y: y, g1, g2")
-        XCTAssertEqual(reason(m), "three buttons send Y: y, g1, g2")
+        XCTAssertEqual(reason(m), "three buttons send Y: Y, G1, G2", "the engine's reason is in the screen's words")
+        XCTAssertEqual(MapBlobEncoder.remapLimitInWords(m), reason(m))
         // Moving the original owner away makes it two again.
         XCTAssertNil(MapBlobEncoder.remapLimit(remapped(m, [("y", .nothing)])))
     }
 
     func testAButtonSentToATriggerIsUnsupported() {
         let m = remapped([("g1", .pad(.lt))])
-        XCTAssertEqual(reason(m), "g1 sends LT: a button cannot pull a trigger in this driver version")
+        XCTAssertEqual(MapBlobEncoder.remapLimit(m), "g1 sends LT: a button cannot pull a trigger in this driver version", "the step-1 text, pinned")
+        XCTAssertEqual(reason(m), "G1 sends LT: a button cannot pull a trigger in this driver version")
         // Also when LT itself is gone: the button is the only source and still cannot pull a trigger.
         XCTAssertEqual(reason(remapped([("lt", .nothing), ("g1", .pad(.lt))])),
-                       "g1 sends LT: a button cannot pull a trigger in this driver version")
+                       "G1 sends LT: a button cannot pull a trigger in this driver version")
     }
 
     func testLTSentToRTAloneIsUnsupportedButTheSwapAndTheMoveAwayAreFine() throws {
-        XCTAssertEqual(reason(remapped([("lt", .pad(.rt))])), "two controls send RT: rt, lt")
+        XCTAssertEqual(MapBlobEncoder.remapLimit(remapped([("lt", .pad(.rt))])), "two controls send RT: rt, lt", "the step-1 text, pinned")
+        XCTAssertEqual(reason(remapped([("lt", .pad(.rt))])), "two controls send RT: RT, LT")
         let swap = remapped([("lt", .pad(.rt)), ("rt", .pad(.lt))])
         XCTAssertNil(MapBlobEncoder.remapLimit(swap))
         let b = try XCTUnwrap(blob(swap))
@@ -272,6 +275,35 @@ final class MapBlobEncoderTests: XCTestCase {
                        "SAX left sends Y: this driver version cannot hide the controller's own press")
     }
 
+    /// Review of S4, finding 5: the owner reads layout labels and the menu's item names, never "g5" or "VIEW".
+    func testTheLimitIsSaidInTheOwnersWordsAndTheStepOneTextIsKept() throws {
+        // row 12's picks on build 24: G1 -> LT, LT -> RT, X -> A, G5 -> A
+        let row12 = remapped([("g1", .pad(.lt)), ("lt", .pad(.rt)), ("x", .pad(.a)), ("g5", .pad(.a))])
+        XCTAssertEqual(MapBlobEncoder.remapLimit(row12), "three buttons send A: a, x, g5", "the step-1 text, byte for byte (GDHMv1PinTests)")
+        XCTAssertEqual(MapBlobEncoder.remapLimitInWords(row12), "three buttons send A: A, X, G5")
+        XCTAssertEqual(reason(row12), "three buttons send A: A, X, G5")
+        // View and Menu are not upper-cased, in the paddle message too
+        XCTAssertEqual(MapBlobEncoder.remapLimitInWords(remapped([("sax_left", .pad(.view))])),
+                       "SAX left sends View: this driver version cannot hide the controller's own press")
+        XCTAssertEqual(MapBlobEncoder.remapLimit(remapped([("sax_right", .pad(.menu))])),
+                       "SAX right sends Menu: this driver version cannot hide the controller's own press", "the new message was never pinned")
+        XCTAssertEqual(MapBlobEncoder.remapLimitInWords(remapped([("view", .pad(.rt))])),
+                       "View sends RT: a button cannot pull a trigger in this driver version")
+        XCTAssertEqual(MapBlobEncoder.remapLimitInWords(remapped([("dpad_down", .pad(.lt))])),
+                       "D-pad down sends LT: a button cannot pull a trigger in this driver version")
+        XCTAssertEqual(MapBlobEncoder.remapLimitInWords(remapped([("g1", .pad(.view)), ("g2", .pad(.view))])),
+                       "three buttons send View: View, G1, G2")
+        // the table is the layout's labels, for every control a pick can name
+        let layout = try XCTUnwrap(ControlLayout.loadFromBundle())
+        for id in ControlMapping.remappableIDs {
+            XCTAssertEqual(MapBlobEncoder.controlWords[id], try XCTUnwrap(layout.control(id: id)).label, id)
+        }
+        // and the item names are the menu's
+        for output in PadOutput.allCases where output != .guide {
+            XCTAssertEqual(output.shortName, layout.control(id: output.rawValue)?.label, "\(output)")
+        }
+    }
+
     func testThePaddleMessageComesFirstSoNoRawIdIsEverNamed() {
         let m = remapped([("g1", .pad(.y)), ("g2", .pad(.y)), ("paddle_inner_right", .pad(.y)), ("paddle_outer_left", .pad(.x))])
         XCTAssertEqual(MapBlobEncoder.remapLimit(m), "Paddle inner right sends Y: this driver version cannot hide the controller's own press",
@@ -307,7 +339,8 @@ final class MapBlobEncoderTests: XCTestCase {
         for i in 0..<600 {
             let base = i % 2 == 0 ? ControlMapping.default : F.liveShaped
             let m = F.randomOutputs(base, 0xA11C_E000 + UInt64(i), expressibleOnly: false)
-            let limit = MapBlobEncoder.remapLimit(m)
+            let limit = MapBlobEncoder.remapLimitInWords(m)
+            XCTAssertEqual(limit == nil, MapBlobEncoder.remapLimit(m) == nil, "mapping \(i): the two texts agree on whether there is a limit")
             switch MapBlobEncoder.encode(m, identity: F.identity, spec: F.spec, revision: 1) {
             case .blob(let b):
                 XCTAssertNil(limit, "mapping \(i)")

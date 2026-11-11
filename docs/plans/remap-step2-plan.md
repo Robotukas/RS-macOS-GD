@@ -622,6 +622,12 @@ Encoder (`MapBlobEncoder.swift`):
 - Words: one private, fixed id → words table next to `label(_ PadOutput)`: "Paddle outer right", "Paddle inner right",
   "Paddle inner left", "Paddle outer left", "SAX left", "SAX right" (the layout labels). Used only in the new message;
   step-1 messages stay byte-identical. A test checks the table against `envision-pro-layout.json`.
+  **Changed after the pre-install review (finding 5):** v7b change 6 wants every driver-limit message in words, which
+  contradicts the line above. Both are kept: `remapLimit` keeps the step-1 text byte for byte (`GDHMv1PinTests` pins it),
+  and `remapLimitInWords` says the same limits with the layout labels for controls and the menu's names for items
+  ("three buttons send A: A, X, G5", "SAX left sends View: …"). The engine reports the worded text as its reason, and the
+  Mapping hint, the menu marks, the Driver menu status and the Developer prompt show it. The table now covers every
+  remappable control.
 - v2 order: items 0..14 as today (default owner first, then `remappableIDs` order, so paddles come last), then item 20
   rules, then item 21; trigger entries LT then RT, distinct analog fields in source order or one 0xFF entry; then echo.
 - Echo entry from `echoParams`: written whenever `echoHideMask` is not 0; the item codes of the keys in the mask from

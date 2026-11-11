@@ -125,6 +125,8 @@ final class DevSession: ObservableObject {
     var selectedEntry: DevTemplateEntry? { templates.first { $0.id == selectedTemplateID } }
     /// Template problems to show in the hint (errors first).
     var templateProblems: [String] { selectedEntry?.problems ?? [] }
+    /// The selected template's notes, whole (empty when it has none).
+    var templateNotes: String { selectedEntry?.template?.notes ?? "" }
     var backLabel: String { canGoToPreviousStep ? "Back" : "Restart step" }
     /// "Runs on: Engine → Driver LIVE" for a `paths` template (the target picker is read-only then); nil otherwise.
     var pathsNote: String? {
@@ -328,9 +330,12 @@ final class DevSession: ObservableObject {
         send(.rerunFailed(pass: pass))
     }
 
-    /// How many steps of `pass` (default: the last) a re-run would repeat.
+    /// The pass the table and a re-run use: the last, or the App pass when the Driver pass stood down.
+    private var shownPass: Int { core.shownPass }
+
+    /// How many steps of `pass` (default: the shown one) a re-run would repeat.
     func failedCount(pass: Int? = nil) -> Int {
-        let p = pass ?? max(passResults.count - 1, 0)
+        let p = pass ?? shownPass
         guard passResults.indices.contains(p) else { return 0 }
         return passResults[p].filter {
             switch DevRunCore.latestVerdict($0) {
@@ -542,6 +547,12 @@ final class DevSession: ObservableObject {
         }
     }
 
+    /// The sentences of the end-of-run hint, joined with one full stop between them (the stand-down note and the pad reader
+    /// hint end in one already, the others do not); nil when there are none.
+    nonisolated static func joinedHint(_ parts: [String]) -> String? {
+        parts.isEmpty ? nil : parts.map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }.joined(separator: ". ")
+    }
+
     private func runEnded() {
         pumpTask?.cancel()
         generation += 1
@@ -552,7 +563,7 @@ final class DevSession: ObservableObject {
         if let note = core.standDownNote { parts.append(note) }
         if let note = restoreNote { parts.append(note) }
         if let url = lastReportURL { parts.append("Report saved: \(url.lastPathComponent)") }
-        hint = parts.isEmpty ? nil : parts.joined(separator: ". ")
+        hint = Self.joinedHint(parts)
         // The last tick may not have run: leave the table and strip in their final state.
         publishDerived()
     }
@@ -576,7 +587,7 @@ final class DevSession: ObservableObject {
         if chips != newChips { chips = newChips }
         let results = core.results.map { $0.compactMap { $0 } }
         if passResults != results { passResults = results }
-        let newRows = buildRows(results.last ?? [])
+        let newRows = buildRows(results.indices.contains(shownPass) ? results[shownPass] : [])
         if rows != newRows { rows = newRows }
         if !running, case .finished = core.state, live != nil, case .finished = state { /* strip stays at its last values */ }
     }

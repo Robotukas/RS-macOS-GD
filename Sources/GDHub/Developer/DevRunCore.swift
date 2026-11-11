@@ -165,7 +165,14 @@ struct DevResolvedStep: Equatable {
     /// `requires.mapping`: every named control must currently send the named output (`effectiveOutput`, by value).
     /// The misses, in control order.
     static func requirementMisses(_ step: DevStep, mapping: ControlMapping) -> [RequirementMiss] {
-        guard let want = step.requires?.mapping else { return [] }
+        var want = step.requires?.mapping ?? [:]
+        // A held step that names its own trigger (row 8 holds RT) needs that trigger to still send itself: with RT sent
+        // elsewhere the pad's RT is not what the owner holds, and the step is skipped (as step 1 skipped it), not failed.
+        if step.devKind == .held, let name = step.expect?.item, case .trigger(let t)? = DevHeldItem(name: name) {
+            let id = t == .left ? "lt" : "rt"
+            if step.controls == [id], want[id] == nil { want[id] = id }
+        }
+        guard !want.isEmpty else { return [] }
         var out: [RequirementMiss] = []
         for (cid, value) in want.sorted(by: { $0.key < $1.key }) {
             let output = ControlOutput(string: value)
@@ -351,6 +358,10 @@ struct DevRunCore {
     private(set) var standDownPass: Int?
     private(set) var standDownNote: String?
     private var promptStandDownWhy: String?
+
+    /// The pass whose results the finished screen shows and a re-run defaults to: the last one, or the one before a Driver
+    /// pass that stood down (that pass never ran, so its row is empty).
+    var shownPass: Int { standDownPass.map { max($0 - 1, 0) } ?? max(results.count - 1, 0) }
 
     /// What the run's own filter did, counted over the run: reports it changed, reports that showed a direction the
     /// controller did not send, presses that showed another item than the stored one, presses it could not read.
@@ -1184,10 +1195,10 @@ struct DevRunCore {
         framesTotal += 1
         // The run-long filter sees every report. `f` is the report as the pad is meant to show it (a remapped paddle's own
         // button hidden); `raw` is what the controller sent, which the receiver recording keeps.
-        let before = echoState.prev
+        let pre = echoState
         let word = echoState.step(echoParams, frame: raw)
         let f = EchoFilter.apply(word, to: raw)
-        noteEcho(word: word, raw: raw, before: before, tNs: t)
+        noteEcho(word: word, raw: raw, pre: pre, tNs: t)
         let sum = summary(for: f)
         if sum.neutral { if stillSince == nil { stillSince = t } } else { stillSince = nil }
 
@@ -1244,7 +1255,7 @@ struct DevRunCore {
     // MARK: The run's echo filter
 
     /// Counts what the filter did on this report and keeps the presses of remapped keys for the step on hand.
-    private mutating func noteEcho(word: UInt32, raw: GamepadFrame, before: UInt16, tNs t: UInt64) {
+    private mutating func noteEcho(word: UInt32, raw: GamepadFrame, pre: EchoState, tNs t: UInt64) {
         if word & EchoFilter.wordApplied != 0 { echoCounters.hiddenFrames += 1 }
         if word & EchoFilter.wordRecovered != 0 { echoCounters.recoveredFrames += 1 }
         if word & EchoFilter.wordOther != 0 { echoCounters.other += 1 }
@@ -1259,7 +1270,14 @@ struct DevRunCore {
             let stored = echoParams.items[k]
             let found: DevJudge.HidingEvidence.Found
             if (echoState.known >> UInt8(k)) & 1 == 1 {
-                found = EchoFilter.on(EchoFilter.mask(stored), in: before) ? .confirmed : .seen
+                // "Seen" only when the rule read the item off this very press: its stored item was not on before, exactly one
+                // of the six keys changed and exactly one item changed. Every other known press was agreed with ("confirmed"),
+                // including a key pressed together with another key or with another change in the same report.
+                let obs = EchoFilter.items(word: 0, buttons: raw.buttons, hat: raw.hat)
+                let single = pre.flags & EchoState.valid != 0 && (UInt8(truncatingIfNeeded: raw.extra & 0x3F) ^ pre.six).nonzeroBitCount == 1
+                let c: UInt16 = single ? EchoFilter.changed(pre.prev, obs) : 0
+                let readOffThePress = !EchoFilter.on(EchoFilter.mask(stored), in: pre.prev) && c.nonzeroBitCount == 1
+                found = readOffThePress ? .seen : .confirmed
             } else {
                 found = code != stored ? .other : .unconfirmed
             }
@@ -1655,7 +1673,7 @@ struct DevRunCore {
     // MARK: Re-run
 
     private mutating func rerunFailed(pass p: Int?, a: inout [Action]) {
-        let p = p ?? max(passes.count - 1, 0)
+        let p = p ?? shownPass
         guard results.indices.contains(p) else { return }
         let idx = results[p].enumerated().compactMap { (i, r) -> Int? in
             guard setup?.steps[i].skipReason == nil, let v = Self.latestVerdict(r) else { return nil }
@@ -1669,7 +1687,7 @@ struct DevRunCore {
 
     private mutating func rerun(_ indices: [Int], pass p: Int?, a: inout [Action]) {
         guard state == .finished, let s = setup, !indices.isEmpty else { return }
-        let p = p ?? max(passes.count - 1, 0)
+        let p = p ?? shownPass
         let valid = indices.filter { s.steps.indices.contains($0) && s.steps[$0].skipReason == nil }
         guard results.indices.contains(p), !valid.isEmpty else { return }
         pass = p
@@ -1787,8 +1805,8 @@ struct DevRunCore {
 
     private var lastFinishedText: (title: String, detail: String, total: UInt64?, ringStart: UInt64?) {
         var pass_ = 0, fail = 0, other = 0, recorded = 0
-        if results.indices.contains(pass) {
-            for r in results[pass] {
+        if results.indices.contains(finishedPass) {
+            for r in results[finishedPass] {
                 guard let v = Self.latestVerdict(r) else { continue }
                 switch v {
                 case .pass: pass_ += 1
@@ -1804,9 +1822,12 @@ struct DevRunCore {
         return (title, text, nil, nil)
     }
 
+    /// The pass the finished summary counts: the one before a Driver pass that stood down, else the one that was running.
+    private var finishedPass: Int { standDownPass.map { max($0 - 1, 0) } ?? pass }
+
     private var finishedComplete: Bool {
-        guard let s = setup, results.indices.contains(pass) else { return false }
-        return !s.steps.indices.contains { Self.latestVerdict(results[pass][$0]) == nil }
+        guard let s = setup, results.indices.contains(finishedPass) else { return false }
+        return !s.steps.indices.contains { Self.latestVerdict(results[finishedPass][$0]) == nil }
     }
 
     private mutating func refreshOutputs(_ a: inout [Action]) {

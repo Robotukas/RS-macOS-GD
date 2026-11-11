@@ -119,7 +119,7 @@ final class RemapModeTests: XCTestCase {
         XCTAssertNil(d.remapLimit)
 
         d.setOutput(.pad(.y), for: "g2")          // three controls send Y: the driver cannot do that yet
-        XCTAssertEqual(d.remapLimit, MapBlobEncoder.remapLimit(d.mapping))
+        XCTAssertEqual(d.remapLimit, MapBlobEncoder.remapLimitInWords(d.mapping))
         XCTAssertNotNil(d.remapLimit)
 
         d.setOutput(.nothing, for: "g2")
@@ -267,6 +267,42 @@ final class RemapModeTests: XCTestCase {
         XCTAssertEqual(d.frame.hat, 8, "the report on screen is cleaned again with the new parameters")
         d.resetOutput(for: "paddle_outer_right")
         XCTAssertEqual(d.frame.hat, 2, "and back")
+    }
+
+    /// The pad feed resets its state on the first report after a mapping change and steps that report first; the screen's
+    /// copy must do the same, or the two split for the rest of the hold (review of S4, finding 2).
+    private func assertTheScreenShowsWhatAFreshPadFeedSends(held: GamepadFrame, next: GamepadFrame,
+                                                            file: StaticString = #filePath, line: UInt = #line) throws -> EnvisionProDevice {
+        let d = try device()
+        feed(d, raw())
+        feed(d, held)
+        d.setOutput(.pad(.y), for: "paddle_outer_right")                // the pick changes while `held` is on screen
+        feed(d, next)
+        // what the sink does: a fresh state whose first report is `next`
+        var sink = EchoState()
+        let sends = EchoFilter.apply(sink.step(d.mapping.echoParams, frame: next), to: next)
+        XCTAssertEqual(d.frame, sends, "the screen shows what the pad sends", file: file, line: line)
+        return d
+    }
+
+    func testTheScreensCopyOfTheRuleStepsTheSameFirstReportAsThePadFeed() throws {
+        // D-pad left is held at the change; then the paddle goes down and the controller cancels left against its right
+        let d = try assertTheScreenShowsWhatAFreshPadFeedSends(held: raw(hat: 6), next: raw(hat: 8, extra: 1))
+        XCTAssertEqual(d.frame.hat, 8, "a fresh state sends nothing on that axis: the screen must not recover the left")
+    }
+
+    func testTheScreensCopyAgreesWhenTheKeyIsAlreadyHeldAtTheChange() throws {
+        // the paddle (and the D-pad right the controller adds) is held at the change; next the D-pad left comes in
+        let d = try device()
+        feed(d, raw())
+        feed(d, raw(hat: 2, extra: 1))
+        d.setOutput(.pad(.y), for: "paddle_outer_right")
+        XCTAssertEqual(d.frame.hat, 8, "the held report is cleaned at once")
+        let next = raw(hat: 8, extra: 1)
+        feed(d, next)
+        var sink = EchoState()
+        let sends = EchoFilter.apply(sink.step(d.mapping.echoParams, frame: next), to: next)
+        XCTAssertEqual(d.frame, sends)
     }
 
     func testTheConflictLineNamesControlsInWords() throws {

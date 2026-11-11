@@ -226,6 +226,7 @@ class EchoSurveyTest(unittest.TestCase):
         self.assertEqual((rp["wrong"], rp["ghosts"], rp["unconfirmedClean"]), (0, 0, 0))
         self.assertEqual(rp["unconfirmedShared"], 32, "the 32 masks with exactly one of bits 0 and 3 cannot read the press")
         self.assertEqual(rp["unconfirmedWithItem"], 0)
+        self.assertEqual(rp["wrongExcused"], 32, "one report per unreadable press, on the axis the press could not be read on")
 
     def test_an_opposite_direction_with_other_inputs_in_the_press_report_is_listed_with_item(self):
         # paddle outer right pressed in the same report as D-pad left (the hat cancels to none) and X and Y: the controller
@@ -238,6 +239,7 @@ class EchoSurveyTest(unittest.TestCase):
         rp = res["replay"]
         self.assertGreater(rp["unconfirmedWithItem"], 0)
         self.assertEqual(rp["unconfirmedClean"], 0)
+        self.assertEqual((rp["wrong"], rp["wrongExcused"]), (0, 32), "pinned: the narrowed excuse keeps exactly these 32")
 
     def test_a_neighbour_touched_in_an_alone_step_is_reported_and_left_out_of_the_table(self):
         s = alone("paddle_outer_right")

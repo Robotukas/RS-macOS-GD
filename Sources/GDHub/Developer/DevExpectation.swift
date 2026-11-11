@@ -115,7 +115,12 @@ enum DevExpectation {
             let t = expectedTriggers(for: cid, mapping: mapping, layout: layout)
             lt = lt || t.lt; rt = rt || t.rt
         }
-        return DevExpectedItems(items: all, lt: lt, rt: rt)
+        var out = DevExpectedItems(items: all, lt: lt, rt: rt)
+        // LT or RT sent to Nothing: the pad does exactly nothing, and the step judges that (not the trigger's own pull).
+        if step.devKind == .trigger || step.devKind == .held, all.isEmpty, !lt, !rt {
+            out.mappedToNothing = step.controls.contains { ($0 == "lt" || $0 == "rt") && !background.contains($0) && mapping.effectiveOutput($0) == .nothing }
+        }
+        return out
     }
 
     /// What a held step watches: its `expect.item` when it names one, otherwise the trigger of an `lt` / `rt` control and
@@ -123,6 +128,10 @@ enum DevExpectation {
     static func heldTargets(step: DevStep, expected: DevExpectedItems) -> [DevHeldItem]? {
         if let name = step.expect?.item { return DevHeldItem(name: name).map { [$0] } }
         var out: [DevHeldItem] = []
+        if expected.mappedToNothing {
+            // The trigger is sent to Nothing: there is nothing on the pad to hold.
+            return []
+        }
         if expected.lt || expected.rt {
             // The pad trigger the control is mapped to (LT sent to RT holds RT).
             out += expected.triggers.map { DevHeldItem.trigger($0) }

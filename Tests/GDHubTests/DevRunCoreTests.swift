@@ -1808,6 +1808,11 @@ final class DevRemapRunTests: XCTestCase {
         let (_, att) = run("outer-right", script: presses("OR", times: 10), padFromRaw: true)
         guard case .fail(let why) = att.verdict else { return XCTFail("\(att.verdict)") }
         XCTAssertTrue(why.contains("unexpected change on D-pad right"), why)
+        // Review of S4, finding 11: a step that leaked cannot also say the button was never on the pad
+        XCTAssertEqual(att.hiding?.conclusive, false)
+        XCTAssertEqual(att.hiding?.line, "controller's own button hidden: cannot judge: the step did not pass")
+        XCTAssertTrue(att.hiding?.presses.allSatisfy { $0.result == "cannot judge" && $0.reason == "the step did not pass" } ?? false)
+        XCTAssertFalse(att.metrics.detail.contains("never on the pad"), att.metrics.detail)
     }
 
     func testAKeyOnNothingExpectsNoPadChangeAndItsHidingIsJudgedToo() {
@@ -1818,6 +1823,8 @@ final class DevRemapRunTests: XCTestCase {
         let (_, leak) = run("inner-left", script: presses("IL", times: 10), padFromRaw: true)
         guard case .fail(let why) = leak.verdict else { return XCTFail("\(leak.verdict)") }
         XCTAssertTrue(why.contains("D-pad up"), why)
+        XCTAssertEqual(leak.hiding?.conclusive, false)
+        XCTAssertFalse(leak.metrics.detail.contains("never on the pad"), leak.metrics.detail)
     }
 
     func testPaddleHeldFirstThenDpadUpPassesWithRThreeHeldInTheBackground() {
@@ -1889,6 +1896,9 @@ final class DevRemapRunTests: XCTestCase {
         let (_, att) = run("together-outer", script: ["+OL +OR", "-OL -OR", "+OL +OR", "-OL -OR"])
         XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
         XCTAssertNotNil(att.hiding)
+        // Review of S4, finding 10: two keys in one report are agreed with, not read off a single press: "confirmed"
+        XCTAssertEqual(att.hiding?.presses.count, 4)
+        XCTAssertTrue(att.hiding?.presses.allSatisfy { $0.found == "confirmed" } ?? false, "\(String(describing: att.hiding?.presses))")
     }
 
     func testAnUntouchedPaddleIsJudgedByTheEchoWhateverTheProfileGives() {
@@ -2020,6 +2030,31 @@ final class DevRemapRunTests: XCTestCase {
         other.send(.runAnyway)
         other.send(.stop)
         XCTAssertNil(other.core.standDownPass)
+    }
+
+    /// Review of S4, findings 4, 7 and 8: after the stand-down the finished screen counts the App pass (the Driver pass has
+    /// an empty row), and a re-run without a pass goes to the App pass.
+    func testAfterAStoodDownDriverPassTheShownPassIsTheAppPass() {
+        let r = Rig()
+        r.mapping.setOutput(.pad(.r3), for: "paddle_outer_right")
+        r.prepare()
+        r.start(.engine, steps: [Rig.restStep], paths: ["engine", "driver"])
+        r.untilGo()
+        r.advance(2500)
+        r.send(.status(Rig.status(armed: "inert", path: "driver") { $0.mappingNote = "Paddle outer right sends R3: this driver version cannot hide the controller's own press" }))
+        r.advance(10_100)
+        XCTAssertEqual(r.core.shownPass, 1, "before the stop, the last pass is the shown one")
+        r.send(.stop)
+        XCTAssertEqual(r.core.standDownPass, 1)
+        XCTAssertEqual(r.core.shownPass, 0, "the App pass")
+        XCTAssertEqual(r.core.results[0].compactMap { $0 }.count, 1)
+        XCTAssertTrue(r.core.results[1].allSatisfy { $0 == nil }, "the Driver pass has nothing")
+        let text = r.lastInstruction
+        XCTAssertEqual(text?.title, "Run complete")
+        XCTAssertEqual(text?.detail, "1 passed, 0 failed, 0 skipped or unclear.", "counted from the App pass, not the empty Driver pass")
+        // a re-run with no pass named goes to the App pass
+        r.send(.rerun(0, pass: nil))
+        XCTAssertEqual(r.core.pass, 0)
     }
 
     // MARK: Row 12 on the model

@@ -672,6 +672,24 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(ids.firstIndex(of: "volume-spike"), 12)
     }
 
+    /// Review of S4, finding 6: the bar shows the checklist part of the notes on one line (the picks, the Profile warning,
+    /// what to do afterwards); the long explanation stays in the popover.
+    func testTheNotesLineHoldsTheChecklistAndLeavesTheLongExplanationToThePopover() throws {
+        let all = DevBuiltins.generate(layout: layout)
+        let paddles = DevTemplate.notesHead(try XCTUnwrap(all.first { $0.id == "remap-paddles" }).notes)
+        XCTAssertTrue(paddles.hasPrefix("Picks: Paddle outer right → R3"), paddles)
+        XCTAssertTrue(paddles.contains("Do not press Profile."))
+        XCTAssertTrue(paddles.hasSuffix("Afterwards: Mapping → Reset all remaps."), paddles)
+        XCTAssertFalse(paddles.contains("Use it after"))
+        XCTAssertLessThan(paddles.count, 300)
+        let triggers = DevTemplate.notesHead(try XCTUnwrap(all.first { $0.id == "remap-triggers" }).notes)
+        XCTAssertEqual(triggers, "Picks: G1 → LT, LT → RT (RT still sends RT), X → A, G5 → A. Do not press Profile. Afterwards: Mapping → Reset all remaps.")
+        // notes without the marker are shown whole; none stays none
+        XCTAssertEqual(DevTemplate.notesHead("Every control, about three minutes."), "Every control, about three minutes.")
+        XCTAssertEqual(DevTemplate.notesHead(""), "")
+        XCTAssertEqual(DevTemplate.notesHead("  A. Use it after B.  "), "A.")
+    }
+
     func testEchoSurveyTemplateIsAsSpecifiedAndValidates() throws {
         let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "echo-survey" })
         XCTAssertEqual(t.title, "Paddles and SAX: what the controller adds (survey)")

@@ -175,4 +175,26 @@ final class LearnSessionTests: XCTestCase {
         var b = GamepadFrame.idle; b.buttons = 1; b.extra = 16
         XCTAssertEqual(learn("sax_left", frames: [b]).assignments.first?.binding, .button(1))
     }
+
+    /// Review of S4, finding 3: the D-pad let go after the key reads as the opposite direction on every later report (at
+    /// about 1 kHz), which used to outvote the press itself.
+    func testADpadLetGoAfterThePaddleDoesNotChangeTheStoredDirection() {
+        var up = GamepadFrame.idle; up.hat = 0
+        var both = up; both.hat = 1; both.extra = 1             // paddle outer right, up held: the controller adds right
+        var upOnly = up                                        // the paddle let go, up still held
+        upOnly.extra = 0
+        var none = GamepadFrame.idle; none.hat = 8              // then up let go too: every later report is at rest
+        let rest = Array(repeating: none, count: 900)           // 9 s: the step runs to its time limit
+        let a = learn("paddle_outer_right", baseline: up, frames: [both, both, both, upOnly] + rest)
+        XCTAssertEqual(a.assignments.first?.binding, .hat(2), "right, not the down that letting go of up reads as")
+        XCTAssertEqual(a.assignments.first?.physicalBits, 1)
+
+        // Right held (the controller changes nothing for the same direction): letting go of right reads as left.
+        var rightHeld = GamepadFrame.idle; rightHeld.hat = 2
+        var withKey = rightHeld; withKey.extra = 1
+        let b = learn("paddle_outer_right", baseline: rightHeld, frames: [withKey, rightHeld] + rest)
+        XCTAssertNil(b.assignments.first?.binding, "no direction was seen with the key: bits only")
+        XCTAssertEqual(b.assignments.first?.physicalBits, 1)
+        XCTAssertTrue(b.session.lastResult.contains("only extra bits seen"), b.session.lastResult)
+    }
 }

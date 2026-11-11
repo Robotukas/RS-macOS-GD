@@ -151,6 +151,10 @@ struct DevExpectedItems: Codable, Equatable {
     /// the file when false, so every older template and report keeps its bytes.
     var lt = false
     var rt = false
+    /// The step presses LT or RT and the mapping sends that trigger to Nothing: the pad must stay still, which is not
+    /// the same as "nothing was worked out" (that one judges the control's own trigger). Worked out from the mapping at
+    /// run time, so it is not part of the file.
+    var mappedToNothing = false
 
     init(buttons: [String] = [], hat: String? = nil, guide: Bool = false, lt: Bool = false, rt: Bool = false) {
         self.buttons = buttons
@@ -353,6 +357,14 @@ struct DevStep: Codable, Equatable {
 }
 
 struct DevTemplate: Codable, Equatable {
+    /// The part of a template's notes the bar shows on its one line: what to set up and what to do afterwards (the picks,
+    /// "Do not press Profile", "Afterwards: Mapping → Reset all remaps"). The long explanation that follows "Use it after …"
+    /// stays in the popover that opens from the line. Notes without that marker are shown whole.
+    static func notesHead(_ notes: String) -> String {
+        let head = notes.range(of: " Use it after").map { String(notes[..<$0.lowerBound]) } ?? notes
+        return head.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static let schemaVersion = 1
     /// Longest window a template may ask for (the sleep test waits two minutes for the controller to doze off).
     static let maxSeconds = 120.0

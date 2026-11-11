@@ -62,6 +62,8 @@ extension DevTarget {
 struct DeveloperBar: View {
     @ObservedObject var session: DevSession
     var onDone: () -> Void = {}
+    /// The popover with the selected template's whole notes (opened from the one-line note).
+    @State private var showNotes = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -191,11 +193,42 @@ struct DeveloperBar: View {
         if let hint = session.hint {
             Text(hint).font(.caption).foregroundStyle(.secondary)
         } else if !session.isRunning && session.startBlockReason == nil && !session.finishedWithResults {
-            Text("Who drives the controller is switched for you when the run starts and put back when it ends.")
-                .font(.caption).foregroundStyle(.secondary)
+            let notes = session.templateNotes
+            if notes.isEmpty {
+                Text("Who drives the controller is switched for you when the run starts and put back when it ends.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                templateNotesLine(notes)
+            }
         }
         if let error = session.error {
             Text(error).font(.caption).foregroundStyle(.red)
+        }
+    }
+}
+
+extension DeveloperBar {
+    /// The selected template's notes on one line (the picks and what to do afterwards), cut at the end of the bar; a click
+    /// opens the whole text in a popover, and hovering shows it as a tooltip. Never taller than a line.
+    func templateNotesLine(_ notes: String) -> some View {
+        Button { showNotes.toggle() } label: {
+            HStack(spacing: 6) {
+                Text(DevTemplate.notesHead(notes)).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 4)
+                Text("All notes").underline().layoutPriority(1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .font(.caption).foregroundStyle(.secondary)
+        .help(notes)
+        .accessibilityIdentifier("developer.notes")
+        .popover(isPresented: $showNotes, arrowEdge: .bottom) {
+            ScrollView {
+                Text(notes).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }
+            .frame(width: 440, height: 240)
         }
     }
 }

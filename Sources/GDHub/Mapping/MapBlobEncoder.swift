@@ -161,33 +161,51 @@ enum MapBlobEncoder {
     /// button the controller adds for a remapped paddle or SAX key. This is the level-1 answer (a driver that takes GDHM
     /// v1 only, build 24). Never non-nil for a mapping with empty `outputs`. Pure; the menu uses it to mark picks the
     /// driver cannot do yet (the App drives the pad then).
-    static func remapLimit(_ mapping: ControlMapping) -> String? {
+    static func remapLimit(_ mapping: ControlMapping) -> String? { limit(mapping, inWords: false) }
+
+    /// The same limit as `remapLimit`, said in the words the screen uses: the layout's labels for the controls ("three
+    /// buttons send A: A, X, G5") and the menu's names for the pad items ("View", not "VIEW"). This is what the owner reads
+    /// (the Mapping hint, the menu marks, the engine's note that the Driver menu and the Developer prompt show); the
+    /// engine reports it as its reason. `remapLimit` keeps the step-1 text byte for byte, because the GDHM v1 pin
+    /// (`GDHMv1PinTests`) pins it.
+    static func remapLimitInWords(_ mapping: ControlMapping) -> String? { limit(mapping, inWords: true) }
+
+    private static func limit(_ mapping: ControlMapping, inWords words: Bool) -> String? {
         guard !mapping.outputs.isEmpty else { return nil }
+        func control(_ id: String) -> String { words ? (controlWords[id] ?? id) : id }
+        func item(_ o: PadOutput) -> String { words ? o.shortName : label(o) }
         // A remapped paddle or SAX key first, so that no message below can name one of them by its raw id.
         for id in ControlMapping.echoKeyIDs {
             let output = mapping.effectiveOutput(id)
             if output != .builtIn {
-                return "\(keyWords[id] ?? id) sends \(label(output)): this driver version cannot hide the controller's own press"
+                let sent: String
+                if case .pad(let p) = output { sent = p.shortName } else { sent = label(output) }
+                return "\(controlWords[id] ?? id) sends \(sent): this driver version cannot hide the controller's own press"
             }
         }
         for output in PadOutput.allCases {
             let sources = mapping.sources(of: output)
             if output.isTrigger {
                 for source in sources where mapping.triggerFeed(from: source, into: output) == .fullScale {
-                    return "\(source) sends \(label(output)): a button cannot pull a trigger in this driver version"
+                    return "\(control(source)) sends \(item(output)): a button cannot pull a trigger in this driver version"
                 }
                 if sources.count > 1 {
-                    return "\(count(sources.count)) controls send \(label(output)): \(sources.joined(separator: ", "))"
+                    return "\(count(sources.count)) controls send \(item(output)): \(sources.map(control).joined(separator: ", "))"
                 }
             } else if sources.count > 2 {
-                return "\(count(sources.count)) buttons send \(label(output)): \(sources.joined(separator: ", "))"
+                return "\(count(sources.count)) buttons send \(item(output)): \(sources.map(control).joined(separator: ", "))"
             }
         }
         return nil
     }
 
-    /// The owner's words for the six paddle and SAX keys (the layout labels), used only in the hide-the-echo message.
-    private static let keyWords: [String: String] = [
+    /// The owner's words for every control a pick can name: the layout labels (a test holds the table to the layout file).
+    static let controlWords: [String: String] = [
+        "a": "A", "b": "B", "x": "X", "y": "Y", "lb": "LB", "rb": "RB", "lt": "LT", "rt": "RT",
+        "view": "View", "menu": "Menu", "start": "Start", "l3": "L3", "r3": "R3", "profile": "Profile",
+        "dpad_up": "D-pad up", "dpad_right": "D-pad right", "dpad_down": "D-pad down", "dpad_left": "D-pad left",
+        "g1": "G1", "g2": "G2", "g3": "G3", "g4": "G4", "g5": "G5",
+        "left_stick": "Left stick", "right_stick": "Right stick",
         "paddle_outer_right": "Paddle outer right", "paddle_inner_right": "Paddle inner right",
         "paddle_inner_left": "Paddle inner left", "paddle_outer_left": "Paddle outer left",
         "sax_left": "SAX left", "sax_right": "SAX right",
@@ -219,7 +237,7 @@ enum MapBlobEncoder {
 
     static func table(_ m: ControlMapping, identity: PadIdentity, spec: [UInt8], revision: UInt32,
                       axisDeadband: Double = 0.002, triggerDeadband: Double = 0.002) throws -> GDHMTable {
-        if let why = remapLimit(m) { throw Failure.unsupported(why) }
+        if let why = remapLimitInWords(m) { throw Failure.unsupported(why) }
         guard supportsLayout(of: identity) else {
             throw Failure.unsupported("pad layout \(identity.id) has no GDHM placements")
         }

@@ -815,10 +815,10 @@ final class DevJudgeTests: XCTestCase {
         return run(viewStep, expected: DevExpectedItems(buttons: ["View"]), entry: entry, rig: rig, background: [.a])
     }
     private func run(_ step: DevStep, expected: DevExpectedItems, entry: PadState? = PadState(), rig: Rig, background: Set<PadItem>,
-                     builtInEcho: Bool = false, hiding: DevJudge.HidingEvidence? = nil) -> DevJudge.Outcome {
+                     builtInEcho: Bool = false, hiding: DevJudge.HidingEvidence? = nil, reference: DevJudge.Reference? = nil) -> DevJudge.Outcome {
         let input = DevJudge.Input(step: step, expected: expected, entryState: entry.map(decoded), reports: rig.reports,
                                    windowStartNs: Rig.ns(0), windowEndNs: Rig.ns(5000), endNs: Rig.ns(5500), matchedCount: 1,
-                                   background: background, builtInEcho: builtInEcho, hiding: hiding)
+                                   reference: reference, background: background, builtInEcho: builtInEcho, hiding: hiding)
         return DevJudge.judge(input)
     }
     private var withA: PadState { state { $0.buttons = [.a] } }
@@ -854,6 +854,35 @@ final class DevJudgeTests: XCTestCase {
         assertFail(viewRun { r in   // never held at all
             r.set(state { $0.buttons = [.view] }, at: 300); r.set(PadState(), at: 450); r.set(state { $0.buttons = [.view] }, at: 700); r.set(PadState(), at: 850)
         }, containing: "A went down 0 times (needs 1)")
+    }
+
+    /// Review of S4, finding 10: a paddle left on Controller's profile has no expectation, but its steps still measure the
+    /// latency of whatever item the pad showed (rows 1 and 4).
+    func testAnUntouchedPaddleStepStillMeasuresLatencyOnTheItemThePadShowed() {
+        let step = DevStep(id: "p", kind: .digital, controls: ["paddle_outer_left"], title: "t", seconds: 6)
+        var rig = Rig()
+        var frames: [DevJudge.Reference.Frame] = []
+        let left = state { $0.buttons = [.dpadLeft] }
+        for i in 0..<2 {
+            let down = 200 + Double(i) * 400, up = down + 150
+            frames.append(.init(tNs: Rig.ns(down), pad: left)); frames.append(.init(tNs: Rig.ns(up), pad: PadState()))
+            rig.set(left, at: down + 0.2); rig.set(PadState(), at: up + 0.3)
+        }
+        let ref = DevJudge.Reference(expectedChanges: frames.count, firstFrameChangeNs: frames.first?.tNs, frames: frames)
+        let o = run(step, expected: DevExpectedItems(), rig: rig, background: [], builtInEcho: true, reference: ref)
+        assertPass(o)
+        XCTAssertEqual(o.metrics.values["lat.n"], 4, o.metrics.detail)
+        XCTAssertEqual(o.metrics.values["lat.p50Ms"] ?? 0, 0.3, accuracy: 0.11)
+        XCTAssertFalse(o.metrics.detail.contains("no receiver edge"), o.metrics.detail)
+        // a trigger pull is watched too
+        var trig = Rig()
+        let pulled = state { $0.rt = 1 }
+        trig.set(pulled, at: 200.2); trig.set(PadState(), at: 350.3); trig.set(pulled, at: 600.2); trig.set(PadState(), at: 750.3)
+        let tframes: [DevJudge.Reference.Frame] = [.init(tNs: Rig.ns(200), pad: pulled), .init(tNs: Rig.ns(350), pad: PadState()),
+                                                   .init(tNs: Rig.ns(600), pad: pulled), .init(tNs: Rig.ns(750), pad: PadState())]
+        let t = run(step, expected: DevExpectedItems(), rig: trig, background: [], builtInEcho: true,
+                    reference: DevJudge.Reference(expectedChanges: 4, firstFrameChangeNs: tframes[0].tNs, frames: tframes))
+        XCTAssertEqual(t.metrics.values["lat.n"], 4, t.metrics.detail)
     }
 
     func testBuiltInEchoPassesOnAnyOneItemAndFailsOnZeroOrTwo() {
@@ -910,6 +939,22 @@ final class DevJudgeTests: XCTestCase {
         // nothing worked out: the control's own trigger, as before (a step judged without a mapping)
         let own = state { $0.lt = 1 }
         assertPass(go(DevExpectedItems()) { $0.set(own, at: 100); $0.set(PadState(), at: 250) })
+    }
+
+    func testATriggerSentToNothingPassesOnAStillPadAndFailsOnAnyMovement() {
+        let step = DevStep(id: "lt", kind: .trigger, controls: ["lt"], title: "t", seconds: 6, releaseSeconds: 0.5)
+        var nothing = DevExpectedItems()
+        nothing.mappedToNothing = true
+        // the pad did what the mapping says: nothing (the old reading failed this with "LT only reached 0.00")
+        assertPass(run(step, expected: nothing, rig: Rig()))
+        var moved = Rig(); moved.set(state { $0.lt = 1 }, at: 100); moved.set(PadState(), at: 250)
+        assertFail(run(step, expected: nothing, rig: moved), containing: "a trigger moved although it is sent to Nothing")
+        var button = Rig(); button.set(state { $0.buttons = [.b] }, at: 100); button.set(PadState(), at: 250)
+        assertFail(run(step, expected: nothing, rig: button), containing: "unexpected change on B")
+        // nothing worked out (no mapping known) still judges the control's own trigger
+        var own = Rig(); own.set(state { $0.lt = 1 }, at: 100); own.set(PadState(), at: 250)
+        assertPass(run(step, expected: DevExpectedItems(), rig: own))
+        assertFail(run(step, expected: DevExpectedItems(), rig: Rig()), containing: "LT only reached 0.00")
     }
 
     func testHeldStepFailsAButtonTheStepDidNotAskFor() {

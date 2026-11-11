@@ -204,7 +204,10 @@ final class LearnSession: ObservableObject {
         // The D-pad echo of a key, read per axis against the baseline: the one direction that changed, so a key learned while
         // D-pad up is held is stored as right (the controller sends up-right), never as the diagonal; a direction the
         // controller cancelled counts as the opposite (D-pad left held, the key's right cancels it: right).
-        if f.hat != baseline.hat {
+        // For the six keys, only while the key's own signal is down: a D-pad let go after the key reads as its opposite
+        // direction on every later report, and must not outvote the direction the press showed.
+        let keyDown = ControlMapping.identityBits(steps[stepIndex].control.id) == 0 || (f.extra & ~baseline.extra) != 0
+        if f.hat != baseline.hat && keyDown {
             let changed = EchoFilter.changed(EchoFilter.items(word: 0, buttons: baseline.buttons, hat: baseline.hat),
                                              EchoFilter.items(word: 0, buttons: f.buttons, hat: f.hat))
             for bit in 10...13 where (changed >> UInt16(bit)) & 1 == 1 { hatDirections[bit, default: 0] += 1 }

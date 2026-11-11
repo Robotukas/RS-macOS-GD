@@ -124,7 +124,8 @@ final class ModeGateTests: XCTestCase {
         XCTAssertNil(RemapHint.limit(of: m))
         m.setOutput(.pad(.y), for: "g1")
         m.setOutput(.pad(.y), for: "g2")
-        XCTAssertEqual(RemapHint.limit(of: m), MapBlobEncoder.remapLimit(m))
+        XCTAssertEqual(RemapHint.limit(of: m), MapBlobEncoder.remapLimitInWords(m))
+        XCTAssertEqual(RemapHint.limit(of: m), "three buttons send Y: Y, G1, G2")
         XCTAssertNotNil(RemapHint.limit(of: m), "y, g1 and g2 all send Y: three sources")
     }
 }

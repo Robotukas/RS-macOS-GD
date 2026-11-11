@@ -1342,7 +1342,7 @@ final class TapSupervisorTests: XCTestCase {
         let reports = Reports()
         s.statusSink = { reports.all.append($0) }
         queue.sync { s.connection(up: true) }
-        XCTAssertEqual(s.unsupportedNote, "three buttons send Y: y, g1, g2")
+        XCTAssertEqual(s.unsupportedNote, "three buttons send Y: Y, G1, G2", "the engine says it in the screen's words")
         XCTAssertEqual(tap.calls, [DextProtocol.Forwarding.shadow, DextProtocol.Forwarding.inert], "SHADOW, then the push finds it unsupported: INERT")
         XCTAssertTrue(tap.mapCalls.isEmpty)
         let callsBefore = tap.calls, readsBefore = s.status2Reads
@@ -1353,7 +1353,7 @@ final class TapSupervisorTests: XCTestCase {
         XCTAssertEqual(tap.calls, callsBefore, "no INERT -> SHADOW -> INERT for nothing")
         XCTAssertTrue(tap.mapCalls.isEmpty)
         XCTAssertTrue(s.unsupportedHold)
-        XCTAssertEqual(s.unsupportedNote, "g1 sends LT: a button cannot pull a trigger in this driver version")
+        XCTAssertEqual(s.unsupportedNote, "G1 sends LT: a button cannot pull a trigger in this driver version")
         XCTAssertEqual(reports.all.last?.mappingNote, s.unsupportedNote, "the status file follows the new reason")
         XCTAssertEqual(reports.all.last?.armed, "inert")
         XCTAssertNil(s.makeReport().fallback, "not a fault"); XCTAssertNil(s.latched); XCTAssertNil(s.fallback)

@@ -56,7 +56,7 @@ struct RemapMenuModel: Equatable {
         /// The "default" tag: this is what the control sends if never touched.
         var isDefault: Bool
         /// Non-nil when picking this entry would make the mapping something the driver cannot do yet (the App drives the
-        /// controller instead); the text is `MapBlobEncoder.remapLimit` of the result. Always nil when the current
+        /// controller instead); the text is `MapBlobEncoder.remapLimitInWords` of the result. Always nil when the current
         /// mapping already has such a limit (the footnote would say nothing new).
         var limit: String?
     }
@@ -160,7 +160,7 @@ struct RemapMenuModel: Equatable {
         func entry(_ title: String, _ output: ControlOutput) -> Entry {
             var limit: String?
             if !alreadyLimited, output != current {
-                limit = MapBlobEncoder.remapLimit(Self.mapping(mapping, picking: output, for: id))
+                limit = MapBlobEncoder.remapLimitInWords(Self.mapping(mapping, picking: output, for: id))
             }
             return Entry(title: title, output: output, isCurrent: output == current, isDefault: output == fallback, limit: limit)
         }

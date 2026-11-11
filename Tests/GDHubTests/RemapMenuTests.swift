@@ -329,7 +329,7 @@ final class RemapMenuTests: XCTestCase {
             }
             for e in m.entries where e.limit != nil {
                 let after = RemapMenuModel.mapping(map, picking: e.output, for: id)
-                XCTAssertEqual(MapBlobEncoder.remapLimit(after), e.limit, "\(id) -> \(e.title)")
+                XCTAssertEqual(MapBlobEncoder.remapLimitInWords(after), e.limit, "\(id) -> \(e.title)")
             }
         }
     }

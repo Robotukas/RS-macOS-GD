@@ -337,5 +337,69 @@ class TruthModelTest(unittest.TestCase):
         self.assertEqual(amb[0] | amb[3], 0)
 
 
+
+class ExcuseTest(unittest.TestCase):
+    """`wrongExcused` covers only what the rule said it could not read: the unconfirmed key's stored item and the opposite
+    direction on its axis, while that key is held. Anything else in that hold is `wrong`."""
+
+    OR, OL = 1 << 0, 1 << 3
+
+    def hold(self, real_buttons=0, real_hat=8):
+        # outer right (hidden) and outer left (not hidden) pressed in one report: the hat cancels to none and outer right's
+        # stored D-pad right is neither seen nor agreed with (UNCONFIRMED); then something real is pressed and let go
+        # while both are held; then both are let go
+        both = self.OR | self.OL
+        return [[frame(0, 8, 0), frame(0, 8, both), frame(real_buttons, real_hat, both), frame(0, 8, both), frame(0, 8, 0)]]
+
+    @staticmethod
+    def dropping(item_bit):
+        class Drops(ER.Echo):
+            def step(self, buttons, hat, extra):
+                w = super().step(buttons, hat, extra)
+                return w & ~item_bit if w else w
+        return Drops
+
+    def replay_with(self, rule, frames):
+        original = ER.Echo
+        ER.Echo = rule
+        try:
+            return ER.replay(frames, self.OR)
+        finally:
+            ER.Echo = original
+
+    def test_the_unbroken_rule_is_excused_on_the_axis_it_could_not_read_and_nowhere_else(self):
+        r = ER.replay(self.hold(), self.OR)
+        self.assertEqual((r["wrong"], r["ghosts"]), (0, 0))
+        self.assertEqual(len(r["unconfirmed"]), 1)
+        self.assertEqual(r["wrongExcused"], 3, "the three reports from the shared press to the report before both are let go")
+
+    def test_a_rule_that_drops_a_real_button_in_such_a_hold_is_wrong_and_not_excused(self):
+        frames = self.hold(real_buttons=ER.bit(2))                       # a real X in the middle of the hold
+        good = ER.replay(frames, self.OR)
+        broken = self.replay_with(self.dropping(ER.bit(2)), frames)
+        self.assertEqual(good["wrong"], 0)
+        self.assertEqual(broken["wrong"], 1, "the report that lost the X")
+        self.assertEqual(broken["wrongAt"], [(0, 2)])
+        self.assertEqual(broken["wrongExcused"], good["wrongExcused"] - 1, "the other reports of the hold are still excused")
+
+    def test_a_rule_that_drops_a_direction_on_the_other_axis_is_wrong_too(self):
+        frames = self.hold(real_hat=4)                                    # a real D-pad down (vertical axis)
+        self.assertEqual(ER.replay(frames, self.OR)["wrong"], 0)
+        self.assertEqual(self.replay_with(self.dropping(ER.bit(ER.D)), frames)["wrong"], 1)
+
+    def test_the_cli_replay_line_reports_the_excused_count_and_the_gate_does_not_count_it_as_wrong(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = ER.main(["replay", FIXTURE])
+        self.assertEqual(code, 0)
+        self.assertIn("wrong 0, wrongExcused 0, ghosts 0", buf.getvalue())
+
+    def test_excuse_bits_are_the_stored_item_and_the_opposite_direction(self):
+        self.assertEqual(ER.excuse_bits(ER.bit(ER.R)), ER.bit(ER.R) | ER.bit(ER.L))
+        self.assertEqual(ER.excuse_bits(ER.bit(ER.D)), ER.bit(ER.D) | ER.bit(ER.U))
+        self.assertEqual(ER.excuse_bits(ER.bit(0)), ER.bit(0), "a button has no opposite")
+
+
 if __name__ == "__main__":
     unittest.main()

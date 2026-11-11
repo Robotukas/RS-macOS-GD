@@ -351,14 +351,27 @@ def run_words(frames, H, S=None):
     return [e.step(f.buttons, f.hat, f.extra) for f in frames]
 
 
+def excuse_bits(item_mask):
+    """The items a press the rule could not read may leave wrong: the key's stored item and, for a direction, the opposite
+    direction on its axis (the controller cancels it against the key's own echo)."""
+    m = item_mask
+    for p, n in AXES:
+        if item_mask & bit(p):
+            m |= bit(n)
+        if item_mask & bit(n):
+            m |= bit(p)
+    return m
+
+
 def replay(frames_list, H, S=None, E=None):
     """The rule over attempts (each a list of Frame, a fresh state each) against the truth model for hide mask H, the
     stored items S and the measured echoes E (both default to the factory table). Returns the counts and the list of
     unconfirmed presses as (attempt, report, key, keys changed in that report). A report that differs from the target
-    inside a hold in which the rule flagged a press UNCONFIRMED is not counted in `wrong` but in `wrongExcused`: the
-    rule said it could not read that press, an accepted limit (a direction opposite to a paddle pressed in the very
-    same report; two keys of a pair pressed in one report); the unconfirmed press has its own gate line, and a ghost is
-    never excused."""
+    only in the stored item of a key whose press the rule flagged UNCONFIRMED, or in the opposite direction on that
+    item's axis, while that key is still held, is not counted in `wrong` but in `wrongExcused`: the rule said it could
+    not read that press, an accepted limit (a direction opposite to a paddle pressed in the very same report; two keys
+    of a pair pressed in one report). Any other difference in that hold (a real button dropped, another key's item) is
+    `wrong`; the unconfirmed press has its own gate line, and a ghost is never excused."""
     S = list(FACTORY if S is None else S)
     E = list(FACTORY if E is None else E)
     res = {"reports": 0, "wrong": 0, "wrongExcused": 0, "ghosts": 0, "ambiguous": 0, "recovered": 0, "other": 0,
@@ -369,13 +382,18 @@ def replay(frames_list, H, S=None, E=None):
         e = Echo(H, S)
         hold = 0
         prev_six = 0
-        excused = False
+        excuse = {}                              # key -> item bits the rule could not read, until that key is let go
         for i, f in enumerate(frames):
             w = e.step(f.buttons, f.hat, f.extra)
-            if not f.extra & H:
-                excused = False
-            elif w & W_UNCONFIRMED:
-                excused = True
+            for k in [k for k in excuse if not f.extra >> k & 1]:
+                del excuse[k]
+            if w & W_UNCONFIRMED:
+                for k, how in e.press.items():
+                    if how == "unconfirmed":
+                        excuse[k] = excuse.get(k, 0) | excuse_bits(e.S[k])
+            excused_bits = 0
+            for m in excuse.values():
+                excused_bits |= m
             out = word_pad(w, f.buttons, f.hat)
             res["reports"] += 1
             res["ambiguous"] += popcount(amb[i])
@@ -394,8 +412,8 @@ def replay(frames_list, H, S=None, E=None):
                 res["ghosts"] += 1
                 res["ghostAt"].append((ai, i))
             if not compare(out, target[i], amb[i]):
-                if excused:                      # the rule said it could not read this press (its own UNCONFIRMED flag)
-                    res["wrongExcused"] += 1
+                if excused_bits and compare(out, target[i], amb[i] | excused_bits):
+                    res["wrongExcused"] += 1     # only what the rule said it could not read (its own UNCONFIRMED flag)
                 else:
                     res["wrong"] += 1
                     res["wrongAt"].append((ai, i))
@@ -727,8 +745,9 @@ def main(argv):
         atts = load_attempts(argv[1])
         frames_list = [[f for _, f in a[3]] for a in atts]
         r = replay_all_masks(frames_list)
-        print("attempts %d, reports %d x 64 masks: wrong %d, ghosts %d, ambiguous %d, recovered %d, other %d, unconfirmed %d" % (
-            len(atts), r["reports"], r["wrong"], r["ghosts"], r["ambiguous"], r["recovered"], r["other"], len(r["unconfirmed"])))
+        print("attempts %d, reports %d x 64 masks: wrong %d, wrongExcused %d, ghosts %d, ambiguous %d, recovered %d, other %d, "
+              "unconfirmed %d" % (len(atts), r["reports"], r["wrong"], r["wrongExcused"], r["ghosts"], r["ambiguous"],
+                                  r["recovered"], r["other"], len(r["unconfirmed"])))
         return 0 if r["wrong"] == 0 and r["ghosts"] == 0 else 1
     if len(argv) >= 4 and argv[0] == "exhaust":
         depth, maxch = int(argv[1]), int(argv[2])
