@@ -800,4 +800,196 @@ final class DevJudgeTests: XCTestCase {
         XCTAssertTrue(DevHeldItem.hat(2).isHeld(decoded(state { $0.buttons = [.dpadUp, .dpadRight] }), minLevel: 0.5))
         XCTAssertFalse(DevHeldItem.hat(2).isHeld(decoded(state { $0.buttons = [.dpadUp] }), minLevel: 0.5))
     }
+
+    // MARK: background, builtInEcho, mapped triggers and the hiding verdicts (remap step 2, S4)
+
+    private let viewStep: DevStep = {
+        var s = DevStep(id: "a-view", kind: .digital, controls: ["a", "sax_left"], title: "t", seconds: 6)
+        var e = DevExpect(); e.items = DevExpectedItems(buttons: ["View"]); e.background = ["a"]
+        s.expect = e
+        return s
+    }()
+    private func viewRun(_ build: (inout Rig) -> Void, entry: PadState = PadState()) -> DevJudge.Outcome {
+        var rig = Rig(entry: entry)
+        build(&rig)
+        return run(viewStep, expected: DevExpectedItems(buttons: ["View"]), entry: entry, rig: rig, background: [.a])
+    }
+    private func run(_ step: DevStep, expected: DevExpectedItems, entry: PadState? = PadState(), rig: Rig, background: Set<PadItem>,
+                     builtInEcho: Bool = false, hiding: DevJudge.HidingEvidence? = nil) -> DevJudge.Outcome {
+        let input = DevJudge.Input(step: step, expected: expected, entryState: entry.map(decoded), reports: rig.reports,
+                                   windowStartNs: Rig.ns(0), windowEndNs: Rig.ns(5000), endNs: Rig.ns(5500), matchedCount: 1,
+                                   background: background, builtInEcho: builtInEcho, hiding: hiding)
+        return DevJudge.judge(input)
+    }
+    private var withA: PadState { state { $0.buttons = [.a] } }
+    private var withAView: PadState { state { $0.buttons = [.a, .view] } }
+
+    func testBackgroundAPassesWhenItComesUpFirstAndGoesLastOrStaysHeld() {
+        let letGoLast = viewRun { r in
+            r.set(withA, at: 50); r.set(withAView, at: 300); r.set(withA, at: 450); r.set(withAView, at: 700); r.set(withA, at: 850); r.set(PadState(), at: 1100)
+        }
+        assertPass(letGoLast)
+        XCTAssertTrue(letGoLast.metrics.detail.hasPrefix("A held throughout"), letGoLast.metrics.detail)
+        // still held at the end of the window: the window may end first
+        assertPass(viewRun { r in
+            r.set(withA, at: 50); r.set(withAView, at: 300); r.set(withA, at: 450); r.set(withAView, at: 700); r.set(withA, at: 850)
+        })
+        // already set at the start of the window with no rise
+        assertPass(viewRun({ r in r.set(withAView, at: 300); r.set(withA, at: 450); r.set(withAView, at: 700); r.set(withA, at: 850) }, entry: withA))
+    }
+
+    func testBackgroundAFailsWhenItDropsOrComesBackOrComesUpLate() {
+        assertFail(viewRun { r in   // A drops between the two View presses
+            r.set(withA, at: 50); r.set(withAView, at: 300); r.set(state { $0.buttons = [.view] }, at: 400); r.set(PadState(), at: 450)
+            r.set(withAView, at: 700); r.set(withA, at: 850); r.set(PadState(), at: 1100)
+        }, containing: "A dropped while View was being pressed (fell 1 time before the last View release)")
+        assertFail(viewRun { r in   // A drops and comes back inside one View press
+            r.set(withA, at: 50); r.set(withAView, at: 300); r.set(state { $0.buttons = [.view] }, at: 330); r.set(withAView, at: 360)
+            r.set(withA, at: 450); r.set(withAView, at: 700); r.set(withA, at: 850); r.set(PadState(), at: 1100)
+        }, containing: "A dropped while View was being pressed")
+        assertFail(viewRun { r in   // A comes up after the first View
+            r.set(state { $0.buttons = [.view] }, at: 300); r.set(withAView, at: 350); r.set(withA, at: 450)
+            r.set(withAView, at: 700); r.set(withA, at: 850); r.set(PadState(), at: 1100)
+        }, containing: "A came up after View")
+        assertFail(viewRun { r in   // never held at all
+            r.set(state { $0.buttons = [.view] }, at: 300); r.set(PadState(), at: 450); r.set(state { $0.buttons = [.view] }, at: 700); r.set(PadState(), at: 850)
+        }, containing: "A went down 0 times (needs 1)")
+    }
+
+    func testBuiltInEchoPassesOnAnyOneItemAndFailsOnZeroOrTwo() {
+        let step = DevStep(id: "p", kind: .digital, controls: ["paddle_inner_right"], title: "t", seconds: 6)
+        func go(_ build: (inout Rig) -> Void) -> DevJudge.Outcome {
+            var rig = Rig(); build(&rig)
+            return run(step, expected: DevExpectedItems(), rig: rig, background: [], builtInEcho: true)
+        }
+        let down = state { $0.buttons = [.dpadDown] }
+        let o = go { $0.set(down, at: 100); $0.set(PadState(), at: 250); $0.set(down, at: 500); $0.set(PadState(), at: 650) }
+        assertPass(o)
+        XCTAssertTrue(o.metrics.detail.hasPrefix("Saw D-pad down on each press"), o.metrics.detail)
+        // whichever the profile gives
+        assertPass(go { $0.set(state { $0.buttons = [.a] }, at: 100); $0.set(PadState(), at: 250); $0.set(state { $0.buttons = [.a] }, at: 500); $0.set(PadState(), at: 650) })
+        // two items in one press, or another item on the second press
+        assertFail(go { $0.set(state { $0.buttons = [.a, .dpadDown] }, at: 100); $0.set(PadState(), at: 250); $0.set(down, at: 500); $0.set(PadState(), at: 650) }, containing: "needs exactly one")
+        assertFail(go { $0.set(down, at: 100); $0.set(PadState(), at: 250); $0.set(state { $0.buttons = [.a] }, at: 500); $0.set(PadState(), at: 650) }, containing: "different items")
+        assertFail(go { $0.set(down, at: 100); $0.set(PadState(), at: 250) }, containing: "only 1 press showed an item (needs 2)")
+        // a trigger pull counts as an item
+        assertPass(go { $0.set(state { $0.lt = 1 }, at: 100); $0.set(PadState(), at: 250); $0.set(state { $0.lt = 1 }, at: 500); $0.set(PadState(), at: 650) })
+        // nothing at all: cannot judge, not a failure
+        let none = go { _ in }
+        XCTAssertEqual(none.verdict, .inconclusive("cannot judge: the controller sent no button for this key"))
+        XCTAssertEqual(none.verdict.label, "Cannot judge")
+    }
+
+    func testDigitalStepWithATriggerExpectsOneFullPullPerPressAndTheOtherStill() {
+        let step = DevStep(id: "g1", kind: .digital, controls: ["g1"], title: "t", seconds: 6)
+        func go(_ build: (inout Rig) -> Void) -> DevJudge.Outcome {
+            var rig = Rig(); build(&rig)
+            return run(step, expected: DevExpectedItems(lt: true), rig: rig, background: [])
+        }
+        let full = state { $0.lt = 1 }
+        assertPass(go { $0.set(full, at: 100); $0.set(PadState(), at: 250); $0.set(full, at: 500); $0.set(PadState(), at: 650) })
+        assertFail(go { $0.set(full, at: 100); $0.set(PadState(), at: 250) }, containing: "LT was pulled to 0.90 and released 1 times (needs 2)")
+        assertFail(go { $0.set(state { $0.lt = 0.5 }, at: 100); $0.set(PadState(), at: 250); $0.set(state { $0.lt = 0.5 }, at: 500); $0.set(PadState(), at: 650) }, containing: "LT only reached 0.50")
+        assertFail(go { $0.set(state { $0.lt = 1; $0.rt = 0.4 }, at: 100); $0.set(PadState(), at: 250); $0.set(full, at: 500); $0.set(PadState(), at: 650) },
+                   containing: "RT moved although only LT was expected (reached 0.40)")
+    }
+
+    func testTriggerStepJudgesTheMappedTriggerAndFailsAButtonChange() {
+        let step = DevStep(id: "lt", kind: .trigger, controls: ["lt"], title: "t", seconds: 6, releaseSeconds: 0.5)
+        func go(_ expected: DevExpectedItems, _ build: (inout Rig) -> Void) -> DevJudge.Outcome {
+            var rig = Rig(); build(&rig)
+            return run(step, expected: expected, rig: rig, background: [])
+        }
+        let rt = state { $0.rt = 1 }
+        assertPass(go(DevExpectedItems(rt: true)) { $0.set(rt, at: 100); $0.set(PadState(), at: 250); $0.set(rt, at: 500); $0.set(PadState(), at: 650) })
+        assertFail(go(DevExpectedItems(rt: true)) { $0.set(state { $0.lt = 1 }, at: 100); $0.set(PadState(), at: 250); $0.set(rt, at: 500); $0.set(PadState(), at: 650) }, containing: "LT moved although only RT was expected")
+        assertFail(go(DevExpectedItems(rt: true)) { $0.set(state { $0.rt = 1; $0.buttons = [.b] }, at: 100); $0.set(PadState(), at: 250); $0.set(rt, at: 500); $0.set(PadState(), at: 650) }, containing: "unexpected change on B")
+        // LT sent to a button: the pull presses the button as often
+        let a = state { $0.buttons = [.a] }
+        assertPass(go(DevExpectedItems(buttons: ["A"])) { $0.set(a, at: 100); $0.set(PadState(), at: 250); $0.set(a, at: 500); $0.set(PadState(), at: 650) })
+        // nothing worked out: the control's own trigger, as before (a step judged without a mapping)
+        let own = state { $0.lt = 1 }
+        assertPass(go(DevExpectedItems()) { $0.set(own, at: 100); $0.set(PadState(), at: 250) })
+    }
+
+    func testHeldStepFailsAButtonTheStepDidNotAskFor() {
+        var rig = Rig()
+        rig.set(state { $0.rt = 1 }, at: 100)
+        rig.set(state { $0.rt = 1; $0.buttons = [.b] }, at: 2000)
+        rig.set(state { $0.rt = 1 }, at: 2100)
+        var step = DevStep(id: "h", kind: .held, controls: ["rt"], title: "t", seconds: 4)
+        var e = DevExpect(); e.item = "RT"; step.expect = e
+        let o = run(step, expected: DevExpectedItems(), rig: rig, windowMs: 4000, releaseMs: 0)
+        assertFail(o, containing: "unexpected change on B")
+    }
+
+    // The hiding verdict. Reports are (n, items); a hold is a press of a remapped key.
+
+    private func hold(_ key: String = "paddle_outer_right", press: Int, release: Int?, code: UInt8, found: DevJudge.HidingEvidence.Found = .seen,
+                      recovered: UInt16 = 0) -> DevJudge.HidingEvidence.Hold {
+        .init(control: key, pressN: press, releaseN: release, code: code, found: found, recovered: recovered)
+    }
+    private let right: UInt16 = 1 << 11, left: UInt16 = 1 << 13, up: UInt16 = 1 << 10, buttonA: UInt16 = 1
+    private func evidence(_ holds: [DevJudge.HidingEvidence.Hold], _ reports: [(Int, UInt16)], keys: [String] = ["paddle_outer_right"]) -> DevJudge.HidingEvidence {
+        .init(keys: keys, holds: holds, reports: reports.map { .init(n: $0.0, items: $0.1) })
+    }
+
+    func testTheHidingVerdictIsConclusiveWhenTheItemReachedTheReceiverAndNotTheExpectedOnes() {
+        let h = DevJudge.judgeHiding(evidence([hold(press: 10, release: 20, code: 12)], [(5, 0), (10, right), (20, 0)]),
+                                     expected: [.rs], background: [])
+        XCTAssertEqual(h?.conclusive, true)
+        XCTAssertEqual(h?.line, "controller's own button hidden: pass (D-pad right seen on the receiver, never on the pad)")
+        XCTAssertEqual(h?.presses.first?.result, "hidden")
+    }
+
+    func testCannotJudgeWhenTheItemIsThePickABackgroundItemOrThePressedButton() {
+        for (expected, background) in [(Set([PadItem.dpadRight]), Set<PadItem>()), ([], [.dpadRight]), ([.dpadRight, .a], [.rs])] as [(Set<PadItem>, Set<PadItem>)] {
+            let h = DevJudge.judgeHiding(evidence([hold(press: 10, release: 20, code: 12)], [(10, right), (20, 0)]), expected: expected, background: background)
+            XCTAssertEqual(h?.conclusive, false)
+            XCTAssertEqual(h?.line, "controller's own button hidden: cannot judge: the controller's current profile sends D-pad right for this key")
+        }
+        // the pick equals the item: "A" for SAX left with A held
+        let a = DevJudge.judgeHiding(evidence([hold("sax_left", press: 10, release: 20, code: 1)], [(10, buttonA), (20, 0)], keys: ["sax_left"]), expected: [.view], background: [.a])
+        XCTAssertEqual(a?.line, "controller's own button hidden: cannot judge: the controller's current profile sends A for this key")
+    }
+
+    func testCannotJudgeWhenThePressWasNotSeenEvenIfTheItemShowsLater() {
+        let h = DevJudge.judgeHiding(evidence([hold(press: 10, release: 20, code: 12, found: .unconfirmed)], [(10, right), (20, 0)]), expected: [.rs], background: [])
+        XCTAssertEqual(h?.line, "controller's own button hidden: cannot judge: the controller's button for this key was not seen at its press (it sent none or several)")
+        XCTAssertEqual(h?.presses.first?.found, "unconfirmed")
+    }
+
+    func testNotExercisedWhenTheControllerNeverSentTheItemDuringTheHold() {
+        // Row 11's D-pad-left-held frames: the hat reads left, then neutral with the paddle's bit; D-pad right never comes.
+        let h = DevJudge.judgeHiding(evidence([hold(press: 258, release: 300, code: 12)], [(257, left), (258, 0), (300, left), (320, 0)]), expected: [.rs], background: [.dpadLeft])
+        XCTAssertEqual(h?.conclusive, false)
+        XCTAssertEqual(h?.line, "controller's own button hidden: not exercised (the controller sent no D-pad right during the hold)")
+        // a diagonal counts: up and right together is a report with the right direction set
+        let diag = DevJudge.judgeHiding(evidence([hold(press: 10, release: 20, code: 12)], [(10, up | right), (20, 0)]), expected: [.dpadUp], background: [.rs])
+        XCTAssertEqual(diag?.conclusive, true)
+        // the item shows raw only after the other paddle of a pair is let go, still inside the hold: conclusive
+        let late = DevJudge.judgeHiding(evidence([hold(press: 100, release: 200, code: 14)], [(100, 0), (150, left), (200, 0)], keys: ["paddle_outer_right"]), expected: [.rs], background: [])
+        XCTAssertEqual(late?.conclusive, true)
+        // after the release it does not count
+        let after = DevJudge.judgeHiding(evidence([hold(press: 100, release: 200, code: 12)], [(100, 0), (200, right)]), expected: [.rs], background: [])
+        XCTAssertEqual(after?.conclusive, false)
+        // an item already on before the press and still on counts
+        let before = DevJudge.judgeHiding(evidence([hold(press: 100, release: 200, code: 12, found: .confirmed)], [(50, right), (200, 0)]), expected: [.rs], background: [])
+        XCTAssertEqual(before?.conclusive, true)
+    }
+
+    func testOneConclusivePressMakesAKeyConclusiveAndEachKeyCountsOnItsOwn() {
+        let ev = evidence([hold(press: 10, release: 20, code: 12, found: .unconfirmed), hold(press: 30, release: 40, code: 12)], [(10, right), (20, 0), (30, right), (40, 0)])
+        XCTAssertEqual(DevJudge.judgeHiding(ev, expected: [.rs], background: [])?.conclusive, true)
+        let two = evidence([hold("paddle_outer_right", press: 10, release: 20, code: 12), hold("paddle_outer_left", press: 10, release: 20, code: 14, found: .unconfirmed)],
+                           [(10, right | left), (20, 0)], keys: ["paddle_outer_right", "paddle_outer_left"])
+        let h = DevJudge.judgeHiding(two, expected: [.rs, .ls], background: [])
+        XCTAssertEqual(h?.conclusive, false)
+        XCTAssertTrue(h?.line.contains("Paddle outer left: cannot judge: the controller's button for this key was not seen") ?? false, h?.line ?? "")
+        let bothOK = evidence([hold("paddle_outer_right", press: 10, release: 20, code: 12), hold("paddle_outer_left", press: 10, release: 20, code: 14)],
+                              [(10, right | left), (20, 0)], keys: ["paddle_outer_right", "paddle_outer_left"])
+        XCTAssertEqual(DevJudge.judgeHiding(bothOK, expected: [.rs, .ls], background: [])?.line,
+                       "controller's own button hidden: pass (D-pad right and D-pad left seen on the receiver, never on the pad)")
+        XCTAssertNil(DevJudge.judgeHiding(evidence([], []), expected: [], background: []), "no press of a remapped key, no claim")
+    }
 }

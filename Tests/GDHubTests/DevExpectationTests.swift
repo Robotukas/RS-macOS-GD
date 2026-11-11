@@ -17,12 +17,97 @@ final class DevExpectationTests: XCTestCase {
             ("view", .init(buttons: ["View"])), ("menu", .init(buttons: ["Menu"])),
             ("start", .init(guide: true)),
             ("dpad_up", .init(hat: "N")), ("dpad_right", .init(hat: "E")), ("dpad_down", .init(hat: "S")), ("dpad_left", .init(hat: "W")),
-            ("paddle_outer_left", .init(hat: "W")), ("paddle_inner_left", .init(hat: "N")),
-            ("paddle_inner_right", .init(hat: "S")), ("paddle_outer_right", .init(hat: "E")),
-            ("sax_left", .init(buttons: ["A"])), ("sax_right", .init(buttons: ["B"])),
             ("g1", .init()), ("g2", .init()), ("g3", .init()), ("g4", .init()), ("g5", .init()), ("profile", .init()),
         ]
         for (id, want) in table { XCTAssertEqual(expected(id), want, id) }
+    }
+
+    /// The six keys on Controller's profile expect whatever the profile gives, which the Mac cannot know: no fixed
+    /// expectation, the `builtInEcho` rule in every template (rows 1 and 4 press Profile).
+    func testAnUntouchedPaddleOrSAXKeyTakesTheBuiltInEchoRule() {
+        for id in ControlMapping.echoKeyIDs {
+            XCTAssertTrue(expected(id).isEmpty, id)
+            XCTAssertTrue(DevExpectation.isBuiltInEcho(id, mapping: mapping), id)
+            XCTAssertNil(DevExpectation.linkedOutputControl(for: id, mapping: mapping, layout: layout), id)
+            // rows 1 and 4 write no expectation for the step: it takes the rule by itself
+            let step = DevStep(id: id, kind: .digital, controls: [id], title: "t")
+            XCTAssertTrue(DevExpectation.usesBuiltInEcho(step: step, mapping: mapping), id)
+        }
+        XCTAssertFalse(DevExpectation.isBuiltInEcho("g2", mapping: mapping), "G2 keeps its own built-in function")
+        var explicit = DevStep(id: "s", kind: .digital, controls: ["a"], title: "t")
+        XCTAssertFalse(DevExpectation.usesBuiltInEcho(step: explicit, mapping: mapping))
+        var e = DevExpect(); e.builtInEcho = true
+        explicit.expect = e
+        XCTAssertTrue(DevExpectation.usesBuiltInEcho(step: explicit, mapping: mapping), "the template can ask for it")
+        // a template that writes its own expectation for a paddle keeps it
+        var written = DevStep(id: "w", kind: .digital, controls: ["paddle_outer_left"], title: "t")
+        var we = DevExpect(); we.items = DevExpectedItems(hat: "W")
+        written.expect = we
+        XCTAssertFalse(DevExpectation.usesBuiltInEcho(step: written, mapping: mapping))
+    }
+
+    /// A remapped key expects its pick whatever echo is stored: its press is its identity bits alone.
+    func testARemappedPaddleExpectsItsPickWhateverEchoIsStored() {
+        var m = mapping
+        m.setOutput(.pad(.y), for: "paddle_outer_right")
+        XCTAssertEqual(expected("paddle_outer_right", m), DevExpectedItems(buttons: ["Y"]))
+        XCTAssertEqual(DevExpectation.pressedFrame(for: "paddle_outer_right", mapping: m)?.extra, 1, "only the identity bit")
+        XCTAssertEqual(DevExpectation.pressedFrame(for: "paddle_outer_right", mapping: m)?.hat, GamepadFrame.idle.hat, "not the stored D-pad right")
+        // stored as a button, as nothing, or with no stored bits at all: the same pick
+        var odd = m
+        odd.buttons["paddle_outer_right"] = .button(1)
+        odd.physicalBits["paddle_outer_right"] = nil
+        XCTAssertEqual(expected("paddle_outer_right", odd), DevExpectedItems(buttons: ["Y"]))
+        odd.buttons["paddle_outer_right"] = nil
+        XCTAssertEqual(expected("paddle_outer_right", odd), DevExpectedItems(buttons: ["Y"]))
+        // a paddle stored as hat 2 and remapped to Y expects {Y}, a SAX key sent to Nothing expects nothing
+        var nothing = mapping
+        nothing.setOutput(.nothing, for: "sax_left")
+        XCTAssertTrue(expected("sax_left", nothing).isEmpty)
+        XCTAssertFalse(DevExpectation.isBuiltInEcho("sax_left", mapping: nothing))
+        XCTAssertTrue(DevExpectation.isHiddenKey("sax_left", mapping: nothing))
+        XCTAssertEqual(DevExpectation.linkedOutputControl(for: "paddle_outer_right", mapping: m, layout: layout), "y")
+    }
+
+    func testTriggersAreWorkedOutFromTheMapping() {
+        func triggers(_ id: String, _ m: ControlMapping) -> [Bool] {
+            let t = DevExpectation.expectedTriggers(for: id, mapping: m, layout: layout)
+            return [t.lt, t.rt]
+        }
+        XCTAssertEqual(triggers("lt", mapping), [true, false])
+        XCTAssertEqual(triggers("rt", mapping), [false, true])
+        XCTAssertEqual(triggers("a", mapping), [false, false])
+        var m = mapping
+        m.setOutput(.pad(.rt), for: "lt")
+        XCTAssertEqual(triggers("lt", m), [false, true], "LT sent to RT pulls RT")
+        XCTAssertEqual(triggers("rt", m), [false, true], "RT still sends RT")
+        m.setOutput(.pad(.lt), for: "g1")
+        XCTAssertEqual(triggers("g1", m), [true, false])
+        m.setOutput(.pad(.lt), for: "paddle_outer_right")
+        XCTAssertEqual(triggers("paddle_outer_right", m), [true, false], "a paddle sent to a trigger pulls it by its identity bit")
+        // the step's expectation: one full pull per press, the other trigger still
+        let step = DevStep(id: "lt", kind: .trigger, controls: ["lt"], title: "t")
+        let want = DevExpectation.resolve(step: step, mapping: m, layout: layout)
+        XCTAssertEqual(want, DevExpectedItems(rt: true))
+        XCTAssertEqual(want.summary, "RT, LT still")
+        XCTAssertEqual(DevExpectation.linkedOutputControls(for: want), ["rt"])
+        XCTAssertEqual(DevExpectation.heldTargets(step: DevStep(id: "h", kind: .held, controls: ["lt"], title: "t"), expected: want), [.trigger(.right)])
+        // LT sent to a button: the trigger step expects the button
+        var toA = mapping
+        toA.setOutput(.pad(.a), for: "lt")
+        XCTAssertEqual(DevExpectation.resolve(step: step, mapping: toA, layout: layout), DevExpectedItems(buttons: ["A"]))
+        // the old expectation did not know about triggers: an items-only expectation is the same for the digital rule
+        XCTAssertEqual(DevExpectedItems(buttons: ["A"]).summary, "A")
+    }
+
+    func testBackgroundControlsAreHeldNotExpected() {
+        var m = mapping
+        m.setOutput(.pad(.r3), for: "paddle_outer_right")
+        var step = DevStep(id: "s", kind: .digital, controls: ["paddle_outer_right", "dpad_up"], title: "t")
+        var e = DevExpect(); e.background = ["paddle_outer_right"]
+        step.expect = e
+        XCTAssertEqual(DevExpectation.resolve(step: step, mapping: m, layout: layout), DevExpectedItems(hat: "N"))
+        XCTAssertEqual(DevExpectation.backgroundItems(step: step, mapping: m, layout: layout), [.rs])
     }
 
     func testSticksAndTriggersAreNotDigital() {
@@ -96,10 +181,8 @@ final class DevExpectationTests: XCTestCase {
 
     func testLinkedOutputControl() {
         func linked(_ id: String) -> String? { DevExpectation.linkedOutputControl(for: id, mapping: mapping, layout: layout) }
-        XCTAssertEqual(linked("paddle_outer_left"), "dpad_left")
-        XCTAssertEqual(linked("paddle_inner_right"), "dpad_down")
-        XCTAssertEqual(linked("sax_left"), "a")
-        XCTAssertEqual(linked("sax_right"), "b")
+        XCTAssertNil(linked("paddle_outer_left"), "the profile decides what a paddle on Controller's profile shows")
+        XCTAssertNil(linked("sax_left"))
         XCTAssertEqual(linked("a"), "a")
         XCTAssertEqual(linked("l3"), "l3")
         XCTAssertEqual(linked("dpad_up"), "dpad_up")

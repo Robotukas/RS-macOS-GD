@@ -1,0 +1,266 @@
+{
+  "id" : "remap-triggers",
+  "notes" : "Picks: G1 → LT, LT → RT (RT still sends RT), X → A, G5 → A. Do not press Profile. Afterwards: Mapping → Reset all remaps. Use it after changing anything that sends a button to a trigger, moves a trigger, or sends several controls to one pad button. A button sent to LT pulls it all the way each time, a trigger sent to the other trigger pulls that one and leaves its own still, and three controls on A (X, G5 and A itself) each show A, the last one let go ends it. The expectations are written out in the template on purpose, so it does not check the mapper against itself. Runs on the App path and then on Driver LIVE; a driver build that cannot take the mapping stands down for the Driver pass (press Stop at that question).",
+  "paths" : [
+    "engine",
+    "driver"
+  ],
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+
+      ],
+      "detail" : "Put the controller down and let go of every stick, trigger and button. The pad has to stay completely still.",
+      "id" : "rest",
+      "kind" : "rest",
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 3,
+      "title" : "Hands off everything"
+    },
+    {
+      "controls" : [
+        "g1"
+      ],
+      "detail" : "Press G1, let go, press it again, let go. G1 now sends LT: the pad must show a full LT pull each time, and its RT must stay still.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false,
+          "lt" : true
+        },
+        "times" : 2
+      },
+      "id" : "g1",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press G1 twice"
+    },
+    {
+      "controls" : [
+        "lt"
+      ],
+      "detail" : "Pull LT all the way, let go, pull it again, let go. LT now sends RT: the pad must show RT, and its LT must stay still.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false,
+          "rt" : true
+        },
+        "times" : 2
+      },
+      "id" : "lt",
+      "kind" : "trigger",
+      "releaseSeconds" : 0.5,
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 8,
+      "title" : "Pull LT fully twice"
+    },
+    {
+      "controls" : [
+        "rt"
+      ],
+      "detail" : "Pull RT all the way, let go, pull it again, let go. RT still sends RT, and the pad's LT must stay still.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false,
+          "rt" : true
+        },
+        "times" : 2
+      },
+      "id" : "rt",
+      "kind" : "trigger",
+      "releaseSeconds" : 0.5,
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 8,
+      "title" : "Pull RT fully twice"
+    },
+    {
+      "controls" : [
+        "x"
+      ],
+      "detail" : "Press X, let go, press it again, let go. X now sends A: the pad shows A.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "A"
+          ],
+          "guide" : false
+        },
+        "times" : 2
+      },
+      "id" : "x",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press X twice"
+    },
+    {
+      "controls" : [
+        "g5"
+      ],
+      "detail" : "Press G5, let go, press it again, let go. G5 now sends A: the pad shows A.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "A"
+          ],
+          "guide" : false
+        },
+        "times" : 2
+      },
+      "id" : "g5",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press G5 twice"
+    },
+    {
+      "controls" : [
+        "a"
+      ],
+      "detail" : "Press A, let go, press it again, let go. A still sends A.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "A"
+          ],
+          "guide" : false
+        },
+        "times" : 2
+      },
+      "id" : "a",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press A twice"
+    },
+    {
+      "controls" : [
+        "x",
+        "g5"
+      ],
+      "detail" : "Press and hold X: A shows on the pad. While it is held, also press and hold G5. Then let go of X and keep holding G5 until the screen says \"Let go now\". A must stay down the whole time.",
+      "expect" : {
+        "item" : "A",
+        "releases" : [
+          "x"
+        ]
+      },
+      "id" : "hold-x-then-g5",
+      "kind" : "held",
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 8,
+      "title" : "Hold X until A shows, then add G5, then let go of X"
+    },
+    {
+      "controls" : [
+        "lt",
+        "rt"
+      ],
+      "detail" : "Pull LT and RT all the way down together. Then let go of LT and keep RT pulled until the screen says \"Let go now\". The pad's RT must stay down the whole time.",
+      "expect" : {
+        "item" : "RT",
+        "releases" : [
+          "lt"
+        ]
+      },
+      "id" : "pull-lt-rt-let-go-lt",
+      "kind" : "held",
+      "requires" : {
+        "mapping" : {
+          "a" : "a",
+          "g1" : "lt",
+          "g5" : "a",
+          "lt" : "rt",
+          "rt" : "rt",
+          "x" : "a"
+        }
+      },
+      "seconds" : 8,
+      "title" : "Pull LT and RT together, let go of LT"
+    }
+  ],
+  "title" : "Remap check: triggers and three sources (App, then Driver)",
+  "version" : 1
+}

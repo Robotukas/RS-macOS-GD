@@ -36,6 +36,16 @@ enum PadItem: Int, CaseIterable, Codable, Comparable {
         }
     }
 
+    /// The owner's word for the item, which is the label of its control: the stick clicks are L3 and R3 (`name` keeps the
+    /// template and report spelling, LS and RS).
+    var ownerName: String {
+        switch self {
+        case .ls: return "L3"
+        case .rs: return "R3"
+        default: return name
+        }
+    }
+
     init?(name: String) {
         guard let item = PadItem.allCases.first(where: { $0.name == name }) else { return nil }
         self = item

@@ -21,7 +21,12 @@ enum DevRecorder {
         return mapping.isActive(control, frame)
     }
 
-    /// "Recorded 212 receiver reports in 8.4 s; nothing was judged."
+    /// What the table's Seen column says of a record step: "receiver frames kept: 212".
+    static func kept(frames: Int, dropped: Int) -> String {
+        "receiver frames kept: \(frames)" + (dropped > 0 ? " (\(dropped) more did not fit and were left out)" : "")
+    }
+
+    /// "Recorded 212 receiver reports in 8.4 s; nothing was judged." (the tooltip of the word "recorded")
     static func summary(frames: Int, dropped: Int, seconds: Double) -> String {
         var s = "Recorded \(frames) receiver report\(frames == 1 ? "" : "s") that changed, over \(String(format: "%.1f", seconds)) s; nothing was judged."
         if dropped > 0 { s += " \(dropped) more did not fit and were left out." }

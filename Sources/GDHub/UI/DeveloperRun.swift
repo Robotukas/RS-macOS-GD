@@ -31,9 +31,10 @@ extension DevVerdict {
         case .pass: return "Pass"
         case .fail: return "Fail"
         case .skipped: return "Skipped"
-        case .inconclusive: return "Inconclusive"
+        case .inconclusive(let why): return why.hasPrefix("cannot judge:") ? "Cannot judge" : "Inconclusive"
         case .invalid: return "Invalid"
-        case .recorded: return "Recorded"
+        // Lower case and grey: a step that records the receiver judges nothing (mockup v7).
+        case .recorded: return "recorded"
         }
     }
 }
@@ -47,7 +48,7 @@ extension DevChip.Status {
         case .failed: return "✗ "
         case .skipped: return "– "
         case .inconclusive: return "? "
-        case .recorded: return "○ "
+        case .recorded: return ""
         }
     }
 
@@ -291,18 +292,29 @@ struct DevChips: View {
                     }
                     // One line that scrolls sideways (the owner's rule, 2026-11-11: no block of step names above the
                     // controller). A chip is the step's number; its name is the tooltip and the table's Step column.
-                    ScrollViewReader { proxy in
-                        ScrollView(.horizontal, showsIndicators: true) {
-                            HStack(spacing: 4) {
-                                ForEach(row.chips) { chip in
-                                    chipView(chip, pass: row.pass, canRerun: canRerun && chip.status.canRerun)
-                                        .id(chip.index)
+                    if let words = row.standDown {
+                        // A pass the driver cannot take is not run: one grey chip in place of the steps.
+                        Text("stood down")
+                            .font(.caption)
+                            .padding(.horizontal, 8).padding(.vertical, 1)
+                            .foregroundStyle(DevPalette.skipped)
+                            .background(DevPalette.skipped.opacity(0.18), in: Capsule())
+                            .overlay(Capsule().stroke(DevPalette.skipped.opacity(0.5), lineWidth: 1))
+                            .help(words)
+                    } else {
+                        ScrollViewReader { proxy in
+                            ScrollView(.horizontal, showsIndicators: true) {
+                                HStack(spacing: 4) {
+                                    ForEach(row.chips) { chip in
+                                        chipView(chip, pass: row.pass, canRerun: canRerun && chip.status.canRerun)
+                                            .id(chip.index)
+                                    }
                                 }
+                                .padding(.bottom, 9)                 // room for the scroll bar under the chips
                             }
-                            .padding(.bottom, 9)                 // room for the scroll bar under the chips
-                        }
-                        .onChange(of: row.chips.first(where: { $0.status == .current })?.index) { current in
-                            if let current { withAnimation { proxy.scrollTo(current, anchor: .center) } }
+                            .onChange(of: row.chips.first(where: { $0.status == .current })?.index) { current in
+                                if let current { withAnimation { proxy.scrollTo(current, anchor: .center) } }
+                            }
                         }
                     }
                 }
@@ -312,7 +324,8 @@ struct DevChips: View {
     }
 
     @ViewBuilder private func chipView(_ chip: DevChip, pass: Int, canRerun: Bool) -> some View {
-        let color = DevPalette.color(for: chip.status)
+        // A pass that proves less than it claims (the hiding check could not judge) is amber.
+        let color = chip.caveat ? DevPalette.inconclusive : DevPalette.color(for: chip.status)
         let label = Text(DevChips.label(chip))
             .font(.caption.monospacedDigit())
             .padding(.horizontal, 6).padding(.vertical, 1)
@@ -324,7 +337,7 @@ struct DevChips: View {
                 .buttonStyle(.plain)
                 .help("Run \(chip.index + 1). \(chip.title) again")
         } else {
-            label.help("\(chip.index + 1). \(chip.title)")
+            label.help("\(chip.index + 1). \(chip.title)" + (chip.caveat ? " (passed; the hiding of the controller's own button could not be judged)" : ""))
         }
     }
 
@@ -351,7 +364,7 @@ struct DevResultTable: View {
                     Text(r.verdict?.label ?? "–")
                         .fontWeight(.semibold)
                         .foregroundStyle(DevPalette.color(for: r.verdict))
-                        .help(r.verdict?.reason ?? "")
+                        .help(r.help)
                 }.width(min: 72, ideal: 90)
             }
             .frame(height: min(CGFloat(session.rows.count) * 28 + 34, 230))

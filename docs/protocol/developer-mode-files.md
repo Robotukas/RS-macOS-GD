@@ -59,7 +59,10 @@ empty means "nothing on the pad"), `times` (2) and `volume` (absent; `"unchanged
 checks" below); held `item` (`RT`, `LT`, a button name such as `A`, `D-pad left`,
 or a hat direction `N`…`NW`; absent = derived from the control), `minLevel` (0.5, the trigger value that counts as
 held) and `releases` (absent; a list of the step's own controls that must be let go while the item stays held, see "Held
-steps" below); record `rises` (absent; how many presses in all the step asks for, see "Recording the receiver" below).
+steps" below); record `rises` (absent; how many presses in all the step asks for, see "Recording the receiver" below);
+digital `builtInEcho` and digital, trigger and held `background` (see "Paddles, SAX keys and the hiding check" below).
+`items` may also carry `lt` and `rt` (`true` = the pad's trigger that the step pulls all the way, the other one staying
+still; left out of the file when false).
 
 - `times` (digital) is how many times every expected item must go down and up ("Tap A 10 times" = 10). On a trigger
   step it is the number of **full pulls**: the pad's value reaches `peak` and is then released to `release` or less,
@@ -78,26 +81,34 @@ value from a closed, lowercase vocabulary:
 
 - a pad output: `a b x y lb rb lt rt view menu l3 r3 guide dpad_up dpad_right dpad_down dpad_left` (`"g1": "y"`);
 - `nothing` (`"g2": "nothing"`: the control sends nothing, and for G2–G4 that also means the volume function is off);
-- `built_in` (`"g4": "built_in"`: the control keeps its own function; valid only for `g2`, `g3` and `g4`).
+- `built_in` (`"g4": "built_in"`: the control keeps its own function; valid for `g2`, `g3`, `g4` and the six paddle and SAX
+  keys, where it is "Controller's profile": the button the controller's own profile gives the key).
 
 The controls are the remappable ones (a b x y lb rb lt rt view menu l3 r3, the four D-pad directions, start, profile,
 g1–g5). Learned bindings are not compared. A miss skips the step in the owner's words: `needs G1 → Y: set it in Mapping`,
-`needs G2 → Nothing: set it in Mapping`, `needs G4 left at its built-in function: Reset it in Mapping` (`Reset it` when
-the wanted output is the control's factory one).
+`needs G2 → Nothing: set it in Mapping`, `needs G4 left at its built-in function: Reset it in Mapping`, `needs Paddle inner right on Controller's profile: Reset it in
+Mapping` (`Reset it` when the wanted output is the control's factory one).
 
 Start is blocked when **every** step of the selected template would be skipped for an unmet `requires.mapping`: the bar
 says `Needs G1 → Y: set it in Mapping first (leave Developer mode, press Mapping, pick, Done)` (several needs are joined
-with `; `, each in the owner's words: `G2 → Nothing`, `G4 at its built-in function`). When only some steps are unmet the
-run starts and those steps are recorded as skipped with their reason. The runner never sets a mapping itself. When a
-Driver pass cannot be confirmed because the driver cannot express the current mapping, the "Run anyway" question reads
-`Driver pass cannot be confirmed: <the engine's mapping note>. Reset that remap first.`
+with `; `, each in the owner's words: `G2 → Nothing`, `G4 at its built-in function`, `Paddle inner right on Controller's profile`). When only some steps are unmet the
+run starts and those steps are recorded as skipped with their reason. The runner never sets a mapping itself.
 
-Developer mode under remaps: a digital or held step expects what the virtual pad shows for the control **under the
-current mapping** (G1 sent to Y expects Y; A and B swapped, A expects B). Trigger remaps are not judged yet: a trigger or
-held step on a remapped `lt` / `rt` is recorded `skipped` ("LT is remapped to A; trigger remaps are checked after the
-next driver update"), and so is a digital or held step on a control that is sent to LT or RT ("a button sent to LT/RT is
-checked after the next driver update"). The window of an `lt` / `rt` step opens on the physical pull of that trigger, not
-on the pad's trigger value.
+Developer mode under remaps: a digital, trigger or held step expects what the virtual pad shows for the control **under the
+current mapping** (G1 sent to Y expects Y; A and B swapped, A expects B; LT sent to RT: a pull of LT expects RT and the
+pad's LT staying still; G1 sent to LT expects one full LT pull per press and RT still). Trigger remaps are judged: the
+step skip of step 1 ("trigger remaps are checked after the next driver update") is gone. The window of an `lt` / `rt` step
+opens on the physical pull of that trigger, not on the pad's trigger value. A trigger or held step also fails when a
+button the step did not ask for changes on the pad ("unexpected change on B"). When the pad's trigger a control is mapped
+to cannot be worked out (the expectation is empty), a trigger or held step on `lt` / `rt` judges that trigger itself, as
+before.
+
+When a Driver pass cannot be confirmed because the driver cannot express the current mapping (build 24 cannot hide a
+paddle's own button or pull a trigger from a button), the question reads `Driver pass cannot be confirmed: <the engine's
+mapping note>. Press Stop to keep the App result, or Reset that remap first.` Pressing Stop there ends the run with
+the App pass as its result: the Driver pass is **stood down** (the chip row shows a grey "stood down", the report gets
+the note `Driver pass not run: this driver version cannot take this mapping (<note>). The App pass is the result of this
+run.`, and no report is written for the pass that did not run).
 
 ### Volume checks (`expect.volume`)
 
@@ -178,11 +189,13 @@ style `<id>.json step <n>: ...`:
 - `step n: a stick step does not fit control X (a button)`
 - `step n: unknown control X in requires`
 - `step n: requires names unknown output "X" (use a pad output such as y or dpad_up, nothing, or built_in)` (values are
-  lowercase and case-sensitive) / `requires built_in for X, but only g2, g3 and g4 have a built-in function` /
-  `requires names X, which has no output that can be remapped`
+  lowercase and case-sensitive) / `requires built_in for X, but built_in is valid only for g2, g3, g4 and the paddle and SAX keys` /
+  `requires names X, which has no output that can be remapped` (`built_in` is valid for g2, g3, g4 and the six paddle and SAX keys)
 - `step n: expect names unknown button "X"` / `unknown hat direction "X"`
 - `step n: expect times T must be 1 or more` / `expect flicks F must be 1 or more` / `expect flicks only applies to stick steps`
 - `step n: expect volume "X" must be "unchanged" or "changes"` / `expect volume only applies to digital steps`
+- `step n: expect builtInEcho only applies to digital steps` / `expect builtInEcho needs exactly one control, and it must be a paddle or SAX key`
+- `step n: expect background only applies to digital, trigger and held steps` / `expect background names X, which is not one of the step's controls (the control that is held first has to be one of them, or the step never starts)`
 - `step n: expect releases only applies to held steps` / `expect releases names X, which is not one of the step's controls`
 - `step n: toggleInputPath value "X" is not engine, shadow or driver` / `toggleInputPath needs values, a count of 1 or more and an intervalMs of 1 or more`
 - warnings: `seconds S is outside 1...120, using U`, `readySeconds ...`, `releaseSeconds ...`
@@ -239,7 +252,7 @@ A complete real template is `Sources/GDHub/Resources/dev-script-full.json`.
 ### Recording the receiver (`record` steps, `recordReceiver`)
 
 Added for the paddle and SAX survey (remap step 2). A **`record`** step has no verdict: it stores what the receiver sends
-and its verdict is `recorded` (the picker and the chips say "Recorded"). A step of any kind in a template with
+and its verdict is `recorded` (the table says "recorded", in grey, and the chip is a grey number). A step of any kind in a template with
 `"recordReceiver": true` stores the same data and is judged as usual; a `record` step stores it whatever the template says.
 
 - The window opens on the first receiver report where **any** listed control is active, with today's "no movement within
@@ -267,10 +280,58 @@ gap. At most **4000** are kept per step; `receiverDropped` counts the ones left 
 (the ready phase included), so an echo that comes a report before its bit is still in the file. `scripts/tools/echo-survey.py`
 reads these files.
 
+### Paddles, SAX keys and the hiding check (remap step 2)
+
+A remapped paddle or SAX key sends only its pick; the button the controller adds for it (its **echo**) is hidden by
+`EchoFilter`. The runner steps that filter on **every receiver report of the run** (the run-long filter, with the
+mapping the run started with), so the reference, the window of a step and the hiding check all see the report the pad is
+meant to show: a step on D-pad right does not open on a hidden paddle's D-pad right, and the reference counts no echo edge.
+`record` steps and the receiver recording keep the report as the controller sent it.
+
+- **Expectations of the six keys.** A remapped one expects its pick whatever echo is stored (its press is its identity bit
+  alone). One left on Controller's profile resolves to the `builtInEcho` rule in every template.
+- `expect.builtInEcho` (digital, one control, one of the six): exactly one pad item (a button, a D-pad direction or a
+  trigger pull) comes with each press, the same item every press, whichever the profile gives; the attempt's `echoItem`
+  names it and the Seen column says `Saw D-pad down on each press (2 presses, one item per press)`. A step with no
+  `expect.items` on one of the six left on Controller's profile takes the rule without saying so (rows 1 and 4). A key for
+  which the controller sent no button reads `cannot judge: the controller sent no button for this key` (verdict
+  `inconclusive`, label "Cannot judge"), never a failure.
+- `expect.background` (control ids from the step's `controls`): controls pressed first and let go last while the others
+  are pressed ("hold A, press SAX left"). What each sends to the pad (worked out from the mapping) is left out of
+  "unexpected change", and per item B: it is not set at the window start and comes up exactly once, before the first rise of
+  every expected item, or is set there with no rise; it does not fall before the last fall of every expected item. Fail
+  messages: `A dropped while View was being pressed (fell 2 times before the last View release)`, `A came up after View`,
+  `A went down 2 times (needs 1)`. Pressing the held control first is what the step's instruction says; the early end of the
+  step counts only the presses of the other controls.
+- **The hiding verdict**, for a step with a remapped key among its controls in a template with `recordReceiver`. It does not
+  change the verdict (a leaked echo is already "unexpected change" on the pad); it says how much a pass proves. Per press the
+  attempt keeps `hiding.presses[]` = `{control, press (receiver report index), item, found, result, reason}`: `item` is what
+  the run's filter read for the key (`seen` when it came on with the press, `confirmed` when it was already on and the report
+  agreed, `other` when the press showed another item than the stored one, `unconfirmed` when neither). `result`:
+  - `cannot judge` when the press was `unconfirmed`: `the controller's button for this key was not seen at its press (it sent none or several)`;
+  - `cannot judge` when the item is what the step expects, a background item, or the button pressed during the hold: `the controller's current profile sends A for this key`;
+  - `not exercised` when the raw reports never set the item from the press report to the last report before the key was let
+    go (a direction counts on its diagonals), for example because the controller cancelled it against a held opposite
+    direction: `the controller sent no D-pad right during the hold`;
+  - `hidden` otherwise: the item reached the receiver and never the pad.
+  A key is conclusive with one `hidden` press; `hiding.conclusive` is true when every remapped key of the step is, and
+  `hiding.line` is the sentence the table shows: `controller's own button hidden: pass (D-pad right seen on the receiver,
+  never on the pad)` (with a recovered direction: `... (D-pad right was seen on the receiver before D-pad left; the pad
+  showed D-pad left while the controller sent no direction)`), `... cannot judge: ...`, `... not exercised (...)`. The line is
+  also appended to the step's `detail`. In the app a pass with a non-conclusive hiding verdict has an amber chip, and the
+  line is the tooltip of the Result cell.
+- **Echo counters** of the run's own filter, before and after each step (only when the mapping hides a key), in
+  `metrics.values`: `echo.hiddenFramesBefore/After` (receiver reports the filter changed), `echo.recoveredFramesBefore/After`
+  (a direction the pad shows and the report did not), `echo.otherBefore/After` (presses that showed another item than the
+  stored one), `echo.unconfirmedBefore/After` (presses it could not read) and `echo.validBefore/After` (1 once it has seen a
+  report). They are cumulative over the run. The Driver's own counters (`echoValid`, `echoHiddenFrames` ...) come with the
+  driver update.
+
 ### Built-in templates
 
 `full`, `sticks`, `gkeys` (generated from the layout), `paddles-sax-echo`, `remap-g1-as-y`, `remap-swap-a-b`,
-`gkeys-volume`, `t7-rt-hold-toggle`, `t8-latency` and `echo-survey` (picker row 10, appended so rows 1 to 9 keep their numbers). The bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
+`gkeys-volume`, `t7-rt-hold-toggle`, `t8-latency`, `echo-survey` (picker row 10), `remap-paddles` (row 11) and
+`remap-triggers` (row 12), appended so rows 1 to 9 keep their numbers. The bundled files are the generator's output (`DevBuiltins.generate`); a unit test fails when they drift, and
 `GDHUB_WRITE_DEV_TEMPLATES=1 swift test --filter DevTemplateTests/testWriteBundledTemplates` rewrites them.
 
 **`echo-survey`** ("Paddles and SAX: what the controller adds (survey)", no `paths`, `recordReceiver: true`, no `requires`)
@@ -281,6 +342,30 @@ twice (`outer-right-…`), A held with SAX left and SAX left held with A (`a-hel
 together twice (`together-outer`, `together-inner`, `together-sax`), then three Profile blocks (`profile-block-N`: hold
 paddle outer right, press Profile once) each followed by the six keys three times (`profile-N-<id>`). Read the run file with
 `python3 scripts/tools/echo-survey.py <run.json>`.
+
+**`remap-paddles`** ("Remap check: paddles and SAX (App, then Driver)", `paths: ["engine","driver"]`, `recordReceiver: true`,
+picker row 11). The owner's picks, in Mapping: Paddle outer right → R3, Paddle outer left → L3, Paddle inner left →
+Nothing, SAX left → View, SAX right → Menu; Paddle inner right stays on Controller's profile. Reset afterwards (`Mapping →
+Reset all remaps`). Every step carries `requires.mapping` `{"paddle_outer_right":"r3","paddle_outer_left":"l3",
+"paddle_inner_left":"nothing","sax_left":"view","sax_right":"menu","paddle_inner_right":"built_in"}` and a written-out
+expectation. 14 steps: `rest`; `outer-right`, `outer-left`, `inner-left`, `sax-left`, `sax-right` (each key ten times,
+30 s: R3, L3, nothing, View, Menu); `inner-right-profile` (`builtInEcho`); `outer-right-dpad-up`, `outer-right-dpad-left`
+(hold Paddle outer right, press the D-pad twice: D-pad up / left, R3 `background`); `dpad-left-outer-right` (hold D-pad
+left, press Paddle outer right twice: R3, D-pad left `background`); `a-held-sax-left` (View, A `background`);
+`together-outer` (both outer paddles together twice: L3 and R3, nothing else); `dpad-right` and `a` (alone). The four
+"hold" steps say "Press the held control first". With D-pad left held first the controller cancels the paddle's D-pad right
+against it, so D-pad right never reaches the receiver: that step's hiding verdict is `not exercised` and it proves the
+recovery (D-pad left never drops on the pad). With the paddle held first the controller sends no direction while D-pad left
+is down; the pad must show D-pad left (the filter's RECOVERED case). The A-held step is `cannot judge` for SAX left by
+design (its echo is the background item). On a driver build that cannot hide the controller's own button the Driver pass
+stands down at the question described under "Developer mode under remaps".
+
+**`remap-triggers`** ("Remap check: triggers and three sources (App, then Driver)", `paths: ["engine","driver"]`, picker
+row 12). Picks: G1 → LT, LT → RT (RT still sends RT), X → A, G5 → A. Every step carries `requires.mapping`
+`{"g1":"lt","lt":"rt","x":"a","g5":"a","a":"a","rt":"rt"}` (so a leftover remap of A or RT cannot change what "A twice" and
+"RT twice" test). 9 steps: `rest`; `g1` (digital, `items {lt: true}`: one full LT pull per press, RT still); `lt` (trigger,
+`items {rt: true}`: RT, LT still); `rt` (trigger, RT); `x`, `g5`, `a` (digital, A); `hold-x-then-g5` (held, `item` A,
+`releases ["x"]`); `pull-lt-rt-let-go-lt` (held, `item` RT, `releases ["lt"]`).
 
 **`remap-g1-as-y`** ("Remap check: G1 sent to Y (App, then Driver)", `paths: ["engine","driver"]`) and
 **`remap-swap-a-b`** ("Remap check: A and B swapped (App, then Driver)", same `paths`) check remapping end to end. The
@@ -336,14 +421,16 @@ report stays interpretable after the tables change).
 ### Steps, attempts, metrics
 
 `steps[]` = `{index, stepId, kind, controls, expected, attempts}`. `expected` is the resolved expectation
-(`{buttons, hat?, guide}`; empty = nothing on the pad). `attempts` holds every try at the step (Back and re-runs add
+(`{buttons, hat?, guide, lt?, rt?}`; empty = nothing on the pad; `lt` / `rt` = the pad trigger the step pulls, written only
+when true). `attempts` holds every try at the step (Back and re-runs add
 one). **The last attempt that is not `superseded` carries the result**; if all are superseded, the last.
 
 An attempt: `startedNs`, `readyNs`, `windowStartNs`, `windowEndNs`, `superseded`, `pathUnconfirmed` ("Run anyway" after
 a path confirmation timed out), `verdict`, `metrics`, `entryState` (pad state the judge started from; absent = no report
 seen yet), `entryRaw` (last report of each ID before the step, hex), `effectivePath` (`{atReady, atStart, atEnd}`), `raw`,
 and, only for a step with `expect.volume`, `volume`, and, only for a step that records the receiver, `receiver` and
-`receiverDropped` (see "Recording the receiver").
+`receiverDropped` (see "Recording the receiver"), and, only where they apply, `hiding` (`{conclusive, line, presses}`) and
+`echoItem` (see "Paddles, SAX keys and the hiding check").
 
 `volume`: `{expect, verdict, consumerReports, keyReports, volumeEvents, muteEvents, deviceEvents, startScalar?,
 endScalar?, startMuted?, endMuted?, hasVolume, hasMute}`. `expect` is the step's word; `verdict` has the same shape as the
@@ -354,7 +441,9 @@ output device's state at Go and at the end (absent when the device has no such c
 whether it has them. A report whose steps have no `expect.volume` carries no `volume` key at all.
 
 `verdict` is `{"verdict": "pass" | "fail" | "skipped" | "inconclusive" | "invalid" | "recorded", "reason": "..."}`
-(`recorded`: a `record` step, nothing judged; the reason says how much was recorded); `pass` has no
+(`recorded`: a `record` step, nothing judged; the reason says how much was recorded, and the table shows the word "recorded"
+in grey with `Expected` "—" and `Seen` "receiver frames kept: N"; `inconclusive` with a reason starting `cannot judge:` reads
+"Cannot judge"); `pass` has no
 reason. A verdict word from a newer build reads as `inconclusive` with the word in the reason.
 
 `metrics`:

@@ -57,7 +57,7 @@
       "controls" : [
         "profile"
       ],
-      "detail" : "Profile is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key. Each press also switches the controller's own profile, which changes what the paddles and SAX keys send.",
+      "detail" : "Profile is on the front. Press it, let go, press it again, let go. The pad should send nothing for this key. Each press also switches the controller's own profile. Paddles and SAX keys left on Controller's profile change with it; remapped ones keep sending only your pick.",
       "id" : "profile",
       "kind" : "digital",
       "seconds" : 3,

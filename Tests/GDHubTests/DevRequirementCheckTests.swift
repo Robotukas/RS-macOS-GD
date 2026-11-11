@@ -80,4 +80,36 @@ final class DevRequirementCheckTests: XCTestCase {
         XCTAssertEqual(DevRequirementCheck.startBlock(template: t, mapping: m, layout: layout),
                        "Needs G2 → Nothing; G4 at its built-in function: set it in Mapping first (leave Developer mode, press Mapping, pick, Done)")
     }
+
+    func testPaddleAndSAXKeysReadOnControllersProfileAndG2ToG4KeepTheirBuiltInWording() {
+        var inner = DevStep(id: "p", kind: .digital, controls: ["paddle_inner_right"], title: "t")
+        var r = DevRequires(); r.mapping = ["paddle_inner_right": "built_in", "g4": "built_in"]
+        inner.requires = r
+        let t = DevTemplate(id: "paddles", title: "t", steps: [inner])
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "paddle_inner_right")
+        m.setOutput(.nothing, for: "g4")
+        XCTAssertEqual(DevRequirementCheck.unmet(template: t, mapping: m, layout: layout),
+                       ["G4 at its built-in function", "Paddle inner right on Controller's profile"])
+        XCTAssertEqual(DevRequirementCheck.startBlock(template: t, mapping: m, layout: layout),
+                       "Needs G4 at its built-in function; Paddle inner right on Controller's profile: set it in Mapping first (leave Developer mode, press Mapping, pick, Done)")
+        XCTAssertEqual(RemapMenuModel.builtInRequirement(for: "sax_left"), "on Controller's profile")
+        XCTAssertEqual(RemapMenuModel.builtInRequirement(for: "g2"), "at its built-in function")
+        // the skip text of the runner
+        let skip = DevResolvedStep.resolve(template: t, mapping: m, layout: layout)[0].skipReason
+        XCTAssertEqual(skip, "needs G4 left at its built-in function: Reset it in Mapping")
+        var onlyPaddle = ControlMapping.default
+        onlyPaddle.setOutput(.pad(.y), for: "paddle_inner_right")
+        var p2 = inner; var r2 = DevRequires(); r2.mapping = ["paddle_inner_right": "built_in"]; p2.requires = r2
+        XCTAssertEqual(DevResolvedStep.resolve(template: DevTemplate(id: "x", title: "t", steps: [p2]), mapping: onlyPaddle, layout: layout)[0].skipReason,
+                       "needs Paddle inner right on Controller's profile: Reset it in Mapping")
+    }
+
+    func testRowElevenAndRowTwelveBlockStartUntilTheOwnersPicksAreInForce() throws {
+        let paddles = try builtIn("remap-paddles")
+        let block = try XCTUnwrap(DevRequirementCheck.startBlock(template: paddles, mapping: .default, layout: layout))
+        XCTAssertTrue(block.hasPrefix("Needs Paddle inner left → Nothing; Paddle outer left → L3; Paddle outer right → R3;"), block)
+        XCTAssertTrue(block.contains("Paddle inner right on Controller's profile") == false, "Paddle inner right is already on Controller's profile")
+        XCTAssertNotNil(DevRequirementCheck.startBlock(template: try builtIn("remap-triggers"), mapping: .default, layout: layout))
+    }
 }

@@ -108,20 +108,33 @@ struct DevResolvedStep: Equatable {
     var linked: [String]
     /// The step is recorded as skipped without asking for anything.
     var skipReason: String?
+    /// The step takes the `builtInEcho` rule (one pad item per press, whichever the controller's profile gives).
+    var builtInEcho = false
+    /// What the step's `background` controls send to the pad.
+    var background: Set<PadItem> = []
+    /// The remapped paddle and SAX keys among the step's controls: the ones whose hidden button the step makes a claim
+    /// about (only in a template that records the receiver).
+    var hiddenKeys: [String] = []
 
     /// Resolves every step against `mapping` and `layout`.
     static func resolve(template: DevTemplate, mapping: ControlMapping, layout: ControlLayout) -> [DevResolvedStep] {
-        template.steps.map { step in
+        template.steps.enumerated().map { (index, step) in
             let kind = step.devKind
             var expected = DevExpectedItems()
             var linked: [String] = []
-            if kind == .digital || kind == .held {
+            var background: Set<PadItem> = []
+            var echo = false
+            if kind == .digital || kind == .held || kind == .trigger {
+                echo = DevExpectation.usesBuiltInEcho(step: step, mapping: mapping)
                 expected = DevExpectation.resolve(step: step, mapping: mapping, layout: layout)
                 linked = DevExpectation.linkedOutputControls(for: expected).filter { !step.controls.contains($0) }
+                background = DevExpectation.backgroundItems(step: step, mapping: mapping, layout: layout)
             }
-            let skip = requirementSkip(step, mapping: mapping, layout: layout)
-                ?? triggerRemapSkip(step, mapping: mapping, layout: layout)
-            return DevResolvedStep(step: step, expected: expected, wanted: step.controls, linked: linked, skipReason: skip)
+            let hidden = template.recordsReceiver(stepAt: index) && kind != .record
+                ? step.controls.filter { DevExpectation.isHiddenKey($0, mapping: mapping) } : []
+            return DevResolvedStep(step: step, expected: expected, wanted: step.controls, linked: linked,
+                                   skipReason: requirementSkip(step, mapping: mapping, layout: layout),
+                                   builtInEcho: echo, background: background, hiddenKeys: hidden)
         }
     }
 
@@ -130,7 +143,8 @@ struct DevResolvedStep: Equatable {
     /// The owner's word for a control: the layout label ("G1"), else the id.
     static func label(_ id: String, _ layout: ControlLayout) -> String { layout.control(id: id)?.label ?? id }
 
-    /// The owner's word for an output: "Y", "D-pad up", "Nothing", "its built-in function".
+    /// The owner's word for an output: "Y", "D-pad up", "Nothing", "its built-in function" ("Controller's profile" on a
+    /// paddle or SAX key, where `built_in` is the menu's "Controller's profile (built in)").
     static func label(_ output: ControlOutput, _ layout: ControlLayout) -> String {
         switch output {
         case .nothing: return "Nothing"
@@ -166,30 +180,12 @@ struct DevResolvedStep: Equatable {
         guard let miss = requirementMisses(step, mapping: mapping).first else { return nil }
         let who = label(miss.control, layout)
         guard let output = miss.output else { return "needs \(who) → \"\(miss.value)\": not an output this build knows" }
-        if output == .builtIn { return "needs \(who) left at its built-in function: Reset it in Mapping" }
+        if output == .builtIn {
+            let how = RemapMenuModel.builtInRequirement(for: miss.control)
+            return "needs \(who) \(ControlMapping.echoKeyIDs.contains(miss.control) ? "" : "left ")\(how): Reset it in Mapping"
+        }
         let how = mapping.defaultOutput(miss.control) == output ? "Reset it in Mapping" : "set it in Mapping"
         return "needs \(who) → \(label(output, layout)): \(how)"
-    }
-
-    /// Step 1 of the remap work does not judge the pad's triggers under a remap: a step on a remapped `lt` / `rt`, or
-    /// on a button that is sent to one, is skipped (a later driver update gives the judge what it needs).
-    private static func triggerRemapSkip(_ step: DevStep, mapping: ControlMapping, layout: ControlLayout) -> String? {
-        let kind = step.devKind
-        for cid in step.controls {
-            if cid == "lt" || cid == "rt" {
-                guard kind == .trigger || kind == .held else { continue }
-                let own = ControlOutput.pad(cid == "lt" ? .lt : .rt)
-                let now = mapping.effectiveOutput(cid)
-                if now != own {
-                    return "\(label(cid, layout)) is remapped to \(label(now, layout)); trigger remaps are checked after the next driver update"
-                }
-            } else if kind == .digital || kind == .held {
-                if case .pad(let p) = mapping.effectiveOutput(cid), p.isTrigger {
-                    return "a button sent to LT/RT is checked after the next driver update"
-                }
-            }
-        }
-        return nil
     }
 }
 
@@ -343,6 +339,27 @@ struct DevRunCore {
     private var digitalIDs: [String] = []
     /// The default output device's state over the run (the state at the watch's start, then after every event).
     private var volumeTimeline: [(tNs: UInt64, state: VolumeState)] = []
+    /// The run-long filter: the rule that hides a remapped paddle or SAX key's own button (`EchoFilter`), stepped on every
+    /// receiver report of the run, so that the reference, the window of a step and the hiding check all see the report the
+    /// pad is meant to show. Parameters come from the mapping the run started with.
+    private var echoState = EchoState()
+    private var echoParams = EchoParams.none
+    private var echoHeld: UInt8 = 0
+    private var echoCounters = EchoCounters()
+    /// Set when the Driver pass was not run because the driver cannot take the mapping and the owner stopped there: the
+    /// pass (index) and the plain words. The views show a "stood down" chip instead of a row of steps.
+    private(set) var standDownPass: Int?
+    private(set) var standDownNote: String?
+    private var promptStandDownWhy: String?
+
+    /// What the run's own filter did, counted over the run: reports it changed, reports that showed a direction the
+    /// controller did not send, presses that showed another item than the stored one, presses it could not read.
+    struct EchoCounters: Equatable {
+        var hiddenFrames = 0
+        var recoveredFrames = 0
+        var other = 0
+        var unconfirmed = 0
+    }
 
     // Per pass.
     private var pathUnconfirmed = false
@@ -411,6 +428,8 @@ struct DevRunCore {
         var controlActivity: [DevJudge.ControlSample] = []
         var wantedActiveSeen = false
         var wantedNowActive = false
+        /// A step with `background` controls counts its presses without them (the held control stays down the whole step).
+        var pressedNowActive = false
         var lastWantedActiveNs: UInt64?
         var wantedRises = 0
         /// Steps with `expect.volume`: the change events and the 0x11 reports since the step began.
@@ -435,12 +454,26 @@ struct DevRunCore {
         var quietSinceNs: UInt64?
         /// A `record` step: for each of its controls, how often it came down and whether it has gone back up.
         var recordControls: [String: RecordedControl] = [:]
+        /// The presses of remapped paddle and SAX keys since the step began, and the run's echo counters at its start.
+        var echoHolds: [EchoHold] = []
+        var echoBefore: (counters: EchoCounters, valid: Bool)?
+    }
+
+    private struct EchoHold {
+        var key: Int
+        var pressN: Int
+        var releaseN: Int?
+        var code: UInt8
+        var found: DevJudge.HidingEvidence.Found
+        var recovered: UInt16 = 0
     }
 
     private struct ReceiverSample: Equatable {
         var n: Int
         var tNs: UInt64
         var bytes: [UInt8]
+        /// `EchoFilter.items` of the report as the controller sent it.
+        var items: UInt16
     }
 
     private struct RecordedControl: Equatable {
@@ -536,6 +569,13 @@ struct DevRunCore {
         prompt = nil
         pauseReason = nil
         digitalIDs = Array(Set(s.mapping.buttons.keys).union(s.mapping.physicalBits.keys)).sorted()
+        echoState = EchoState()
+        echoParams = s.mapping.echoParams
+        echoHeld = 0
+        echoCounters = EchoCounters()
+        standDownPass = nil
+        standDownNote = nil
+        promptStandDownWhy = nil
         volumeTimeline = []
         handOverValue = nil
         resetPassFlags()
@@ -582,14 +622,21 @@ struct DevRunCore {
         InputPathMenu.status(mode: .engine, engineRunningPid: pid.map { Int32(truncatingIfNeeded: $0) }, report: status)
     }
 
+    /// The engine's note when the driver cannot take the current mapping (build 24 cannot hide a paddle's own button, or
+    /// pull a trigger from a button), without its closing full stop. A note that starts with "internal:" is a GDHub fault,
+    /// which resetting a remap does not fix, so it is not one.
+    private var standDownWhy: String? {
+        guard target == .driver, let s = liveStatus, s.latched == nil, s.fallback == nil,
+              let note = s.mappingNote, !note.hasPrefix("internal:") else { return nil }
+        return note.hasSuffix(".") ? String(note.dropLast()) : note
+    }
+
     /// The "Run anyway" question. A Driver pass that cannot be confirmed because the driver cannot express the current
-    /// mapping names that mapping note and what to do; every other reason keeps the status line. A note that starts with
-    /// "internal:" is a GDHub fault, which resetting a remap does not fix, so it keeps the status line too.
+    /// mapping names that mapping note and what to do (the App pass has run, so Stop keeps its result); every other reason
+    /// keeps the status line.
     private var runAnywayText: String {
-        if target == .driver, let s = liveStatus, s.latched == nil, s.fallback == nil,
-           let note = s.mappingNote, !note.hasPrefix("internal:") {
-            let why = note.hasSuffix(".") ? String(note.dropLast()) : note
-            return "Driver pass cannot be confirmed: \(why). Reset that remap first."
+        if let why = standDownWhy {
+            return "Driver pass cannot be confirmed: \(why). Press Stop to keep the App result, or Reset that remap first."
         }
         return statusText
     }
@@ -659,6 +706,7 @@ struct DevRunCore {
             beginSteps(a: &a)
         } else if now >= started, now - started >= Timing.confirmTimeout {
             let p = DevPrompt.runAnyway(runAnywayText)
+            promptStandDownWhy = standDownWhy
             prompt = p
             a.append(.needsPrompt(p))
         }
@@ -721,6 +769,7 @@ struct DevRunCore {
             var c = Cur(idx: idx, startedNs: clock, entry: lastSeen, entryRaw: lastRaw)
             c.pathAtReady = observedPathName()
             c.parityBefore = parity()
+            c.echoBefore = (echoCounters, echoState.flags & EchoState.valid != 0)
             cur = c
             state = .step(index: idx, phase: .ready)
             phaseStartNs = clock
@@ -829,6 +878,7 @@ struct DevRunCore {
         cur!.wantedRises = 0
         cur!.wantedActiveSeen = false
         cur!.wantedNowActive = false
+        cur!.pressedNowActive = false
         cur!.lastWantedActiveNs = nil
         cur!.evalVersion = 0; cur!.lastEvalVersion = -1; cur!.lastEvalNs = t
         // Reports that arrived before the window (the ready phase) are in `reports`; padChanged counts from here on.
@@ -965,7 +1015,8 @@ struct DevRunCore {
         return DevJudge.Input(step: r.step, expected: r.expected, entryState: entry, reports: c.reports,
                               windowStartNs: ws, windowEndNs: we, endNs: end, matchedCount: c.matchedAtStart,
                               reference: reference(c, from: ws, to: end), handOvers: c.handOvers.count,
-                              controlActivity: c.controlActivity, volume: volume)
+                              controlActivity: c.controlActivity, volume: volume,
+                              background: r.background, builtInEcho: r.builtInEcho, hiding: hidingEvidence(c, r))
     }
 
     private mutating func judgeAndAdvance(a: inout [Action]) {
@@ -977,10 +1028,26 @@ struct DevRunCore {
         att.verdict = o.verdict
         att.metrics = o.metrics
         att.volume = o.volume
+        att.hiding = o.hiding
+        att.echoItem = o.echoItem
         if r.step.devKind == .record {
-            let text = DevRecorder.summary(frames: c.receiver.count, dropped: c.receiverDropped, seconds: Double(end - ws) / 1e9)
-            att.verdict = .recorded(text)
-            att.metrics.detail = text
+            att.verdict = .recorded(DevRecorder.summary(frames: c.receiver.count, dropped: c.receiverDropped, seconds: Double(end - ws) / 1e9))
+            att.metrics.detail = DevRecorder.kept(frames: c.receiver.count, dropped: c.receiverDropped)
+        }
+        // The run's own filter, before and after the step (a Driver pass gets the driver's counters from S6 on).
+        if echoParams.hideMask != 0, let before = c.echoBefore {
+            let now = (echoCounters, echoState.flags & EchoState.valid != 0)
+            let v: [(String, Double, Double)] = [
+                ("hiddenFrames", Double(before.counters.hiddenFrames), Double(now.0.hiddenFrames)),
+                ("recoveredFrames", Double(before.counters.recoveredFrames), Double(now.0.recoveredFrames)),
+                ("other", Double(before.counters.other), Double(now.0.other)),
+                ("unconfirmed", Double(before.counters.unconfirmed), Double(now.0.unconfirmed)),
+                ("valid", before.valid ? 1 : 0, now.1 ? 1 : 0),
+            ]
+            for (name, b, n) in v {
+                att.metrics.values["echo.\(name)Before"] = b
+                att.metrics.values["echo.\(name)After"] = n
+            }
         }
         if !c.handOvers.isEmpty {
             att.metrics.values["held.handOvers"] = Double(c.handOvers.count)
@@ -1076,13 +1143,13 @@ struct DevRunCore {
         return sum
     }
 
-    private func wantedActive(_ r: DevResolvedStep, _ f: GamepadFrame, _ pad: PadState) -> Bool {
+    private func wantedActive(_ r: DevResolvedStep, _ f: GamepadFrame, _ pad: PadState, excluding: Set<String> = []) -> Bool {
         let ru = rules(for: r)
         func mag(_ x: Double, _ y: Double) -> Double { (x * x + y * y).squareRoot() }
         let m = setup!.mapping
         switch r.step.devKind {
         case .stick?:
-            return r.step.controls.contains { cid in
+            return r.step.controls.filter { !excluding.contains($0) }.contains { cid in
                 switch cid {
                 case "left_stick": return mag(pad.lx, pad.ly) > ru.deadZone
                 case "right_stick": return mag(pad.rx, pad.ry) > ru.deadZone
@@ -1090,7 +1157,7 @@ struct DevRunCore {
                 }
             }
         case .trigger?, .held?:
-            return r.step.controls.contains { cid in
+            return r.step.controls.filter { !excluding.contains($0) }.contains { cid in
                 switch cid {
                 // The physical pull (the control's own binding), not the pad's trigger: under a remap the pad's value
                 // may come from another control. Without remaps this is the same number the mapper puts on the pad.
@@ -1099,15 +1166,15 @@ struct DevRunCore {
                 }
             }
         case .digital?:
-            return r.step.controls.contains { m.isActive($0, f) }
+            return r.step.controls.filter { !excluding.contains($0) }.contains { m.isActive($0, f) }
         case .record?:
-            return r.step.controls.contains { DevRecorder.isActive($0, f, mapping: m) }
+            return r.step.controls.filter { !excluding.contains($0) }.contains { DevRecorder.isActive($0, f, mapping: m) }
         default:
             return false
         }
     }
 
-    private mutating func onFrame(_ f: GamepadFrame, tIn: UInt64, a: inout [Action]) {
+    private mutating func onFrame(_ raw: GamepadFrame, tIn: UInt64, a: inout [Action]) {
         // Kernel timestamps are monotonic per device; a frame that still arrives older than the last one (a replay, a
         // second reader) keeps its data but takes the last time, so no interval below ever runs backwards.
         let t = max(tIn, lastFrameNs ?? tIn)
@@ -1115,6 +1182,12 @@ struct DevRunCore {
         lastFrameNs = t
         guard isRunning, setup != nil else { return }
         framesTotal += 1
+        // The run-long filter sees every report. `f` is the report as the pad is meant to show it (a remapped paddle's own
+        // button hidden); `raw` is what the controller sent, which the receiver recording keeps.
+        let before = echoState.prev
+        let word = echoState.step(echoParams, frame: raw)
+        let f = EchoFilter.apply(word, to: raw)
+        noteEcho(word: word, raw: raw, before: before, tNs: t)
         let sum = summary(for: f)
         if sum.neutral { if stillSince == nil { stillSince = t } } else { stillSince = nil }
 
@@ -1129,10 +1202,12 @@ struct DevRunCore {
         }
 
         guard case .step(_, let phase) = state, cur != nil, let r = rs else { return }
-        if setup!.template.recordsReceiver(stepAt: cur!.idx) { noteReceiverFrame(f, tNs: t) }
+        if setup!.template.recordsReceiver(stepAt: cur!.idx) { noteReceiverFrame(raw, tNs: t) }
+        // A record step is about what the controller sent, whatever the mapping hides.
+        let seen = r.step.devKind == .record ? raw : f
         if phase == .ready {
             // The window starts on the frame that first moves a wanted control.
-            if cur!.goNs != nil, r.step.devKind != .rest, wantedActive(r, f, sum.pad) {
+            if cur!.goNs != nil, r.step.devKind != .rest, wantedActive(r, seen, sum.pad) {
                 startWindow(at: t, a: &a)
             } else {
                 evaluateReady(now: t, a: &a)
@@ -1149,18 +1224,68 @@ struct DevRunCore {
             cur!.controlActivity.append(.init(tNs: t, active: Set(Set(ids).union(r.step.controls).filter { m.isActive($0, f) })))
         }
         if changed { cur!.refChanges.append(t) }
-        if r.step.devKind == .record, phase2 == .window { noteRecordedControls(r, f) }
+        if r.step.devKind == .record, phase2 == .window { noteRecordedControls(r, raw) }
         // Tracked in the release phase too: the tail ends when the control has come back to rest.
-        let act = wantedActive(r, f, sum.pad)
+        let act = wantedActive(r, seen, sum.pad)
+        let background = Set(r.step.expect?.background ?? [])
+        let pressed = background.isEmpty ? act : wantedActive(r, seen, sum.pad, excluding: background)
         if act {
             if phase2 == .window {
-                if !cur!.wantedNowActive { cur!.wantedRises += 1 }
+                if pressed && !cur!.pressedNowActive { cur!.wantedRises += 1 }
                 cur!.wantedActiveSeen = true
                 cur!.evalVersion += 1
             }
             cur!.lastWantedActiveNs = t
         }
         cur!.wantedNowActive = act
+        cur!.pressedNowActive = pressed
+    }
+
+    // MARK: The run's echo filter
+
+    /// Counts what the filter did on this report and keeps the presses of remapped keys for the step on hand.
+    private mutating func noteEcho(word: UInt32, raw: GamepadFrame, before: UInt16, tNs t: UInt64) {
+        if word & EchoFilter.wordApplied != 0 { echoCounters.hiddenFrames += 1 }
+        if word & EchoFilter.wordRecovered != 0 { echoCounters.recoveredFrames += 1 }
+        if word & EchoFilter.wordOther != 0 { echoCounters.other += 1 }
+        if word & EchoFilter.wordUnconfirmed != 0 { echoCounters.unconfirmed += 1 }
+        let held: UInt8 = word == 0 ? 0 : UInt8((word >> 16) & 0x3F)
+        let pressed = held & ~echoHeld
+        let released = echoHeld & ~held
+        echoHeld = held
+        guard cur != nil, (pressed | released) != 0 || word & EchoFilter.wordRecovered != 0 else { return }
+        for k in 0..<6 where (pressed >> UInt8(k)) & 1 == 1 {
+            let code = UInt8((echoState.cur >> UInt64(8 * k)) & 0xFF)
+            let stored = echoParams.items[k]
+            let found: DevJudge.HidingEvidence.Found
+            if (echoState.known >> UInt8(k)) & 1 == 1 {
+                found = EchoFilter.on(EchoFilter.mask(stored), in: before) ? .confirmed : .seen
+            } else {
+                found = code != stored ? .other : .unconfirmed
+            }
+            cur!.echoHolds.append(EchoHold(key: k, pressN: framesTotal, releaseN: nil, code: code, found: found))
+        }
+        for k in 0..<6 where (released >> UInt8(k)) & 1 == 1 {
+            if let i = cur!.echoHolds.lastIndex(where: { $0.key == k && $0.releaseN == nil }) { cur!.echoHolds[i].releaseN = framesTotal }
+        }
+        if word & EchoFilter.wordRecovered != 0 {
+            // A direction the pad shows and the controller did not send.
+            let sent = EchoFilter.items(word: 0, buttons: raw.buttons, hat: raw.hat)
+            let shown = EchoFilter.items(word: word, buttons: raw.buttons, hat: raw.hat)
+            let extra = shown & ~sent & 0x3C00
+            for i in cur!.echoHolds.indices where cur!.echoHolds[i].releaseN == nil { cur!.echoHolds[i].recovered |= extra }
+        }
+    }
+
+    /// What the judge needs for the hiding check of a step, or nil when the step has no remapped key to check.
+    private func hidingEvidence(_ c: Cur, _ r: DevResolvedStep) -> DevJudge.HidingEvidence? {
+        guard !r.hiddenKeys.isEmpty else { return nil }
+        let ids = ControlMapping.echoKeyIDs
+        let holds = c.echoHolds.compactMap { h -> DevJudge.HidingEvidence.Hold? in
+            guard ids.indices.contains(h.key), r.hiddenKeys.contains(ids[h.key]) else { return nil }
+            return .init(control: ids[h.key], pressN: h.pressN, releaseN: h.releaseN, code: h.code, found: h.found, recovered: h.recovered)
+        }
+        return .init(keys: r.hiddenKeys, holds: holds, reports: c.receiver.map { .init(n: $0.n, items: $0.items) })
     }
 
     // MARK: Receiver recording
@@ -1172,7 +1297,8 @@ struct DevRunCore {
         if cur!.goNs == nil { cur!.baselineNonStick = bytes }
         if cur!.lastNonStick != bytes {
             if cur!.receiver.count < DevRecorder.maxFramesPerStep {
-                cur!.receiver.append(ReceiverSample(n: framesTotal, tNs: t, bytes: f.rawBytes))
+                cur!.receiver.append(ReceiverSample(n: framesTotal, tNs: t, bytes: f.rawBytes,
+                                                    items: EchoFilter.items(word: 0, buttons: f.buttons, hat: f.hat)))
             } else {
                 cur!.receiverDropped += 1
             }
@@ -1482,6 +1608,14 @@ struct DevRunCore {
         guard isRunning else { return }
         closeOpen(.invalid("stopped"), superseded: false, detail: "The run was stopped during this step.")
         if let note { notes.append(note) }
+        // Stopped at the question of a Driver pass the driver cannot take: that pass stood down, the earlier one counts.
+        if let why = promptStandDownWhy, case .runAnyway? = prompt {
+            let words = "Driver pass not run: this driver version cannot take this mapping (\(why)). The App pass is the result of this run."
+            standDownPass = pass
+            standDownNote = words
+            notes.append(words)
+        }
+        promptStandDownWhy = nil
         let hasAttempt = results.indices.contains(pass) && results[pass].contains { $0 != nil }
         state = .finished
         phaseStartNs = clock

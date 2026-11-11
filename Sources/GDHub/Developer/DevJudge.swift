@@ -131,11 +131,21 @@ enum DevJudge {
         /// What the Mac's volume did from Go to the end of the release tail, for a step with `expect.volume`. nil with
         /// such a step = nothing was watched, which is "cannot judge".
         var volume: DevVolumeObservation?
+        /// What the step's `background` controls send to the pad: held from before the pressed ones to after them.
+        var background: Set<PadItem>
+        /// The step takes the `builtInEcho` rule: one pad item per press, whichever the controller's profile gives.
+        var builtInEcho: Bool
+        /// What the run saw of the remapped paddle and SAX keys of the step, for the hiding check; nil = no claim.
+        var hiding: HidingEvidence?
 
         init(step: DevStep, expected: DevExpectedItems = DevExpectedItems(), entryState: PadDecodedState?,
              reports: [TimedReport], windowStartNs: UInt64, windowEndNs: UInt64, endNs: UInt64? = nil,
              matchedCount: Int = 1, reference: Reference? = nil, handOvers: Int = 0,
-             controlActivity: [ControlSample] = [], volume: DevVolumeObservation? = nil) {
+             controlActivity: [ControlSample] = [], volume: DevVolumeObservation? = nil,
+             background: Set<PadItem> = [], builtInEcho: Bool = false, hiding: HidingEvidence? = nil) {
+            self.background = background
+            self.builtInEcho = builtInEcho
+            self.hiding = hiding
             self.volume = volume
             self.handOvers = handOvers
             self.controlActivity = controlActivity
@@ -165,6 +175,10 @@ enum DevJudge {
         var metrics: DevMetrics
         /// The volume part, for a step with `expect.volume`.
         var volume: DevVolumeResult?
+        /// The hiding check, for a step with a remapped paddle or SAX key whose receiver reports were recorded.
+        var hiding: DevHiding?
+        /// The pad item an untouched paddle or SAX key brought (`builtInEcho`), named.
+        var echoItem: String?
     }
 
     static func judge(_ input: Input, rules base: Rules = Rules(), decoder: PadReportDecoder = .xboxBT16) -> Outcome {
@@ -177,7 +191,7 @@ enum DevJudge {
 
         guard let kind = step.devKind else { return done(.inconclusive("unknown kind \"\(step.kind)\""), "The step has a kind this build cannot judge.") }
         // A record step has nothing to judge: the runner stores the receiver's reports and says so.
-        if kind == .record { return done(.recorded("recording only"), "Recorded; nothing was judged.") }
+        if kind == .record { return done(.recorded("nothing was judged"), "Recorded; nothing was judged.") }
         if input.matchedCount != 1 {
             return done(.inconclusive("reader matched \(input.matchedCount) pads"),
                         "The pad reader must see exactly one GDHub pad to judge a step; it saw \(input.matchedCount).")
@@ -202,7 +216,13 @@ enum DevJudge {
             outcome = tl.judgeDigital(input, entry: entry, rules: rules, metrics: &metrics)
             if let want = step.expect?.volumeExpectation { outcome = applyVolume(want, to: outcome, input: input) }
         case .held: outcome = tl.judgeHeld(input, rules: rules, metrics: &metrics)
-        case .record: return done(.recorded("recording only"), "Recorded; nothing was judged.")
+        case .record: return done(.recorded("nothing was judged"), "Recorded; nothing was judged.")
+        }
+
+        // What a pass proves about hiding the controller's own button for a remapped key (never changes the verdict).
+        if let evidence = input.hiding, let hiding = DevJudge.judgeHiding(evidence, expected: input.expected.items, background: input.background) {
+            outcome.hiding = hiding
+            outcome.metrics.detail += (outcome.metrics.detail.isEmpty ? "" : " ") + hiding.line.prefix(1).uppercased() + hiding.line.dropFirst() + "."
         }
 
         // Per-event latency: every kind but rest, when the receiver frames are known. The pad side is read from a
@@ -256,10 +276,14 @@ enum DevJudge {
             default: return nil
             }
         case .trigger:
-            let triggers: [PadTrigger] = step.controls.compactMap { $0 == "lt" ? .left : ($0 == "rt" ? .right : nil) }
-            return triggers.isEmpty ? nil : DevLatency.Watch(triggers: triggers)
+            // The pad trigger (or button) the pull is mapped to; with nothing worked out, the control's own trigger.
+            var w = DevLatency.Watch(items: input.expected.items, triggers: input.expected.triggers)
+            if w.triggers.isEmpty && w.items.isEmpty {
+                w.triggers = step.controls.compactMap { $0 == "lt" ? .left : ($0 == "rt" ? .right : nil) }
+            }
+            return w.triggers.isEmpty && w.items.isEmpty ? nil : w
         case .digital:
-            return DevLatency.Watch(items: input.expected.items)
+            return DevLatency.Watch(items: input.expected.items, triggers: input.expected.triggers)
         case .held:
             guard let targets = DevExpectation.heldTargets(step: step, expected: input.expected) else { return nil }
             var w = DevLatency.Watch()
@@ -421,68 +445,171 @@ enum DevJudge {
             return finish(fails, passText: summary, summary: summary, &m)
         }
 
+        // MARK: items and triggers (shared by the digital, trigger and held rules)
+
+        /// When each pad item went down and up over the timeline (indices into `states`), the D-pad values seen and the
+        /// number of times the pad came to neutral.
+        struct ItemTrace {
+            var rises: [PadItem: [Int]] = [:]
+            var falls: [PadItem: [Int]] = [:]
+            var visited = 0
+            var neutrals = 0
+            var touched: Set<PadItem> { Set(rises.keys).union(falls.keys) }
+        }
+
+        func trace(rules: Rules) -> ItemTrace {
+            var t = ItemTrace()
+            var prev = states[0].items
+            t.visited = 1 << Int(states[0].hat)
+            var wasNeutral = states[0].isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease)
+            for i in 1..<max(count, 1) {
+                let s = states[i]
+                t.visited |= 1 << Int(s.hat)
+                let cur = s.items
+                for item in cur.subtracting(prev) { t.rises[item, default: []].append(i) }
+                for item in prev.subtracting(cur) { t.falls[item, default: []].append(i) }
+                prev = cur
+                let n = s.isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease)
+                if n && !wasNeutral { t.neutrals += 1 }
+                wasNeutral = n
+            }
+            return t
+        }
+
+        /// One trigger over the timeline: its highest value, the full pulls (up to `peak`, then back to `release`), and how
+        /// long it has been released at the end (nil = still pulled).
+        func pulls(of trig: PadTrigger, rules: Rules) -> (peak: Double, pulls: Int, settledMs: Double?) {
+            let peak = states.map { $0.value(of: trig) }.max() ?? 0
+            let low: (PadDecodedState) -> Bool = { $0.value(of: trig) <= rules.triggerRelease }
+            var n = 0
+            var peaked = false
+            for s in states {
+                let v = s.value(of: trig)
+                if v >= rules.triggerPeak { peaked = true } else if v <= rules.triggerRelease && peaked { n += 1; peaked = false }
+            }
+            return (peak, n, settledMs(low))
+        }
+
+        /// The trigger part of a step that pulls pad triggers: each expected trigger reaches `triggerPeak` and comes back
+        /// `times` times, and the other one stays still.
+        func triggerFails(_ expected: [PadTrigger], times: Int, rules: Rules, values: inout [String: Double]) -> (fails: [String], text: String) {
+            var fails: [String] = []
+            var parts: [String] = []
+            for trig in [PadTrigger.left, .right] {
+                let name = trig == .left ? "LT" : "RT"
+                let key = trig == .left ? "lt" : "rt"
+                let p = pulls(of: trig, rules: rules)
+                values["\(key).peak"] = p.peak
+                values["\(key).settledMs"] = p.settledMs ?? 0
+                values["\(key).pulls"] = Double(p.pulls)
+                if expected.contains(trig) {
+                    if p.peak < rules.triggerPeak {
+                        fails.append("\(name) only reached \(DevJudge.fmt(p.peak)) (needs \(DevJudge.fmt(rules.triggerPeak)))")
+                    } else if times > 1 && p.pulls < times {
+                        fails.append("\(name) was pulled to \(DevJudge.fmt(rules.triggerPeak)) and released \(p.pulls) times (needs \(times))")
+                    }
+                    if p.settledMs == nil {
+                        fails.append("\(name) was still above \(DevJudge.fmt(rules.triggerRelease)) at the end")
+                    } else if let s = p.settledMs, s < rules.holdMs {
+                        fails.append("\(name) had only been released for \(Int(s)) ms at the end (needs \(Int(rules.holdMs)))")
+                    }
+                    parts.append("\(name) peak \(DevJudge.fmt(p.peak))" + (times > 1 ? ", \(p.pulls) full pulls (needs \(times))" : ""))
+                } else if !expected.isEmpty, p.peak > rules.triggerRelease {
+                    let wanted = expected.map { $0 == .left ? "LT" : "RT" }.joined(separator: " and ")
+                    fails.append("\(name) moved although only \(wanted) was expected (reached \(DevJudge.fmt(p.peak)))")
+                }
+            }
+            return (fails, parts.joined(separator: "; "))
+        }
+
+        /// The pad items that changed although the step did not ask for them. `allowed` is what it expects and what it
+        /// holds in the background.
+        func unexpectedFail(_ tr: ItemTrace, allowed: Set<PadItem>) -> (items: Set<PadItem>, fail: String?) {
+            let unexpected = tr.touched.subtracting(allowed)
+            guard !unexpected.isEmpty else { return ([], nil) }
+            return (unexpected, "unexpected change on " + unexpected.sorted().map(\.ownerName).joined(separator: ", "))
+        }
+
+        /// `background` items: pressed first, let go last. Per item B: not set at the window start (then it must come up
+        /// exactly once, before the first rise of every expected item) or set there with no rise; it must not fall before
+        /// the last fall of every expected item. Nothing later counts: the window may end first.
+        func backgroundFails(_ background: Set<PadItem>, expected: Set<PadItem>, tr: ItemTrace) -> [String] {
+            var fails: [String] = []
+            let firstExpectedRise = expected.compactMap { tr.rises[$0]?.first }.min()
+            // The expected item that was let go last names the press in the message.
+            let lastExpected = expected.compactMap { item in tr.falls[item]?.last.map { (item, $0) } }.max { $0.1 < $1.1 }
+            for b in background.sorted() {
+                let rises = tr.rises[b] ?? [], falls = tr.falls[b] ?? []
+                let setAtStart = states[0].items.contains(b)
+                // Let go while the expected item was still being pressed: the failure the step is about.
+                if let (e, last) = lastExpected {
+                    let early = falls.filter { $0 < last }.count
+                    if early > 0 {
+                        fails.append("\(b.ownerName) dropped while \(e.ownerName) was being pressed (fell \(early) time\(early == 1 ? "" : "s") before the last \(e.ownerName) release)")
+                        continue
+                    }
+                }
+                if setAtStart ? !rises.isEmpty : rises.count != 1 {
+                    fails.append("\(b.ownerName) went down \(rises.count + (setAtStart ? 1 : 0)) times (needs 1)")
+                    continue
+                }
+                if !setAtStart, let first = rises.first, let early = firstExpectedRise, first > early, let e = lastExpected?.0 ?? expected.sorted().first {
+                    fails.append("\(b.ownerName) came up after \(e.ownerName)")
+                }
+            }
+            return fails
+        }
+
         // MARK: trigger
 
         func judgeTrigger(_ input: Input, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
             let cid = input.step.controls.first
-            guard let trig: PadTrigger = cid == "lt" ? .left : (cid == "rt" ? .right : nil) else {
-                return Outcome(verdict: .inconclusive("the step names no trigger"), metrics: with(&m, "A trigger step needs lt or rt as its control."))
+            // The pad trigger the control is mapped to (LT sent to RT judges RT); with nothing worked out, its own.
+            var expectedTriggers = input.expected.triggers
+            if expectedTriggers.isEmpty && input.expected.items.isEmpty {
+                guard let own: PadTrigger = cid == "lt" ? .left : (cid == "rt" ? .right : nil) else {
+                    return Outcome(verdict: .inconclusive("the step names no trigger"), metrics: with(&m, "A trigger step needs lt or rt as its control."))
+                }
+                expectedTriggers = [own]
             }
-            let t = trig == .left ? "lt" : "rt"
-            let peak = states.map { $0.value(of: trig) }.max() ?? 0
-            let low: (PadDecodedState) -> Bool = { $0.value(of: trig) <= rules.triggerRelease }
-            let settled = settledMs(low)
-            // A pull counts when the value reaches the peak and a release (down to the release level) follows it.
-            var pulls = 0
-            var peaked = false
-            for s in states {
-                let v = s.value(of: trig)
-                if v >= rules.triggerPeak { peaked = true } else if v <= rules.triggerRelease && peaked { pulls += 1; peaked = false }
+            let allowed = input.expected.items.union(input.background)
+            let tr = trace(rules: rules)
+            var values: [String: Double] = [:]
+            var (fails, text) = triggerFails(expectedTriggers, times: rules.triggerTimes, rules: rules, values: &values)
+            // A trigger pull that is sent to a button presses it as often as the pull.
+            if !input.expected.items.isEmpty {
+                for item in input.expected.items.sorted() {
+                    let r = tr.rises[item]?.count ?? 0, f = tr.falls[item]?.count ?? 0
+                    if r < rules.triggerTimes || f < rules.triggerTimes {
+                        fails.append("\(item.ownerName) went down \(r) and up \(f) times (needs \(rules.triggerTimes))")
+                    } else if last.items.contains(item) {
+                        fails.append("\(item.ownerName) was still down at the end")
+                    }
+                }
+                text += (text.isEmpty ? "" : "; ") + input.expected.items.sorted().map(\.ownerName).joined(separator: ", ")
             }
-            m.values = ["\(t).peak": peak, "\(t).settledMs": settled ?? 0, "\(t).pulls": Double(pulls)]
-            var fails: [String] = []
-            if peak < rules.triggerPeak {
-                fails.append("\(t.uppercased()) only reached \(DevJudge.fmt(peak)) (needs \(DevJudge.fmt(rules.triggerPeak)))")
-            } else if rules.triggerTimes > 1 && pulls < rules.triggerTimes {
-                fails.append("\(t.uppercased()) was pulled to \(DevJudge.fmt(rules.triggerPeak)) and released \(pulls) times (needs \(rules.triggerTimes))")
-            }
-            if settled == nil {
-                fails.append("\(t.uppercased()) was still above \(DevJudge.fmt(rules.triggerRelease)) at the end")
-            } else if let s = settled, s < rules.holdMs {
-                fails.append("\(t.uppercased()) had only been released for \(Int(s)) ms at the end (needs \(Int(rules.holdMs)))")
-            }
-            let pullText = rules.triggerTimes > 1 ? ", \(pulls) full pulls (needs \(rules.triggerTimes))" : ""
-            let summary = "\(t.uppercased()) peak \(DevJudge.fmt(peak))\(pullText); \(m.padReports) pad reports, \(m.padChanged) changed."
+            let (unexpected, unexpectedText) = unexpectedFail(tr, allowed: allowed)
+            if let unexpectedText { fails.append(unexpectedText) }
+            fails += backgroundFails(input.background, expected: input.expected.items, tr: tr)
+            values["unexpected"] = Double(unexpected.count)
+            m.values = values
+            let summary = "\(text); \(m.padReports) pad reports, \(m.padChanged) changed."
             return finish(fails, passText: summary, summary: summary, &m)
         }
 
         // MARK: digital
 
         func judgeDigital(_ input: Input, entry: PadDecodedState, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
+            if input.builtInEcho { return judgeBuiltInEcho(input, rules: rules, metrics: &m) }
             let expected = input.expected.items
-            var rises: [PadItem: Int] = [:], falls: [PadItem: Int] = [:]
-            var prev = states[0].items
-            var visited = 1 << Int(states[0].hat)
-            var neutrals = 0
-            var wasNeutral = states[0].isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease)
-            for i in 1..<max(count, 1) {
-                let s = states[i]
-                visited |= 1 << Int(s.hat)
-                let cur = s.items
-                for item in cur.subtracting(prev) { rises[item, default: 0] += 1 }
-                for item in prev.subtracting(cur) { falls[item, default: 0] += 1 }
-                prev = cur
-                let n = s.isNeutral(deadZone: rules.deadZone, triggerMax: rules.triggerRelease)
-                if n && !wasNeutral { neutrals += 1 }
-                wasNeutral = n
-            }
-            let touched = Set(rises.keys).union(falls.keys)
-            let unexpected = touched.subtracting(expected)
+            let tr = trace(rules: rules)
+            let rises = tr.rises.mapValues(\.count), falls = tr.falls.mapValues(\.count)
+            let (unexpected, unexpectedText) = unexpectedFail(tr, allowed: expected.union(input.background))
             let entryHeld = expected.intersection(entry.items)
             let minRises = expected.isEmpty ? rises.values.reduce(0, +) : (expected.map { rises[$0] ?? 0 }.min() ?? 0)
             let minFalls = expected.isEmpty ? falls.values.reduce(0, +) : (expected.map { falls[$0] ?? 0 }.min() ?? 0)
-            m.values = ["bit.rises": Double(minRises), "bit.falls": Double(minFalls), "hat.visited": Double(visited),
-                        "neutrals": Double(neutrals), "unexpected": Double(unexpected.count),
+            m.values = ["bit.rises": Double(minRises), "bit.falls": Double(minFalls), "hat.visited": Double(tr.visited),
+                        "neutrals": Double(tr.neutrals), "unexpected": Double(unexpected.count),
                         "entrySet": entryHeld.isEmpty ? 0 : 1]
 
             var fails: [String] = []
@@ -490,30 +617,96 @@ enum DevJudge {
             for item in expected.sorted() {
                 let r = rises[item] ?? 0, f = falls[item] ?? 0
                 if r < times || f < times {
-                    var why = "\(item.name) went down \(r) and up \(f) times (needs \(times))"
+                    var why = "\(item.ownerName) went down \(r) and up \(f) times (needs \(times))"
                     if entryHeld.contains(item) { why += ", bit already set at step start" }
                     fails.append(why)
                 } else if last.items.contains(item) {
-                    fails.append("\(item.name) was still down at the end")
+                    fails.append("\(item.ownerName) was still down at the end")
                 }
             }
-            if !unexpected.isEmpty {
-                fails.append("unexpected change on " + unexpected.sorted().map(\.name).joined(separator: ", "))
+            if let unexpectedText { fails.append(unexpectedText) }
+            fails += backgroundFails(input.background, expected: expected, tr: tr)
+            // Pad triggers the step pulls: one full pull per press, the other trigger still.
+            var triggerText = ""
+            if !input.expected.triggers.isEmpty {
+                let t = triggerFails(input.expected.triggers, times: times, rules: rules, values: &m.values)
+                fails += t.fails
+                triggerText = t.text
             }
-            if expected.isEmpty {
+            if input.expected.isEmpty {
                 let quiet: (PadDecodedState) -> Bool = { $0.sticksInside(deadZone: rules.deadZone) && $0.triggersBelow(rules.triggerRelease) }
                 if let bad = states.first(where: { !quiet($0) }) {
                     fails.append("an axis moved although nothing was expected (\(DevJudge.describeOffences(bad, rules: rules)))")
                 }
             }
             var summary: String
-            if expected.isEmpty {
+            if input.expected.isEmpty {
                 summary = "Nothing was expected on the pad; \(m.padReports) pad reports, \(m.padChanged) changed."
             } else {
-                summary = "\(input.expected.summary): down \(minRises) and up \(minFalls) times (needs \(times)); \(m.padReports) pad reports, \(m.padChanged) changed."
+                var head = input.expected.summary
+                if !expected.isEmpty { head += ": down \(minRises) and up \(minFalls) times (needs \(times))" }
+                if !triggerText.isEmpty { head += (expected.isEmpty ? ": " : "; ") + triggerText }
+                summary = "\(head); \(m.padReports) pad reports, \(m.padChanged) changed."
+            }
+            if !input.background.isEmpty {
+                summary = input.background.sorted().map(\.ownerName).joined(separator: " and ") + " held throughout; " + summary
             }
             if !entryHeld.isEmpty { summary += " Bit already set at step start." }
             return finish(fails, passText: summary, summary: summary, &m)
+        }
+
+        // MARK: builtInEcho
+
+        /// One untouched paddle or SAX key: each press must bring exactly one pad item (a button, a D-pad direction or a
+        /// trigger pull), the same item every time, and the result names it. A key for which the controller sent nothing
+        /// cannot be judged: that is not a failure.
+        func judgeBuiltInEcho(_ input: Input, rules: Rules, metrics m: inout DevMetrics) -> Outcome {
+            func tokens(_ s: PadDecodedState) -> Set<String> {
+                var t = Set(s.items.map(\.ownerName))
+                if s.lt >= 0.5 { t.insert("LT") }
+                if s.rt >= 0.5 { t.insert("RT") }
+                return t
+            }
+            let order = PadItem.allCases.map(\.ownerName) + ["LT", "RT"]
+            func sorted(_ t: Set<String>) -> [String] { t.sorted { (order.firstIndex(of: $0) ?? 99) < (order.firstIndex(of: $1) ?? 99) } }
+            var presses: [Set<String>] = []
+            var run: Set<String>?
+            for s in states {
+                let t = tokens(s)
+                if t.isEmpty {
+                    if let r = run { presses.append(r); run = nil }
+                } else {
+                    run = (run ?? []).union(t)
+                }
+            }
+            let stillDown = run != nil
+            if let r = run { presses.append(r) }
+            let tr = trace(rules: rules)
+            m.values = ["bit.rises": Double(presses.count), "bit.falls": Double(presses.count - (stillDown ? 1 : 0)),
+                        "hat.visited": Double(tr.visited), "neutrals": Double(tr.neutrals), "unexpected": 0, "entrySet": 0]
+            guard !presses.isEmpty else {
+                return Outcome(verdict: .inconclusive("cannot judge: the controller sent no button for this key"),
+                               metrics: with(&m, "The controller sent no button for this key, so there is no echo to judge. \(m.padReports) pad reports, \(m.padChanged) changed."))
+            }
+            var fails: [String] = []
+            for (i, p) in presses.enumerated() where p.count != 1 {
+                fails.append("press \(i + 1) showed \(p.count) pad items (\(sorted(p).joined(separator: ", "))), needs exactly one")
+            }
+            let single = presses.filter { $0.count == 1 }.map { sorted($0)[0] }
+            let distinct = single.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            if distinct.count > 1 { fails.append("the key showed different items on different presses (\(distinct.joined(separator: ", then ")))") }
+            if presses.count < rules.digitalTimes {
+                fails.append("only \(presses.count) press\(presses.count == 1 ? "" : "es") showed an item (needs \(rules.digitalTimes))")
+            }
+            if stillDown { fails.append("\(sorted(run ?? []).joined(separator: ", ")) was still down at the end") }
+            if let bad = states.first(where: { !$0.sticksInside(deadZone: rules.deadZone) }) {
+                fails.append("an axis moved although nothing was expected (\(DevJudge.describeOffences(bad, rules: rules)))")
+            }
+            let named = distinct.joined(separator: ", ")
+            let summary = "Saw \(named) on each press (\(presses.count) press\(presses.count == 1 ? "" : "es"), one item per press); \(m.padReports) pad reports, \(m.padChanged) changed."
+            var out = finish(fails, passText: summary, summary: summary, &m)
+            out.echoItem = distinct.joined(separator: ", then ")
+            return out
         }
 
         // MARK: held
@@ -630,6 +823,13 @@ enum DevJudge {
                 if !samples.isEmpty { fails += releaseFails }
                 if !released.isEmpty { releasedText = "; \(released.joined(separator: ", ")) let go while \(label) stayed held" }
             }
+            // Nothing else may change on the pad while the item is held (a button the step did not ask for), and a
+            // `background` item has to stay where it is.
+            let tr = trace(rules: rules)
+            let (unexpected, unexpectedText) = unexpectedFail(tr, allowed: input.expected.items.union(input.background))
+            if let unexpectedText { fails.append(unexpectedText) }
+            fails += backgroundFails(input.background, expected: input.expected.items, tr: tr)
+            m.values["unexpected"] = Double(unexpected.count)
             let overs = input.handOvers > 0 ? " through \(input.handOvers) hand-over\(input.handOvers == 1 ? "" : "s")" : ""
             let lowText = low.map { "; lowest \(DevJudge.fmt($0))" } ?? ""
             let blipText = blips > 0 ? String(format: "; %d switch blip%@ of at most %.2f ms (the design's switch neutral, reposted at once)", blips, blips == 1 ? "" : "s", longestMs) : ""
@@ -653,6 +853,131 @@ enum DevJudge {
             m.detail = detail
             return m
         }
+    }
+
+    // MARK: Hiding the controller's own button
+
+    /// What the run saw of the remapped paddle and SAX keys of one step. Built by the runner from the echo filter it steps
+    /// on every receiver report, and from the receiver reports the step kept (`recordReceiver`).
+    struct HidingEvidence: Equatable {
+        enum Found: String, Equatable { case seen, confirmed, other, unconfirmed }
+
+        /// One press of a remapped key.
+        struct Hold: Equatable {
+            /// The key's control id.
+            var control: String
+            /// Index of the receiver report of the press, and of the first report after the key was let go (nil = still held
+            /// at the end of the step).
+            var pressN: Int
+            var releaseN: Int?
+            /// The item the filter read for the key (1...14, `EchoParams`' codes) and how it found it.
+            var code: UInt8
+            var found: Found
+            /// D-pad directions (item bits 10...13) the pad showed during the hold that the controller did not send.
+            var recovered: UInt16 = 0
+        }
+
+        /// The remapped keys of the step.
+        var keys: [String]
+        var holds: [Hold]
+        /// The receiver reports the step kept, in order: their index and their raw items (`EchoFilter.items(word: 0, ...)`:
+        /// bits 0...9 buttons, 10...13 directions, a diagonal two of them). A report not kept equals the one before it.
+        var reports: [Report]
+
+        struct Report: Equatable {
+            var n: Int
+            var items: UInt16
+        }
+    }
+
+    /// The pad item of a filter item code (1...10 receiver buttons A...R3, 11...14 D-pad up, right, down, left).
+    static func padItem(code: UInt8) -> PadItem? {
+        switch code {
+        case 1...10: return PadItem(rawValue: Int(code) - 1)
+        case 11...14: return PadItem(rawValue: Int(code))
+        default: return nil
+        }
+    }
+
+    static func itemName(code: UInt8) -> String { padItem(code: code)?.ownerName ?? "item \(code)" }
+
+    /// The layout's words for the six keys.
+    static func keyLabel(_ id: String) -> String {
+        let words: [String: String] = ["paddle_outer_right": "Paddle outer right", "paddle_inner_right": "Paddle inner right",
+                                       "paddle_inner_left": "Paddle inner left", "paddle_outer_left": "Paddle outer left",
+                                       "sax_left": "SAX left", "sax_right": "SAX right"]
+        return words[id] ?? id
+    }
+
+    static let cannotJudgeUnseen = "the controller's button for this key was not seen at its press (it sent none or several)"
+    static func cannotJudgeSame(_ item: String) -> String { "the controller's current profile sends \(item) for this key" }
+    static func notExercised(_ item: String) -> String { "the controller sent no \(item) during the hold" }
+
+    /// The hiding claim of a step, press by press: the item the filter read for the key is
+    /// - "cannot judge" when the press was not seen (`unconfirmed`), or when the item is what the step expects, a background
+    ///   item or the button pressed during the hold: a pass would not show the item was hidden;
+    /// - "not exercised" when the raw reports never set it from the press report to the last report before the key was
+    ///   let go (a direction counts on its diagonals), as when the controller cancelled it against a held opposite;
+    /// - otherwise conclusive: it reached the receiver and never the pad (a leak would already be an unexpected change).
+    /// A key is conclusive with one conclusive press. nil when the step has no press of a remapped key.
+    static func judgeHiding(_ evidence: HidingEvidence, expected: Set<PadItem>, background: Set<PadItem>) -> DevHiding? {
+        func exercised(_ h: HidingEvidence.Hold) -> Bool {
+            let mask = EchoFilter.mask(h.code)
+            guard mask != 0 else { return false }
+            // The report in force at the press report counts, then every kept report up to the release.
+            if let inForce = evidence.reports.last(where: { $0.n <= h.pressN }), inForce.items & mask != 0 { return true }
+            return evidence.reports.contains { $0.n > h.pressN && $0.n < (h.releaseN ?? Int.max) && $0.items & mask != 0 }
+        }
+        var presses: [DevHiding.Press] = []
+        for h in evidence.holds where evidence.keys.contains(h.control) {
+            var p = DevHiding.Press()
+            p.control = h.control
+            p.press = h.pressN
+            p.item = itemName(code: h.code)
+            p.found = h.found.rawValue
+            if h.found == .unconfirmed {
+                p.result = "cannot judge"; p.reason = cannotJudgeUnseen
+            } else if let item = padItem(code: h.code), expected.contains(item) || background.contains(item) {
+                p.result = "cannot judge"; p.reason = cannotJudgeSame(p.item)
+            } else if !exercised(h) {
+                p.result = "not exercised"; p.reason = notExercised(p.item)
+            } else {
+                p.result = "hidden"
+            }
+            presses.append(p)
+        }
+        guard !presses.isEmpty else { return nil }
+
+        // One sentence per key: conclusive with one conclusive press, else the commonest reason (unseen first).
+        var parts: [(key: String, conclusive: Bool, text: String, item: String)] = []
+        for key in evidence.keys where presses.contains(where: { $0.control == key }) {
+            let mine = presses.filter { $0.control == key }
+            let item = mine.first(where: { $0.result == "hidden" })?.item ?? mine[0].item
+            if mine.contains(where: { $0.result == "hidden" }) {
+                let recovered = evidence.holds.filter { $0.control == key }.reduce(UInt16(0)) { $0 | $1.recovered }
+                var text = "pass (\(item) seen on the receiver, never on the pad)"
+                if recovered != 0, let dir = (10...13).first(where: { recovered >> UInt16($0) & 1 == 1 }) {
+                    let shown = itemName(code: UInt8(dir + 1))
+                    text = "pass (\(item) was seen on the receiver before \(shown); the pad showed \(shown) while the controller sent no direction)"
+                }
+                parts.append((key, true, text, item))
+            } else {
+                let worst = mine.first(where: { $0.reason == cannotJudgeUnseen })
+                    ?? mine.first(where: { $0.result == "cannot judge" }) ?? mine[0]
+                let text = worst.result == "cannot judge" ? "cannot judge: \(worst.reason)" : "not exercised (\(worst.reason))"
+                parts.append((key, false, text, item))
+            }
+        }
+        let conclusive = parts.allSatisfy(\.conclusive)
+        var line: String
+        if conclusive, parts.count > 1, parts.allSatisfy({ $0.text.hasPrefix("pass (") && !$0.text.contains(" before ") }) {
+            line = "controller's own button hidden: pass (\(parts.map(\.item).joined(separator: " and ")) seen on the receiver, never on the pad)"
+        } else if parts.count == 1 {
+            line = "controller's own button hidden: \(parts[0].text)"
+        } else {
+            line = "controller's own button hidden: " + parts.map { "\(keyLabel($0.key)): \($0.text)" }.joined(separator: "; ")
+        }
+        return DevHiding(conclusive: conclusive, line: line, presses: presses)
     }
 
     // MARK: Words

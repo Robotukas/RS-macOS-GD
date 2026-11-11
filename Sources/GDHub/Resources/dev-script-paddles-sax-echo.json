@@ -1,6 +1,6 @@
 {
   "id" : "paddles-sax-echo",
-  "notes" : "The four paddles and the two SAX keys, without touching Profile, run on the App path and then on Driver LIVE back to back. The expected column assumes the factory echo (paddles = D-pad, SAX = A/B); when the controller's current onboard profile differs, the step fails with 'unexpected change on <button>' — that button IS the echo. Both passes must show the same echoes; if they differ, the driver's translation is at fault, not the profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
+  "notes" : "The four paddles and the two SAX keys, without touching Profile, run on the App path and then on Driver LIVE back to back. Each press must bring exactly one pad item, whichever button the controller's current profile gives (the result names it), and the same item on both paths: compare the two reports with scripts/tools/dev-run-compare.py, which names the item per key and fails on a difference. The factory D-pad and A / B echoes are not assumed any more, so a changed profile does not fail a step; a key for which the controller sends no button reads \"cannot judge\". If the two passes differ, the driver's translation is at fault, not the profile. Do not press Profile.",
   "paths" : [
     "engine",
     "driver"

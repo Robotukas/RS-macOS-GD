@@ -36,7 +36,7 @@ enum DevRequirementCheck {
     private static func describe(_ miss: DevResolvedStep.RequirementMiss, layout: ControlLayout) -> String {
         let who = DevResolvedStep.label(miss.control, layout)
         guard let output = miss.output else { return "\(who) → \"\(miss.value)\"" }
-        if output == .builtIn { return "\(who) at its built-in function" }
+        if output == .builtIn { return "\(who) \(RemapMenuModel.builtInRequirement(for: miss.control))" }
         return "\(who) → \(DevResolvedStep.label(output, layout))"
     }
 }

@@ -366,5 +366,134 @@ class VolumeTests(unittest.TestCase):
         self.assertEqual(tool.volume_word(tool.rows(rep)[0]["volume"]), tool.DASH)
 
 
+def echo_step(step_id, item, verdict="pass", reason="", counters=None, expected=None, hiding=None, kind="digital"):
+    attempt = {"verdict": {"verdict": verdict, **({"reason": reason} if reason else {})}, "metrics": {"padReports": 10, "padChanged": 4, "values": counters or {}}}
+    if item is not None:
+        attempt["echoItem"] = item
+    if hiding is not None:
+        attempt["hiding"] = hiding
+    step = {"index": 0, "stepId": step_id, "kind": kind, "controls": [step_id], "attempts": [attempt]}
+    if expected is not None:
+        step["expected"] = expected
+    return step
+
+
+def hiding(conclusive, line="", presses=()):
+    return {"conclusive": conclusive, "line": line, "presses": list(presses)}
+
+
+class RemapStep2Tests(unittest.TestCase):
+    """The keys of remap step 2: echoItem, hiding, the pad triggers in `expected`, the filter's counters."""
+
+    def setUp(self):
+        self.tmp = Temp()
+        self.addCleanup(self.tmp.dir.cleanup)
+
+    def report(self, path, steps):
+        return lat_report(path, steps)
+
+    def test_the_same_echo_per_key_on_both_paths_is_no_difference(self):
+        steps = lambda: [echo_step("paddle_outer_left", "D-pad left"), echo_step("sax_left", "A")]
+        a, b = self.tmp.write("a.json", self.report("engine", steps())), self.tmp.write("b.json", self.report("driver", steps()))
+        code, out, _ = run(a, b)
+        self.assertEqual(code, 0, out)
+        side = out.split("Side by side")[1]
+        self.assertIn("echo A/B", side)
+        self.assertIn("D-pad left / D-pad left", side)
+        self.assertIn("A / A", side)
+        self.assertIn("No marked differences.", out)
+
+    def test_a_different_echo_for_the_same_key_fails_the_comparison_and_names_both(self):
+        a = self.report("engine", [echo_step("paddle_inner_right", "D-pad down"), echo_step("sax_left", "A")])
+        b = self.report("driver", [echo_step("paddle_inner_right", "D-pad up"), echo_step("sax_left", "A")])
+        pa, pb = self.tmp.write("a.json", a), self.tmp.write("b.json", b)
+        code, out, _ = run(pa, pb)
+        self.assertEqual(code, 1)
+        side = out.split("Side by side")[1]
+        self.assertIn("D-pad down / D-pad up", side)
+        by = {p["stepId"]: p for p in tool.compare(a, b, 0.10, 5.0)["pairs"]}
+        self.assertEqual(by["paddle_inner_right"]["marks"], ["echo"])
+        self.assertEqual(by["sax_left"]["marks"], [])
+        self.assertTrue(tool.compare(a, b, 0.10, 5.0)["differs"])
+
+    def test_an_echo_that_only_one_pass_has_is_a_difference_and_none_on_both_is_not(self):
+        a = self.report("engine", [echo_step("sax_right", "B"), echo_step("paddle_outer_right", None)])
+        b = self.report("driver", [echo_step("sax_right", None, "inconclusive", "cannot judge: the controller sent no button for this key"),
+                                   echo_step("paddle_outer_right", None)])
+        by = {p["stepId"]: p for p in tool.compare(a, b, 0.10, 5.0)["pairs"]}
+        self.assertEqual(by["sax_right"]["marks"], ["verdict", "echo"])
+        self.assertEqual(by["paddle_outer_right"]["marks"], [])
+
+    def test_the_tables_get_an_echo_column_only_when_a_step_has_an_echo(self):
+        with_echo = self.tmp.write("e.json", self.report("engine", [echo_step("sax_left", "A")]))
+        header = [l for l in run(with_echo)[1].splitlines() if l.startswith("#")][0]
+        self.assertIn("echo", header)
+        self.assertNotIn("hiding", header)
+        header = [l for l in run(ENGINE)[1].splitlines() if l.startswith("#")][0]
+        self.assertNotIn("echo", header)
+        self.assertNotIn("hiding", header)
+
+    def test_hiding_is_read_into_a_word_and_a_conclusive_flag_that_differs_is_marked(self):
+        line = "controller's own button hidden: cannot judge: the controller's current profile sends A for this key"
+        conclusive = hiding(True, "controller's own button hidden: pass (D-pad right seen on the receiver, never on the pad)",
+                            [{"result": "hidden"}] * 9 + [{"result": "cannot judge"}])
+        rows = tool.rows(self.report("engine", [echo_step("outer-right", None, hiding=conclusive),
+                                                echo_step("a-held-sax-left", None, hiding=hiding(False, line, [{"result": "cannot judge"}] * 2)),
+                                                echo_step("rest", None)]))
+        self.assertEqual(tool.hiding_word(rows[0]["hiding"]), "conclusive (9 of 10 presses)")
+        self.assertEqual(tool.hiding_word(rows[1]["hiding"]), "cannot judge: the controller's current profile sends A for this key")
+        self.assertEqual(tool.hiding_word(rows[2]["hiding"]), tool.DASH)
+        a = self.report("engine", [echo_step("outer-right", None, hiding=conclusive)])
+        b = self.report("driver", [echo_step("outer-right", None, hiding=hiding(False, "controller's own button hidden: not exercised (the controller sent no D-pad right during the hold)", [{"result": "not exercised"}]))])
+        pa, pb = self.tmp.write("a.json", a), self.tmp.write("b.json", b)
+        code, out, _ = run(pa, pb)
+        self.assertEqual(code, 1)
+        self.assertEqual(tool.compare(a, b, 0.10, 5.0)["pairs"][0]["marks"], ["hiding"])
+        self.assertIn("hiding A/B", out)
+        self.assertIn("not exercised (the controller sent no D-pad right during the hold)", out)
+        # both not conclusive (the same way) is not a difference
+        self.assertEqual(tool.compare(b, b, 0.10, 5.0)["pairs"][0]["marks"], [])
+
+    def test_expected_pad_triggers_are_shown(self):
+        self.assertEqual(tool.expected_text({"buttons": [], "guide": False, "lt": True}), "LT, RT still")
+        self.assertEqual(tool.expected_text({"buttons": ["A"], "hat": "N", "guide": False}), "A, hat N")
+        self.assertEqual(tool.expected_text({"buttons": [], "guide": False, "lt": True, "rt": True}), "LT, RT")
+        self.assertEqual(tool.expected_text({"buttons": [], "guide": False}), tool.DASH)
+        self.assertEqual(tool.expected_text(None), tool.DASH)
+        rep = self.report("engine", [echo_step("lt", None, expected={"buttons": [], "guide": False, "rt": True}, kind="trigger")])
+        header = [l for l in run(self.tmp.write("t.json", rep))[1].splitlines() if l.startswith("#")][0]
+        self.assertIn("expected", header)
+        self.assertIn("RT, LT still", run(self.tmp.write("t.json", rep))[1])
+
+    def test_the_filters_counters_become_one_change_over_the_step(self):
+        vals = {"echo.hiddenFramesBefore": 100, "echo.hiddenFramesAfter": 340, "echo.recoveredFramesBefore": 0, "echo.recoveredFramesAfter": 12,
+                "echo.otherBefore": 1, "echo.otherAfter": 1, "echo.unconfirmedBefore": 0, "echo.unconfirmedAfter": 0,
+                "echo.validBefore": 1, "echo.validAfter": 1}
+        self.assertEqual(tool.echo_counters(vals), "hidden +240, recovered +12, other +0, unconfirmed +0")
+        self.assertIsNone(tool.echo_counters({}))
+        self.assertIsNone(tool.echo_counters({"echo.hiddenFramesBefore": 1}), "a half pair is not a change")
+        rep = self.report("engine", [echo_step("x", None, counters=vals), echo_step("y", None)])
+        out = run(self.tmp.write("c.json", rep))[1]
+        self.assertIn("echo counters", out)
+        self.assertIn("hidden +240, recovered +12", out)
+
+    def test_sparse_new_keys_do_not_crash(self):
+        rep = self.report("engine", [{"stepId": "x", "attempts": [{"echoItem": 7, "hiding": "no", "verdict": "x"}]},
+                                     {"stepId": "y", "expected": "no", "attempts": [{"hiding": {"presses": "no"}}]}])
+        rows = tool.rows(rep)
+        self.assertIsNone(rows[0]["echoItem"])
+        self.assertIsNone(rows[0]["hiding"])
+        self.assertEqual(rows[1]["expected"], tool.DASH)
+        self.assertEqual(tool.hiding_word(rows[1]["hiding"]), "not conclusive")
+        p = self.tmp.write("s.json", rep)
+        self.assertEqual(run(p, p)[0], 0)
+
+    def test_the_old_fixtures_still_compare_the_same_way(self):
+        code, out, _ = run(ENGINE, DRIVER)
+        self.assertEqual(code, 1)
+        self.assertNotIn("echo A/B", out)
+        self.assertNotIn("hiding A/B", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,9 @@ struct DevChip: Identifiable, Equatable {
     var title: String
     var controls: [String]
     var status: Status
+    /// A pass that does not prove everything it claims: the hiding of a remapped key's own button was not conclusive
+    /// ("cannot judge", "not exercised"). The chip is amber.
+    var caveat = false
     var id: Int { index }
 }
 
@@ -33,6 +36,8 @@ struct DevPassChips: Identifiable, Equatable {
     var pass: Int
     var target: DevTarget
     var chips: [DevChip]
+    /// The words of a pass that was not run because the driver cannot take the mapping (the row shows "stood down").
+    var standDown: String?
     var id: Int { pass }
 }
 
@@ -48,11 +53,24 @@ struct DevResultRow: Identifiable, Equatable {
     var frames: String
     var verdict: DevVerdict?
     var attempts: Int
+    /// The sentence under the verdict (the tooltip): what the hiding check found, with a held background item.
+    var note: String?
+    /// The step passed without proving that the controller's own button was hidden.
+    var caveat = false
     var id: Int { index }
+    /// The tooltip of the Result cell.
+    var help: String { [verdict?.reason, note].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ") }
 }
 
 @MainActor
 final class DevSession: ObservableObject {
+    /// The Expected cell of a record step (mockup v7): nothing is expected, nothing is judged.
+    static let recordExpected = "—"
+    /// The Expected cell of a step on an untouched paddle or SAX key.
+    static let builtInEchoExpected = "one pad item per press (the controller's profile decides)"
+    /// The tooltip of the grey "stood down" chip of a Driver pass that was not run.
+    static let standDownChipHelp = "Driver pass not run: this driver version cannot take this mapping, so the App drove the controller for the whole run."
+
     private static let log = Logger(subsystem: "com.interlinked.gdhub", category: "devmode")
     static let lastTemplateKey = "devLastTemplate"
     static let lastTargetKey = "devLastTarget"
@@ -531,6 +549,7 @@ final class DevSession: ObservableObject {
         stopVolumeWatch()
         var parts: [String] = []
         if let t = hint, !t.isEmpty, t.hasPrefix("The pad reader") { parts.append(t) }
+        if let note = core.standDownNote { parts.append(note) }
         if let note = restoreNote { parts.append(note) }
         if let url = lastReportURL { parts.append("Report saved: \(url.lastPathComponent)") }
         hint = parts.isEmpty ? nil : parts.joined(separator: ". ")
@@ -569,9 +588,12 @@ final class DevSession: ObservableObject {
             let row = core.results.indices.contains(p) ? core.results[p] : []
             let chips = steps.enumerated().map { (i, s) -> DevChip in
                 var status = DevChip.Status.pending
+                var caveat = false
                 if let v = row.indices.contains(i) ? DevRunCore.latestVerdict(row[i]) : nil {
                     switch v {
-                    case .pass: status = .passed
+                    case .pass:
+                        status = .passed
+                        caveat = row[i]?.attempts.last(where: { !$0.superseded })?.hiding.map { !$0.conclusive } ?? false
                     case .fail: status = .failed
                     case .skipped: status = .skipped
                     case .inconclusive, .invalid: status = .inconclusive
@@ -580,9 +602,9 @@ final class DevSession: ObservableObject {
                 } else if p == core.pass, core.currentStepIndex == i, core.isRunning {
                     status = .current
                 }
-                return DevChip(index: i, stepId: s.step.id, title: s.step.title, controls: s.step.controls, status: status)
+                return DevChip(index: i, stepId: s.step.id, title: s.step.title, controls: s.step.controls, status: status, caveat: caveat)
             }
-            return DevPassChips(pass: p, target: target, chips: chips)
+            return DevPassChips(pass: p, target: target, chips: chips, standDown: core.standDownPass == p ? DevSession.standDownChipHelp : nil)
         }
     }
 
@@ -596,18 +618,42 @@ final class DevSession: ObservableObject {
             let verdict = DevRunCore.latestVerdict(r)
             var seen = m?.detail ?? ""
             if seen.isEmpty, let reason = verdict?.reason { seen = reason }
-            // A held step watches one item (a trigger has no place in the expected buttons).
-            var expectedText = r.expected.summary
-            if steps.indices.contains(r.index), steps[r.index].step.devKind == .held {
-                expectedText = DevJudge.heldSummary(step: steps[r.index].step, expected: r.expected)
-            }
-            if steps.indices.contains(r.index), steps[r.index].step.devKind == .record { expectedText = "recording only" }
+            let (expectedText, background) = Self.expectedCell(steps.indices.contains(r.index) ? steps[r.index] : nil, expected: r.expected)
+            let note = Self.resultNote(last, background: background, verdict: verdict)
             return DevResultRow(index: r.index, title: title, expected: expectedText, seen: seen,
                                 loss: pct(m?.lossRatio),
                                 onset: m?.onsetMs.map { String(format: "%.1f ms", $0) } ?? "–",
                                 frames: m.map { $0.framesSeen > 0 ? "\($0.framesSeen)" : "–" } ?? "–",
-                                verdict: verdict, attempts: r.attempts.count)
+                                verdict: verdict, attempts: r.attempts.count, note: note,
+                                caveat: verdict == .pass && (last?.hiding.map { !$0.conclusive } ?? false))
         }
+    }
+
+    /// The Expected cell of a step, and the background items it holds (named, "R3 and L3"; empty for none).
+    nonisolated static func expectedCell(_ rs: DevResolvedStep?, expected: DevExpectedItems) -> (text: String, background: String) {
+        var text = expected.summary
+        var background = ""
+        if let rs {
+            if let times = rs.step.expect?.times, rs.step.devKind == .digital || rs.step.devKind == .trigger { text = expected.summary(times: times) }
+            // A held step watches one item (a trigger has no place in the expected buttons).
+            if rs.step.devKind == .held { text = DevJudge.heldSummary(step: rs.step, expected: expected) }
+            if rs.step.devKind == .record { text = recordExpected }
+            if rs.builtInEcho { text = builtInEchoExpected }
+            if !rs.background.isEmpty {
+                background = rs.background.sorted().map(\.ownerName).joined(separator: " and ")
+                text += "; \(background) held in the background"
+            }
+        }
+        return (text, background)
+    }
+
+    /// The sentence under a result (its tooltip): a held background item that never dropped, then what the hiding check found.
+    nonisolated static func resultNote(_ attempt: DevAttempt?, background: String, verdict: DevVerdict?) -> String? {
+        var note = attempt?.hiding?.line
+        if !background.isEmpty, verdict == .pass {
+            note = "\(background) never dropped: pass." + (note.map { " " + $0.prefix(1).uppercased() + $0.dropFirst() } ?? "")
+        }
+        return note
     }
 
     // MARK: Header

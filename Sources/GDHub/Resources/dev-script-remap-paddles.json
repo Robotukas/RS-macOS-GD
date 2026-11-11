@@ -1,0 +1,427 @@
+{
+  "id" : "remap-paddles",
+  "notes" : "Picks: Paddle outer right → R3, Paddle outer left → L3, Paddle inner left → Nothing, SAX left → View, SAX right → Menu; Paddle inner right stays on Controller's profile. Do not press Profile. Press the held control first, as the step says. Afterwards: Mapping → Reset all remaps. Use it after changing anything that hides the controller's own button for a remapped paddle or SAX key: the echo filter, the mapper or the driver's map. Each remapped key must send only its pick, and the button the controller adds for it must never reach the pad. The result of a ten-press step says whether that was really tested: \"cannot judge\" means the controller's current profile gives the key the same button as its pick or as a button you hold, so a pass proves nothing about hiding (press Profile once and run it again); \"not exercised\" means the controller sent no such button during the hold, for example because it cancels it against a held opposite direction. Paddle inner right is left alone and must send one pad item per press, whichever the profile gives. The receiver's reports are kept in the run file. Runs on the App path and then on Driver LIVE; a driver build that cannot hide the controller's own button stands down for the Driver pass (press Stop at that question).",
+  "paths" : [
+    "engine",
+    "driver"
+  ],
+  "recordReceiver" : true,
+  "schema" : 1,
+  "steps" : [
+    {
+      "controls" : [
+
+      ],
+      "detail" : "Put the controller down and let go of every stick, trigger and button. The pad has to stay completely still.",
+      "id" : "rest",
+      "kind" : "rest",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 3,
+      "title" : "Hands off everything"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "RS"
+          ],
+          "guide" : false
+        },
+        "times" : 10
+      },
+      "id" : "outer-right",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 30,
+      "title" : "Press Paddle outer right ten times"
+    },
+    {
+      "controls" : [
+        "paddle_outer_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "LS"
+          ],
+          "guide" : false
+        },
+        "times" : 10
+      },
+      "id" : "outer-left",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 30,
+      "title" : "Press Paddle outer left ten times"
+    },
+    {
+      "controls" : [
+        "paddle_inner_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false
+        },
+        "times" : 10
+      },
+      "id" : "inner-left",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 30,
+      "title" : "Press Paddle inner left ten times"
+    },
+    {
+      "controls" : [
+        "sax_left"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "View"
+          ],
+          "guide" : false
+        },
+        "times" : 10
+      },
+      "id" : "sax-left",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 30,
+      "title" : "Press SAX left ten times"
+    },
+    {
+      "controls" : [
+        "sax_right"
+      ],
+      "detail" : "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else. Then let go of everything and keep your hands off until the screen moves on.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "Menu"
+          ],
+          "guide" : false
+        },
+        "times" : 10
+      },
+      "id" : "sax-right",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 30,
+      "title" : "Press SAX right ten times"
+    },
+    {
+      "controls" : [
+        "paddle_inner_right"
+      ],
+      "detail" : "Press it, let go, press it again, let go. It is left on Controller's profile: the pad shows the one button the controller gives it.",
+      "expect" : {
+        "builtInEcho" : true,
+        "times" : 2
+      },
+      "id" : "inner-right-profile",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press Paddle inner right twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "dpad_up"
+      ],
+      "detail" : "Press the held control first: press and hold Paddle outer right. While it is held, press D-pad up, let go, press it again, let go. Then let go of Paddle outer right.",
+      "expect" : {
+        "background" : [
+          "paddle_outer_right"
+        ],
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false,
+          "hat" : "N"
+        },
+        "times" : 2
+      },
+      "id" : "outer-right-dpad-up",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 15,
+      "title" : "Hold Paddle outer right, press D-pad up twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_right",
+        "dpad_left"
+      ],
+      "detail" : "Press the held control first: press and hold Paddle outer right. While it is held, press D-pad left, let go, press it again, let go. Then let go of Paddle outer right.",
+      "expect" : {
+        "background" : [
+          "paddle_outer_right"
+        ],
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false,
+          "hat" : "W"
+        },
+        "times" : 2
+      },
+      "id" : "outer-right-dpad-left",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 15,
+      "title" : "Hold Paddle outer right, press D-pad left twice"
+    },
+    {
+      "controls" : [
+        "dpad_left",
+        "paddle_outer_right"
+      ],
+      "detail" : "Press the held control first: press and hold D-pad left, and keep it down the whole step. While it is held, press Paddle outer right, let go, press it again, let go. Then let go of D-pad left.",
+      "expect" : {
+        "background" : [
+          "dpad_left"
+        ],
+        "items" : {
+          "buttons" : [
+            "RS"
+          ],
+          "guide" : false
+        },
+        "times" : 2
+      },
+      "id" : "dpad-left-outer-right",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 15,
+      "title" : "Hold D-pad left, press Paddle outer right twice"
+    },
+    {
+      "controls" : [
+        "a",
+        "sax_left"
+      ],
+      "detail" : "Press the held control first: press and hold A. While it is held, press SAX left, let go, press it again, let go. Then let go of A.",
+      "expect" : {
+        "background" : [
+          "a"
+        ],
+        "items" : {
+          "buttons" : [
+            "View"
+          ],
+          "guide" : false
+        },
+        "times" : 2
+      },
+      "id" : "a-held-sax-left",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 15,
+      "title" : "Hold A, press SAX left twice"
+    },
+    {
+      "controls" : [
+        "paddle_outer_left",
+        "paddle_outer_right"
+      ],
+      "detail" : "Press Paddle outer left and Paddle outer right at the same moment, let go of both, wait a moment, and again. Twice in all.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "LS",
+            "RS"
+          ],
+          "guide" : false
+        },
+        "times" : 2
+      },
+      "id" : "together-outer",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 15,
+      "title" : "Both outer paddles together twice"
+    },
+    {
+      "controls" : [
+        "dpad_right"
+      ],
+      "detail" : "Press it, let go, press it again, let go. Nothing else.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+
+          ],
+          "guide" : false,
+          "hat" : "E"
+        },
+        "times" : 2
+      },
+      "id" : "dpad-right",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press D-pad right twice alone"
+    },
+    {
+      "controls" : [
+        "a"
+      ],
+      "detail" : "Press it, let go, press it again, let go. Nothing else.",
+      "expect" : {
+        "items" : {
+          "buttons" : [
+            "A"
+          ],
+          "guide" : false
+        },
+        "times" : 2
+      },
+      "id" : "a",
+      "kind" : "digital",
+      "requires" : {
+        "mapping" : {
+          "paddle_inner_left" : "nothing",
+          "paddle_inner_right" : "built_in",
+          "paddle_outer_left" : "l3",
+          "paddle_outer_right" : "r3",
+          "sax_left" : "view",
+          "sax_right" : "menu"
+        }
+      },
+      "seconds" : 6,
+      "title" : "Press A twice alone"
+    }
+  ],
+  "title" : "Remap check: paddles and SAX (App, then Driver)",
+  "version" : 1
+}

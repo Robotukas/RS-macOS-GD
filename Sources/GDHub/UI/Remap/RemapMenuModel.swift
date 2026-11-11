@@ -76,6 +76,13 @@ struct RemapMenuModel: Equatable {
     /// A remapped paddle or SAX key: mockup v7b (`NOTE_RM`), word for word, approved on 11 November.
     static let remappedKeyNote = "Sends only your pick. The controller's own button for this key is hidden while you hold it, so pressing that same button yourself shows only when you let go."
     static let controllersProfileTitle = "Controller's profile (built in)"
+    /// What a `built_in` requirement says about a control, next to the menu's own labels: a paddle or SAX key is "on
+    /// Controller's profile" (the menu's "Controller's profile (built in)"), G2-G4 are "at their built-in function".
+    static func builtInRequirement(for controlID: String) -> String {
+        ControlMapping.echoKeyIDs.contains(controlID) ? "on Controller's profile" : "at its built-in function"
+    }
+    /// The Profile key's note, word for word (mockup v7b); the Developer-mode texts for the Profile step repeat it.
+    static let profileNote = "Each press also switches the controller's own profile. Paddles and SAX keys left on Controller's profile change with it; remapped ones keep sending only your pick."
     static let resetTitle = "Reset to default"
 
     var controlID: String
@@ -116,7 +123,7 @@ struct RemapMenuModel: Equatable {
         "g3": "Mapped: G3 no longer changes the volume.",
         "g4": "Mapped: G4 no longer changes the volume.",
         "start": "Holding Start still switches the controller off.",
-        "profile": "Each press also switches the controller's own profile. Paddles and SAX keys left on Controller's profile change with it; remapped ones keep sending only your pick.",
+        "profile": profileNote,
     ]
 
     /// - Parameters:

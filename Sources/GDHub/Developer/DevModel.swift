@@ -103,6 +103,14 @@ struct DevExpect: Codable, Equatable {
     /// owner is asked for. The step may end early once it is reached, every control has gone down and up, and the
     /// receiver has been quiet; nil = no count condition.
     var rises: Int?
+    /// Digital steps on one untouched paddle or SAX key: exactly one pad item (a button, a D-pad direction or a trigger
+    /// pull) comes with each press, whichever the controller's profile gives; the result names it. A step on one of those
+    /// six keys that is left on Controller's profile takes this rule without saying so (`DevExpectation.resolve`).
+    var builtInEcho: Bool?
+    /// Control ids from the step's `controls` that are pressed first and let go last while the other controls are
+    /// pressed (hold A, press SAX left). What each sends to the pad is worked out from the mapping; it has to stay
+    /// held and is left out of "unexpected change". See `DevJudge`.
+    var background: [String]?
 
     init() {}
 
@@ -125,6 +133,8 @@ struct DevExpect: Codable, Equatable {
         releases = try c.decodeIfPresent([String].self, forKey: .releases)
         volume = try c.decodeIfPresent(String.self, forKey: .volume)
         rises = try c.decodeIfPresent(Int.self, forKey: .rises)
+        builtInEcho = try c.decodeIfPresent(Bool.self, forKey: .builtInEcho)
+        background = try c.decodeIfPresent([String].self, forKey: .background)
     }
 
     /// `volume` as a value; nil when absent or not a word this build knows.
@@ -137,30 +147,54 @@ struct DevExpectedItems: Codable, Equatable {
     var buttons: [String] = []
     var hat: String?
     var guide = false
+    /// The pad's triggers the step pulls all the way (one full pull per press), the other one staying still. Left out of
+    /// the file when false, so every older template and report keeps its bytes.
+    var lt = false
+    var rt = false
 
-    init(buttons: [String] = [], hat: String? = nil, guide: Bool = false) {
+    init(buttons: [String] = [], hat: String? = nil, guide: Bool = false, lt: Bool = false, rt: Bool = false) {
         self.buttons = buttons
         self.hat = hat
         self.guide = guide
+        self.lt = lt
+        self.rt = rt
     }
+
+    private enum CodingKeys: String, CodingKey { case buttons, hat, guide, lt, rt }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         buttons = try c.value(.buttons, [])
         hat = try c.decodeIfPresent(String.self, forKey: .hat)
         guide = try c.value(.guide, false)
+        lt = try c.value(.lt, false)
+        rt = try c.value(.rt, false)
     }
 
-    init(items: Set<PadItem>) {
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(buttons, forKey: .buttons)
+        try c.encodeIfPresent(hat, forKey: .hat)
+        try c.encode(guide, forKey: .guide)
+        if lt { try c.encode(true, forKey: .lt) }
+        if rt { try c.encode(true, forKey: .rt) }
+    }
+
+    init(items: Set<PadItem>, lt: Bool = false, rt: Bool = false) {
         buttons = PadItem.buttonItems.filter { items.contains($0) }.map(\.name)
         hat = PadHat.value(for: items).flatMap { $0 == 0 ? nil : PadHat.name($0) }
         guide = items.contains(.guide)
+        self.lt = lt
+        self.rt = rt
     }
 
-    var isEmpty: Bool { buttons.isEmpty && hat == nil && !guide }
+    var isEmpty: Bool { buttons.isEmpty && hat == nil && !guide && !lt && !rt }
+
+    /// The triggers as pad triggers.
+    var triggers: [PadTrigger] { (lt ? [PadTrigger.left] : []) + (rt ? [.right] : []) }
 
     /// The same expectation as pad items, which is what the judge compares with. Names that mean nothing are skipped
-    /// here and reported by `DevTemplate.validate`.
+    /// here and reported by `DevTemplate.validate`. The triggers are not items: see `triggers`.
     var items: Set<PadItem> {
         var s = Set(buttons.compactMap(PadItem.init(name:)))
         if let hat, let v = PadHat.value(named: hat) { s.formUnion(PadHat.items(v)) }
@@ -168,13 +202,24 @@ struct DevExpectedItems: Codable, Equatable {
         return s
     }
 
-    /// "A, D-pad left, Guide", or "nothing on the pad".
-    var summary: String {
+    /// "A, D-pad left, Guide", or "nothing on the pad"; a pulled trigger adds "LT" and the other one "RT still".
+    var summary: String { summary(times: nil) }
+
+    /// The Expected cell of the result table: the same with the number of presses ("R3 ×10", "LT ×2 (full pull), RT still").
+    func summary(times: Int?) -> String {
         if isEmpty { return "nothing on the pad" }
-        var parts = buttons
-        if let hat { parts.append("hat \(hat)") }
+        let n = (times ?? 1) > 1 ? " ×\(times!)" : ""
+        var parts = buttons.map { PadItem(name: $0)?.ownerName ?? $0 }
+        if let hat {
+            // The D-pad in words ("D-pad up"), not the hat's compass letter.
+            if let v = PadHat.value(named: hat), v != 0 { parts += PadHat.items(v).sorted().map(\.name) } else { parts.append("hat \(hat)") }
+        }
         if guide { parts.append("Guide") }
-        return parts.joined(separator: ", ")
+        var out: [String] = []
+        if !parts.isEmpty { out.append(parts.joined(separator: ", ") + n) }
+        for (pulled, name) in [(lt, "LT"), (rt, "RT")] where pulled { out.append(name + n + (n.isEmpty ? "" : " (full pull)")) }
+        if lt != rt { out.append((lt ? "RT" : "LT") + " still") }
+        return out.joined(separator: ", ")
     }
 }
 
@@ -486,6 +531,21 @@ struct DevTemplate: Codable, Equatable {
                     v.errors.append("\(at): expect rises \(rises) must be 1 or more")
                 }
             }
+            if step.expect?.builtInEcho == true {
+                if kind != nil, kind != .digital {
+                    v.errors.append("\(at): expect builtInEcho only applies to digital steps")
+                } else if step.controls.count != 1 || !ControlMapping.echoKeyIDs.contains(step.controls[0]) {
+                    v.errors.append("\(at): expect builtInEcho needs exactly one control, and it must be a paddle or SAX key")
+                }
+            }
+            if let background = step.expect?.background {
+                if kind != nil, kind != .digital, kind != .trigger, kind != .held {
+                    v.errors.append("\(at): expect background only applies to digital, trigger and held steps")
+                }
+                for id in background where !step.controls.contains(id) {
+                    v.errors.append("\(at): expect background names \(id), which is not one of the step's controls (the control that is held first has to be one of them, or the step never starts)")
+                }
+            }
             if let volume = step.expect?.volume {
                 if DevVolumeExpectation(rawValue: volume) == nil {
                     v.errors.append("\(at): expect volume \"\(volume)\" must be \(DevVolumeExpectation.words)")
@@ -702,6 +762,13 @@ struct DevAttempt: Codable, Equatable {
     var receiver: [DevReceiverFrame]?
     /// How many changed reports did not fit under `DevRecorder.maxFramesPerStep`; absent when none were left out.
     var receiverDropped: Int?
+    /// The hiding check of a step with a remapped paddle or SAX key in a template that records the receiver; absent
+    /// otherwise.
+    var hiding: DevHiding?
+    /// A step on an untouched paddle or SAX key (`builtInEcho`): the pad item the press brought, in the owner's words
+    /// ("D-pad down"); several joined with ", then " when the presses differed. `dev-run-compare.py` compares it between the
+    /// App and the Driver pass. Absent for every other step.
+    var echoItem: String?
 
     init() {}
 
@@ -722,6 +789,59 @@ struct DevAttempt: Codable, Equatable {
         volume = try c.decodeIfPresent(DevVolumeResult.self, forKey: .volume)
         receiver = try c.decodeIfPresent([DevReceiverFrame].self, forKey: .receiver)
         receiverDropped = try c.decodeIfPresent(Int.self, forKey: .receiverDropped)
+        hiding = try c.decodeIfPresent(DevHiding.self, forKey: .hiding)
+        echoItem = try c.decodeIfPresent(String.self, forKey: .echoItem)
+    }
+}
+
+/// What the run found out about "the controller's own button for a remapped key is hidden": per press, the item the
+/// echo filter read for the key and how, and what the receiver's raw reports say about it. The step's verdict is not
+/// changed by it (a leak is a pad failure the judge already reports); this says how much a pass proves.
+struct DevHiding: Codable, Equatable {
+    /// One line per press of a remapped key.
+    struct Press: Codable, Equatable {
+        /// The key's control id.
+        var control = ""
+        /// Index of the receiver report of the press (`DevReceiverFrame.n`).
+        var press = 0
+        /// The item the filter read for the key, in the owner's words ("D-pad right").
+        var item = ""
+        /// How it was found: `seen` (it came on with the press), `confirmed` (it was already on and the report agreed),
+        /// `other` (the press showed another item than the stored one) or `unconfirmed` (neither).
+        var found = ""
+        /// `hidden` (conclusive), `cannot judge` or `not exercised`.
+        var result = ""
+        /// The wording of `cannot judge` and `not exercised`; empty for `hidden`.
+        var reason = ""
+
+        init() {}
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            control = try c.value(.control, "")
+            press = try c.value(.press, 0)
+            item = try c.value(.item, "")
+            found = try c.value(.found, "")
+            result = try c.value(.result, "")
+            reason = try c.value(.reason, "")
+        }
+    }
+
+    /// Every remapped key of the step had at least one conclusive press.
+    var conclusive = false
+    /// The sentence the result table shows under the verdict.
+    var line = ""
+    var presses: [Press] = []
+
+    init() {}
+    init(conclusive: Bool, line: String, presses: [Press]) {
+        self.conclusive = conclusive; self.line = line; self.presses = presses
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        conclusive = try c.value(.conclusive, false)
+        line = try c.value(.line, "")
+        presses = try c.value(.presses, [])
     }
 }
 

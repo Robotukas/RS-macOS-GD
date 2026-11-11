@@ -38,7 +38,7 @@ enum DevTemplates {
     static let filePrefix = "dev-script-"
     /// The picker order of the built-ins; anything else follows in id order, local files last.
     static let builtInOrder = ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b",
-                               "gkeys-volume", "t7-rt-hold-toggle", "t8-latency", "echo-survey"]
+                               "gkeys-volume", "t7-rt-hold-toggle", "t8-latency", "echo-survey", "remap-paddles", "remap-triggers"]
 
     /// `~/Library/Application Support/GDHub/dev-scripts/` (or under `GDHUB_SUPPORT_DIR`).
     static var folderURL: URL { MappingStore.defaultURL(fileName: "dev-scripts") }
@@ -149,14 +149,16 @@ enum DevBuiltins {
         var echo = DevTemplate(
             id: "paddles-sax-echo", title: "Paddles and SAX echo (App, then Driver)",
             notes: "The four paddles and the two SAX keys, without touching Profile, run on the App path and then on Driver LIVE "
-                + "back to back. The expected column assumes the factory echo (paddles = D-pad, SAX = A/B); when the controller's "
-                + "current onboard profile differs, the step fails with 'unexpected change on <button>' — that button IS the "
-                + "echo. Both passes must show the same echoes; if they differ, the driver's translation is at fault, not the "
-                + "profile. Added 2026-11-09 after the Full checks showed the profile cycling between runs.",
+                + "back to back. Each press must bring exactly one pad item, whichever button the controller's current profile "
+                + "gives (the result names it), and the same item on both paths: compare the two reports with "
+                + "scripts/tools/dev-run-compare.py, which names the item per key and fails on a difference. The factory D-pad and "
+                + "A / B echoes are not assumed any more, so a changed profile does not fail a step; a key for which the "
+                + "controller sends no button reads \"cannot judge\". If the two passes differ, the driver's translation is at "
+                + "fault, not the profile. Do not press Profile.",
             steps: echoIDs.compactMap { layout.control(id: $0) }.map(step(for:)))
         echo.paths = ["engine", "driver"]
         return [full, sticks, gkeys, echo, remapG1AsY(), remapSwapAB(), gkeysVolume(), t7RTHoldToggle(), t8Latency(layout: layout),
-                echoSurvey(layout: layout)]
+                echoSurvey(layout: layout), remapPaddles(layout: layout), remapTriggers()]
     }
 
     // MARK: Echo survey
@@ -241,6 +243,148 @@ enum DevBuiltins {
                 + "with scripts/tools/echo-survey.py.",
             recordReceiver: true,
             steps: steps)
+    }
+
+    // MARK: Paddle and SAX remap check (picker row 11) and the trigger check (row 12)
+
+    /// A digital step with its expectation written out, so the template does not check the mapper against itself.
+    private static func writtenOut(_ id: String, _ controls: [String], title: String, detail: String, expect items: DevExpectedItems,
+                                   times: Int, seconds: Double, background: [String]? = nil, builtInEcho: Bool = false) -> DevStep {
+        var s = DevStep(id: id, kind: .digital, controls: controls, title: title, detail: detail, seconds: seconds)
+        var e = DevExpect()
+        if !builtInEcho { e.items = items }
+        e.times = times
+        e.background = background
+        if builtInEcho { e.builtInEcho = true }
+        s.expect = e
+        return s
+    }
+
+    /// Picker row 11: every paddle and SAX key remapped except paddle inner right, which stays on Controller's profile
+    /// (remap step 2, S4). The picks are outside every echo the survey saw, so a leaked echo cannot pass for a pick:
+    /// paddle outer right to R3, paddle outer left to L3, paddle inner left to Nothing, SAX left to View, SAX right to Menu.
+    /// `recordReceiver` keeps the receiver's reports, which the hiding verdict of each remapped key reads. Every
+    /// expectation is written out. Steps that hold one control while another is pressed say "press the held control first":
+    /// the controller's own rules about two directions depend on the order.
+    static func remapPaddles(layout: ControlLayout) -> DevTemplate {
+        let need = ["paddle_outer_right": "r3", "paddle_outer_left": "l3", "paddle_inner_left": "nothing",
+                    "sax_left": "view", "sax_right": "menu", "paddle_inner_right": "built_in"]
+        func name(_ id: String) -> String { layout.control(id: id)?.label ?? id }
+        let ending = " Then let go of everything and keep your hands off until the screen moves on."
+        func ten(_ id: String, _ key: String, _ out: DevExpectedItems) -> DevStep {
+            writtenOut(id, [key], title: "Press \(name(key)) ten times",
+                       detail: "Press it, let go completely, wait a moment, and again, ten times in all, about one a second. Touch nothing else." + ending,
+                       expect: out, times: 10, seconds: 30)
+        }
+        func held(_ id: String, _ heldID: String, _ pressedID: String, _ out: DevExpectedItems) -> DevStep {
+            writtenOut(id, [heldID, pressedID], title: "Hold \(name(heldID)), press \(name(pressedID)) twice",
+                       detail: "Press the held control first: press and hold \(name(heldID))"
+                           + (heldID == "dpad_left" ? ", and keep it down the whole step" : "")
+                           + ". While it is held, press \(name(pressedID)), let go, press it again, let go. Then let go of \(name(heldID)).",
+                       expect: out, times: 2, seconds: 15, background: [heldID])
+        }
+        let steps: [DevStep] = [
+            restStep(),
+            ten("outer-right", "paddle_outer_right", DevExpectedItems(buttons: ["RS"])),
+            ten("outer-left", "paddle_outer_left", DevExpectedItems(buttons: ["LS"])),
+            ten("inner-left", "paddle_inner_left", DevExpectedItems()),
+            ten("sax-left", "sax_left", DevExpectedItems(buttons: ["View"])),
+            ten("sax-right", "sax_right", DevExpectedItems(buttons: ["Menu"])),
+            writtenOut("inner-right-profile", ["paddle_inner_right"], title: "Press \(name("paddle_inner_right")) twice",
+                       detail: "Press it, let go, press it again, let go. It is left on Controller's profile: the pad shows the one button the controller gives it.",
+                       expect: DevExpectedItems(), times: 2, seconds: 6, builtInEcho: true),
+            held("outer-right-dpad-up", "paddle_outer_right", "dpad_up", DevExpectedItems(hat: "N")),
+            held("outer-right-dpad-left", "paddle_outer_right", "dpad_left", DevExpectedItems(hat: "W")),
+            held("dpad-left-outer-right", "dpad_left", "paddle_outer_right", DevExpectedItems(buttons: ["RS"])),
+            held("a-held-sax-left", "a", "sax_left", DevExpectedItems(buttons: ["View"])),
+            writtenOut("together-outer", ["paddle_outer_left", "paddle_outer_right"],
+                       title: "Both outer paddles together twice",
+                       detail: "Press Paddle outer left and Paddle outer right at the same moment, let go of both, wait a moment, and again. Twice in all.",
+                       expect: DevExpectedItems(buttons: ["LS", "RS"]), times: 2, seconds: 15),
+            writtenOut("dpad-right", ["dpad_right"], title: "Press \(name("dpad_right")) twice alone",
+                       detail: "Press it, let go, press it again, let go. Nothing else.",
+                       expect: DevExpectedItems(hat: "E"), times: 2, seconds: 6),
+            writtenOut("a", ["a"], title: "Press \(name("a")) twice alone", detail: "Press it, let go, press it again, let go. Nothing else.",
+                       expect: DevExpectedItems(buttons: ["A"]), times: 2, seconds: 6),
+        ]
+        return DevTemplate(
+            id: "remap-paddles", title: "Remap check: paddles and SAX (App, then Driver)",
+            notes: "Picks: Paddle outer right → R3, Paddle outer left → L3, Paddle inner left → Nothing, SAX left → View, SAX right → Menu; "
+                + "Paddle inner right stays on Controller's profile. Do not press Profile. Press the held control first, as the step "
+                + "says. Afterwards: Mapping → Reset all remaps. "
+                + "Use it after changing anything that hides the controller's own button for a remapped paddle or SAX key: the echo "
+                + "filter, the mapper or the driver's map. Each remapped key must send only its pick, and the button the controller "
+                + "adds for it must never reach the pad. The result of a ten-press step says whether that was really tested: "
+                + "\"cannot judge\" means the controller's current profile gives the key the same button as its pick or as a button "
+                + "you hold, so a pass proves nothing about hiding (press Profile once and run it again); \"not exercised\" means the "
+                + "controller sent no such button during the hold, for example because it cancels it against a held opposite "
+                + "direction. Paddle inner right is left alone and must send one pad item per press, whichever the profile gives. "
+                + "The receiver's reports are kept in the run file. Runs on the App path and then on Driver LIVE; a driver build that "
+                + "cannot hide the controller's own button stands down for the Driver pass (press Stop at that question).",
+            paths: ["engine", "driver"],
+            recordReceiver: true,
+            steps: steps.map { requiring(need, $0) })
+    }
+
+    /// Picker row 12: triggers, and three sources on one pad button (remap step 2, S4). G1 to LT, LT to RT (RT still sends
+    /// RT), X to A and G5 to A. `requires` on every step names A and RT too, so a leftover remap of either cannot change what
+    /// "A twice" and "RT twice" test.
+    static func remapTriggers() -> DevTemplate {
+        let need = ["g1": "lt", "lt": "rt", "x": "a", "g5": "a", "a": "a", "rt": "rt"]
+        func pull(_ id: String, _ control: String, _ label: String, out: DevExpectedItems, detail: String) -> DevStep {
+            var s = DevStep(id: id, kind: .trigger, controls: [control], title: "Pull \(label) fully twice", detail: detail,
+                            seconds: 8, releaseSeconds: 0.5)
+            var e = DevExpect()
+            e.items = out
+            e.times = 2
+            s.expect = e
+            return s
+        }
+        var handOver = DevStep(id: "hold-x-then-g5", kind: .held, controls: ["x", "g5"],
+                               title: "Hold X until A shows, then add G5, then let go of X",
+                               detail: "Press and hold X: A shows on the pad. While it is held, also press and hold G5. Then let go of X and keep holding G5 until the screen says \"Let go now\". A must stay down the whole time.",
+                               seconds: 8)
+        var handOverExpect = DevExpect()
+        handOverExpect.item = "A"
+        handOverExpect.releases = ["x"]
+        handOver.expect = handOverExpect
+        var both = DevStep(id: "pull-lt-rt-let-go-lt", kind: .held, controls: ["lt", "rt"],
+                           title: "Pull LT and RT together, let go of LT",
+                           detail: "Pull LT and RT all the way down together. Then let go of LT and keep RT pulled until the screen says \"Let go now\". The pad's RT must stay down the whole time.",
+                           seconds: 8)
+        var bothExpect = DevExpect()
+        bothExpect.item = "RT"
+        bothExpect.releases = ["lt"]
+        both.expect = bothExpect
+        let steps: [DevStep] = [
+            restStep(),
+            writtenOut("g1", ["g1"], title: "Press G1 twice",
+                       detail: "Press G1, let go, press it again, let go. G1 now sends LT: the pad must show a full LT pull each time, and its RT must stay still.",
+                       expect: DevExpectedItems(lt: true), times: 2, seconds: 6),
+            pull("lt", "lt", "LT", out: DevExpectedItems(rt: true),
+                 detail: "Pull LT all the way, let go, pull it again, let go. LT now sends RT: the pad must show RT, and its LT must stay still."),
+            pull("rt", "rt", "RT", out: DevExpectedItems(rt: true),
+                 detail: "Pull RT all the way, let go, pull it again, let go. RT still sends RT, and the pad's LT must stay still."),
+            writtenOut("x", ["x"], title: "Press X twice", detail: "Press X, let go, press it again, let go. X now sends A: the pad shows A.",
+                       expect: DevExpectedItems(buttons: ["A"]), times: 2, seconds: 6),
+            writtenOut("g5", ["g5"], title: "Press G5 twice", detail: "Press G5, let go, press it again, let go. G5 now sends A: the pad shows A.",
+                       expect: DevExpectedItems(buttons: ["A"]), times: 2, seconds: 6),
+            writtenOut("a", ["a"], title: "Press A twice", detail: "Press A, let go, press it again, let go. A still sends A.",
+                       expect: DevExpectedItems(buttons: ["A"]), times: 2, seconds: 6),
+            handOver,
+            both,
+        ]
+        return DevTemplate(
+            id: "remap-triggers", title: "Remap check: triggers and three sources (App, then Driver)",
+            notes: "Picks: G1 → LT, LT → RT (RT still sends RT), X → A, G5 → A. Do not press Profile. Afterwards: Mapping → Reset all remaps. "
+                + "Use it after changing anything that sends a button to a trigger, moves a trigger, or sends several controls to one pad "
+                + "button. A button sent to LT pulls it all the way each time, a trigger sent to the other trigger pulls that one and "
+                + "leaves its own still, and three controls on A (X, G5 and A itself) each show A, the last one let go ends it. "
+                + "The expectations are written out in the template on purpose, so it does not check the mapper against itself. "
+                + "Runs on the App path and then on Driver LIVE; a driver build that cannot take the mapping stands down for the "
+                + "Driver pass (press Stop at that question).",
+            paths: ["engine", "driver"],
+            steps: steps.map { requiring(need, $0) })
     }
 
     // MARK: Remap checks
@@ -472,7 +616,7 @@ enum DevBuiltins {
         case "g1", "g2", "g3", "g4", "g5":
             return "The pad should send nothing for this key unless a mapping routes it."
         case "profile":
-            return "The pad should send nothing for this key. Each press also switches the controller's own profile, which changes what the paddles and SAX keys send."
+            return "The pad should send nothing for this key. " + RemapMenuModel.profileNote
         case "start":
             return "The pad shows Start as the Guide button."
         case "sax_left", "sax_right":

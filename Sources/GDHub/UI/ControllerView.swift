@@ -704,7 +704,7 @@ private struct CalloutLayer: View {
         case .passed?: return " ✓"
         case .failed?: return " ✗"
         case .inconclusive?: return " ?"
-        case .recorded?: return " ○"
+        case .recorded?: return ""
         default: return ""
         }
     }

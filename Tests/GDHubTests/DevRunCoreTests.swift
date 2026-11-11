@@ -669,31 +669,27 @@ final class DevRunCoreTests: XCTestCase {
         XCTAssertNotNil(skip(requiring(["g1": "Y"]), m))
     }
 
-    func testTriggerRemapsAreSkippedWithAReason() {
+    /// Step 1 skipped every step on a remapped trigger; the judge works out the mapped trigger now, so nothing is skipped
+    /// for it (S4). The expectation follows the mapping instead.
+    func testTriggerRemapsAreJudgedNotSkipped() {
         var m = ControlMapping.default
         m.setOutput(.pad(.a), for: "lt")
-        XCTAssertEqual(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), m),
-                       "LT is remapped to A; trigger remaps are checked after the next driver update")
-        XCTAssertEqual(skip(DevStep(id: "s", kind: .held, controls: ["lt"], title: "t"), m),
-                       "LT is remapped to A; trigger remaps are checked after the next driver update")
-        XCTAssertNil(skip(DevStep(id: "s", kind: .trigger, controls: ["rt"], title: "t"), m), "RT was left alone")
+        XCTAssertNil(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), m))
+        XCTAssertNil(skip(DevStep(id: "s", kind: .held, controls: ["lt"], title: "t"), m))
         var swap = ControlMapping.default
         swap.setOutput(.pad(.rt), for: "lt"); swap.setOutput(.pad(.lt), for: "rt")
-        XCTAssertEqual(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), swap),
-                       "LT is remapped to RT; trigger remaps are checked after the next driver update")
-        var none = ControlMapping.default
-        none.setOutput(.nothing, for: "rt")
-        XCTAssertEqual(skip(DevStep(id: "s", kind: .held, controls: ["rt"], title: "t"), none),
-                       "RT is remapped to Nothing; trigger remaps are checked after the next driver update")
-        // a button sent to a trigger
+        XCTAssertNil(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), swap))
         var toTrigger = ControlMapping.default
         toTrigger.setOutput(.pad(.lt), for: "g1")
-        let why = "a button sent to LT/RT is checked after the next driver update"
-        XCTAssertEqual(skip(DevStep(id: "s", kind: .digital, controls: ["g1"], title: "t"), toTrigger), why)
-        XCTAssertEqual(skip(DevStep(id: "s", kind: .held, controls: ["g1"], title: "t"), toTrigger), why)
-        XCTAssertNil(skip(DevStep(id: "s", kind: .digital, controls: ["g2"], title: "t"), toTrigger))
-        XCTAssertNil(skip(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), toTrigger),
-                      "LT itself is where it was; another control also feeding it is not judged here")
+        XCTAssertNil(skip(DevStep(id: "s", kind: .digital, controls: ["g1"], title: "t"), toTrigger))
+        XCTAssertNil(skip(DevStep(id: "s", kind: .held, controls: ["g1"], title: "t"), toTrigger))
+        func resolved(_ step: DevStep, _ mapping: ControlMapping) -> DevResolvedStep {
+            DevResolvedStep.resolve(template: DevTemplate(id: "test", title: "t", steps: [step]), mapping: mapping, layout: Rig.layout)[0]
+        }
+        XCTAssertEqual(resolved(DevStep(id: "s", kind: .trigger, controls: ["lt"], title: "t"), swap).expected, DevExpectedItems(rt: true))
+        XCTAssertEqual(resolved(DevStep(id: "s", kind: .digital, controls: ["g1"], title: "t"), toTrigger).expected, DevExpectedItems(lt: true))
+        XCTAssertEqual(resolved(DevStep(id: "s", kind: .trigger, controls: ["rt"], title: "t"), .default).expected, DevExpectedItems(rt: true))
+        XCTAssertEqual(resolved(DevStep(id: "s", kind: .digital, controls: ["g1"], title: "t"), toTrigger).linked, ["lt"])
     }
 
     func testTheWindowOfATriggerStepOpensOnThePhysicalPull() {
@@ -724,7 +720,7 @@ final class DevRunCoreTests: XCTestCase {
         // The remap templates (and the volume-key one) are meant to skip until the owner makes their picks; every other one runs as is.
         let needsPicks: (DevTemplate) -> Bool = { $0.id.hasPrefix("remap-") || $0.id == "gkeys-volume" }
         let others = templates.filter { !needsPicks($0) }
-        XCTAssertEqual(others.count, templates.count - 3)
+        XCTAssertEqual(others.count, templates.count - 5)
         for t in others {
             for r in DevResolvedStep.resolve(template: t, mapping: .default, layout: Rig.layout) {
                 XCTAssertNil(r.skipReason, "\(t.id) step \(r.step.id)")
@@ -796,7 +792,7 @@ final class DevRunCoreTests: XCTestCase {
         r.start(.driver)
         r.advance(10_100)
         guard case .runAnyway(let text)? = r.prompts.first else { return XCTFail("\(r.prompts)") }
-        XCTAssertEqual(text, "Driver pass cannot be confirmed: a button sent to LT needs a driver update. Reset that remap first.")
+        XCTAssertEqual(text, "Driver pass cannot be confirmed: a button sent to LT needs a driver update. Press Stop to keep the App result, or Reset that remap first.")
         // a fault of GDHub's own is not something a reset fixes: the status line stays
         let internalFault = Rig()
         internalFault.prepare(status: Rig.status(armed: "inert", path: "driver") { $0.mappingNote = "internal: blob check failed" })
@@ -1519,6 +1515,7 @@ final class DevRecordTests: XCTestCase {
         guard case .recorded(let text)? = r.verdict(0) else { return XCTFail("\(String(describing: r.verdict(0)))") }
         XCTAssertTrue(text.hasPrefix("Recorded 5 receiver reports that changed"), text)
         XCTAssertTrue(text.hasSuffix("nothing was judged."), text)
+        XCTAssertEqual(r.core.results[0][0]?.attempts.last?.metrics.detail, "receiver frames kept: 5")
         let att = attempt(r)!
         let rec = att.receiver ?? []
         XCTAssertEqual(rec.count, 5, "the first report of the step, then press, release, press, release")
@@ -1532,7 +1529,8 @@ final class DevRecordTests: XCTestCase {
         XCTAssertEqual(rec[1].t, 0, accuracy: 1e-9, "the report that opens the window is time zero")
         XCTAssertGreaterThan(rec[2].t, 90)
         XCTAssertNil(att.receiverDropped)
-        XCTAssertEqual(att.metrics.detail, text)
+        XCTAssertEqual(att.metrics.detail, "receiver frames kept: 5", "the table shows how many frames were kept (mockup v7)")
+        XCTAssertEqual(att.verdict, .recorded(text))
         XCTAssertEqual(r.core.state, .finished)
     }
 
@@ -1677,7 +1675,7 @@ final class DevRecordTests: XCTestCase {
                                    windowStartNs: 0, windowEndNs: 1, endNs: 1, matchedCount: 7)
         input.expected = DevExpectedItems()
         let out = DevJudge.judge(input)
-        XCTAssertEqual(out.verdict, .recorded("recording only"), "not inconclusive for a missing pad state or a wrong reader count")
+        XCTAssertEqual(out.verdict, .recorded("nothing was judged"), "not inconclusive for a missing pad state or a wrong reader count")
     }
 
     func testTheReceiverReportReadsBackFromItsFrame() {
@@ -1706,4 +1704,420 @@ final class DevRecordTests: XCTestCase {
         var a = GamepadFrame.idle; a.buttons = 1
         XCTAssertTrue(DevRecorder.isActive("a", a, mapping: wrong), "another control is read the way the mapping reads it")
     }
+}
+
+// MARK: - Row 11 and row 12 end to end: the run-long filter, `background` and the hiding verdict (remap step 2, S4)
+
+/// The real built-in steps of rows 11 and 12 run through the runner against a model of the controller (`EchoSim`): the
+/// controller adds each held key's echo and combines the D-pad itself, the runner cleans the receiver's reports with its own
+/// filter, and the pad is what the sink would post (the same rule, stepped on its own).
+final class DevRemapRunTests: XCTestCase {
+    private static let layout = ControlLayout.loadFromBundle()!
+
+    private final class World {
+        let r = Rig()
+        var sim = EchoState()
+        var echoes = EchoSim.factoryEchoes
+        var real: UInt16 = 0
+        var keys: UInt8 = 0
+        /// A pad fed with the report as the controller sent it, not cleaned: what the Swift sink would show without the rule.
+        var padFromRaw = false
+
+        init(_ mapping: ControlMapping) { r.mapping = mapping }
+
+        func frame() -> GamepadFrame {
+            let c = EchoSim.controller(real: real, keys: keys, echoes: echoes)
+            var f = GamepadFrame.idle
+            f.buttons = c.buttons; f.hat = c.hat; f.extra = c.extra
+            return f
+        }
+
+        /// One report: "+OR +up", "-up", "E=OR:A" (the controller now adds A for that key). Holds for `ms`.
+        func report(_ tokens: String, hold ms: Double = 90) {
+            for t in tokens.split(separator: " ").map(String.init) {
+                if t.hasPrefix("E=") {
+                    let p = t.dropFirst(2).split(separator: ":").map(String.init)
+                    echoes[EchoSim.keyNames.firstIndex(of: p[0])!] = EchoSim.itemTokens[p[1]]!
+                    continue
+                }
+                let on = t.hasPrefix("+"), name = String(t.dropFirst())
+                if let k = EchoSim.keyNames.firstIndex(of: name) {
+                    if on { keys |= 1 << UInt8(k) } else { keys &= ~(1 << UInt8(k)) }
+                } else if let m = EchoSim.itemTokens[name] {
+                    if on { real |= m } else { real &= ~m }
+                } else { fatalError("unknown token \(t)") }
+            }
+            let f = frame()
+            let word = sim.step(r.mapping.echoParams, frame: f)
+            let shown = padFromRaw ? f : EchoFilter.apply(word, to: f)
+            r.move(f, PassthroughPadMapper.padState(shown, r.mapping), hold: ms)
+        }
+
+        func play(_ script: [String], hold ms: Double = 90) { for t in script { report(t, hold: ms) } }
+    }
+
+    private func row11Mapping() -> ControlMapping {
+        var m = ControlMapping.default
+        m.setOutput(.pad(.r3), for: "paddle_outer_right")
+        m.setOutput(.pad(.l3), for: "paddle_outer_left")
+        m.setOutput(.nothing, for: "paddle_inner_left")
+        m.setOutput(.pad(.view), for: "sax_left")
+        m.setOutput(.pad(.menu), for: "sax_right")
+        return m
+    }
+
+    private func step(_ id: String) -> DevStep {
+        DevBuiltins.remapPaddles(layout: Self.layout).steps.first { $0.id == id }!
+    }
+
+    /// Runs one step of row 11 and returns the world after `script` (played after Go).
+    private func run(_ id: String, mapping: ControlMapping? = nil, script: [String], prelude: [String] = [],
+                     padFromRaw: Bool = false, hold: Double = 90) -> (World, DevAttempt) {
+        let w = World(mapping ?? row11Mapping())
+        w.padFromRaw = padFromRaw
+        w.r.prepare()
+        w.r.start(steps: [step(id)], recordReceiver: true)
+        w.r.untilGo()
+        w.play(script, hold: hold)
+        var spent = 0.0
+        while w.r.core.isRunning, spent < 40_000 { w.r.advance(100); spent += 100 }
+        XCTAssertFalse(w.r.core.isRunning, "step \(id) never ended: \(w.r.core.state)")
+        return (w, w.r.core.results[0][0]!.attempts.last!)
+    }
+
+    private func presses(_ key: String, times n: Int) -> [String] {
+        Array((0..<n).map { _ in ["+\(key)", "-\(key)"] }.joined())
+    }
+
+    func testTenPressesOfARemappedKeyPassAndTheHidingIsConclusive() {
+        let (w, att) = run("outer-right", script: presses("OR", times: 10))
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertEqual(w.r.verdict(0), .pass)
+        guard let hiding = att.hiding else { return XCTFail("no hiding check: \(att.verdict) \(att.metrics.detail)") }
+        XCTAssertTrue(hiding.conclusive)
+        XCTAssertEqual(hiding.line, "controller's own button hidden: pass (D-pad right seen on the receiver, never on the pad)")
+        XCTAssertEqual(hiding.presses.count, 10)
+        XCTAssertTrue(hiding.presses.allSatisfy { $0.result == "hidden" && $0.item == "D-pad right" && $0.found == "seen" })
+        XCTAssertTrue(att.metrics.detail.contains("Controller's own button hidden: pass"), att.metrics.detail)
+        // the run's own filter counted its work, before and after the step
+        XCTAssertGreaterThan(att.metrics.values["echo.hiddenFramesAfter"] ?? 0, att.metrics.values["echo.hiddenFramesBefore"] ?? 1)
+        XCTAssertEqual(att.metrics.values["echo.validAfter"], 1, "the filter has seen reports")
+    }
+
+    func testALeakedEchoIsAnUnexpectedChangeAndFailsTheStep() {
+        let (_, att) = run("outer-right", script: presses("OR", times: 10), padFromRaw: true)
+        guard case .fail(let why) = att.verdict else { return XCTFail("\(att.verdict)") }
+        XCTAssertTrue(why.contains("unexpected change on D-pad right"), why)
+    }
+
+    func testAKeyOnNothingExpectsNoPadChangeAndItsHidingIsJudgedToo() {
+        let (_, att) = run("inner-left", script: presses("IL", times: 10))
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertEqual(att.hiding?.conclusive, true)
+        XCTAssertEqual(att.hiding?.presses.first?.item, "D-pad up")
+        let (_, leak) = run("inner-left", script: presses("IL", times: 10), padFromRaw: true)
+        guard case .fail(let why) = leak.verdict else { return XCTFail("\(leak.verdict)") }
+        XCTAssertTrue(why.contains("D-pad up"), why)
+    }
+
+    func testPaddleHeldFirstThenDpadUpPassesWithRThreeHeldInTheBackground() {
+        let (_, att) = run("outer-right-dpad-up", script: ["+OR"] + ["+up", "-up", "+up", "-up"] + ["-OR"])
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertEqual(att.hiding?.conclusive, true)
+        XCTAssertEqual(att.hiding?.line, "controller's own button hidden: pass (D-pad right seen on the receiver, never on the pad)")
+        XCTAssertTrue(att.metrics.detail.contains("R3 held throughout"), att.metrics.detail)
+        // the held paddle stays down the whole step, but only the presses count towards the early end: it does not run 15 s
+        XCTAssertLessThan(Double(att.windowEndNs - att.windowStartNs) / 1e9, 6, "the step ends once both are let go and the receiver is quiet")
+    }
+
+    func testPaddleHeldFirstThenDpadLeftPassesOnCleanedFramesAndFailsOnRawOnes() {
+        let script = ["+OR", "+left", "-left", "+left", "-left", "-OR"]
+        let (_, att) = run("outer-right-dpad-left", script: script)
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        guard let hiding = att.hiding else { return XCTFail("no hiding check: \(att.verdict) \(att.metrics.detail)") }
+        XCTAssertTrue(hiding.conclusive)
+        XCTAssertEqual(hiding.line, "controller's own button hidden: pass (D-pad right was seen on the receiver before D-pad left; the pad showed D-pad left while the controller sent no direction)")
+        // raw: the controller sends no direction while D-pad left is down, so the pad would not show it
+        let (_, raw) = run("outer-right-dpad-left", script: script, padFromRaw: true)
+        guard case .fail = raw.verdict else { return XCTFail("\(raw.verdict): \(raw.metrics.detail)") }
+    }
+
+    func testDpadLeftHeldFirstThenThePaddlePassesAndIsNotExercised() {
+        let script = ["+left", "+OR", "-OR", "+OR", "-OR", "-left"]
+        let (_, att) = run("dpad-left-outer-right", script: script)
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertTrue(att.metrics.detail.contains("D-pad left held throughout"), att.metrics.detail)
+        guard let hiding = att.hiding else { return XCTFail("no hiding check: \(att.verdict) \(att.metrics.detail)") }
+        XCTAssertFalse(hiding.conclusive)
+        XCTAssertEqual(hiding.line, "controller's own button hidden: not exercised (the controller sent no D-pad right during the hold)")
+        // without the rule the controller's cancel would drop D-pad left from the pad
+        let (_, raw) = run("dpad-left-outer-right", script: script, padFromRaw: true)
+        guard case .fail(let why) = raw.verdict else { return XCTFail("\(raw.verdict)") }
+        XCTAssertTrue(why.contains("D-pad left dropped while R3 was being pressed"), why)
+    }
+
+    func testAHeldAMakesSAXLeftCannotJudgeBecauseItsEchoIsTheBackgroundItem() {
+        let (_, att) = run("a-held-sax-left", script: ["+A", "+SL", "-SL", "+SL", "-SL", "-A"])
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        guard let hiding = att.hiding else { return XCTFail("no hiding check: \(att.verdict) \(att.metrics.detail)") }
+        XCTAssertFalse(hiding.conclusive)
+        XCTAssertEqual(hiding.line, "controller's own button hidden: cannot judge: the controller's current profile sends A for this key")
+    }
+
+    func testAPressTheFilterCouldNotReadIsCannotJudgeNotSeenAtItsPress() {
+        // A real A is held (the background item) and the controller now adds A for outer right (a profile change): the press
+        // changes nothing but the key's bit, so the item cannot be seen or confirmed.
+        var bg = step("outer-right")
+        bg.id = "bg"
+        bg.controls = ["a", "paddle_outer_right"]
+        var e = DevExpect(); e.items = DevExpectedItems(buttons: ["RS"]); e.background = ["a"]; e.times = 3
+        bg.expect = e
+        let w = World(row11Mapping())
+        w.r.prepare()
+        w.r.start(steps: [bg], recordReceiver: true)
+        w.r.untilGo()
+        w.play(["+A", "E=OR:A"] + presses("OR", times: 3) + ["-A"])
+        var spent = 0.0
+        while w.r.core.isRunning, spent < 40_000 { w.r.advance(100); spent += 100 }
+        guard let att = w.r.core.results[0][0]?.attempts.last, let hiding = att.hiding else { return XCTFail("no hiding check") }
+        XCTAssertFalse(hiding.conclusive, hiding.line)
+        XCTAssertEqual(hiding.presses.first?.found, "unconfirmed")
+        XCTAssertEqual(hiding.line, "controller's own button hidden: cannot judge: the controller's button for this key was not seen at its press (it sent none or several)")
+    }
+
+    func testBothOuterPaddlesTogetherPassWithNoDpadOnThePad() {
+        let (_, att) = run("together-outer", script: ["+OL +OR", "-OL -OR", "+OL +OR", "-OL -OR"])
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertNotNil(att.hiding)
+    }
+
+    func testAnUntouchedPaddleIsJudgedByTheEchoWhateverTheProfileGives() {
+        let (_, factory) = run("inner-right-profile", script: presses("IR", times: 2))
+        XCTAssertEqual(factory.verdict, .pass, factory.metrics.detail)
+        XCTAssertTrue(factory.metrics.detail.hasPrefix("Saw D-pad down on each press"), factory.metrics.detail)
+        XCTAssertNil(factory.hiding, "no claim about an untouched key")
+        XCTAssertEqual(factory.echoItem, "D-pad down", "the report names the item, for dev-run-compare.py")
+        // another profile: the key now adds Y, the same step passes and names Y
+        let (_, other) = run("inner-right-profile", script: ["E=IR:Y"] + presses("IR", times: 2))
+        XCTAssertEqual(other.verdict, .pass, other.metrics.detail)
+        XCTAssertTrue(other.metrics.detail.hasPrefix("Saw Y on each press"), other.metrics.detail)
+        XCTAssertEqual(other.echoItem, "Y")
+    }
+
+    func testAnUntouchedKeyThatSendsNothingCannotBeJudgedAndIsNotAFailure() {
+        // The profile adds nothing for this key (the echo is the key's own bit only).
+        let w = World(row11Mapping())
+        w.echoes[1] = 0
+        w.r.prepare()
+        w.r.start(steps: [step("inner-right-profile")], recordReceiver: true)
+        w.r.untilGo()
+        w.play(presses("IR", times: 2))
+        var spent = 0.0
+        while w.r.core.isRunning, spent < 40_000 { w.r.advance(100); spent += 100 }
+        let att = w.r.core.results[0][0]!.attempts.last!
+        XCTAssertEqual(att.verdict, .inconclusive("cannot judge: the controller sent no button for this key"))
+        XCTAssertEqual(att.verdict.reason, "cannot judge: the controller sent no button for this key")
+    }
+
+    func testRowElevenHasFourteenStepsAndItsOwnTitlesAndPicks() {
+        let t = DevBuiltins.remapPaddles(layout: Self.layout)
+        XCTAssertEqual(t.title, "Remap check: paddles and SAX (App, then Driver)")
+        XCTAssertEqual(t.steps.count, 14)
+        XCTAssertEqual(t.recordReceiver, true)
+        XCTAssertEqual(t.paths ?? [], ["engine", "driver"])
+        XCTAssertTrue(t.steps.allSatisfy { $0.requires != nil })
+        XCTAssertEqual(t.validation(layout: Self.layout).errors, [])
+        // on the owner's picks nothing is skipped; on the factory mapping every step is
+        let on = DevResolvedStep.resolve(template: t, mapping: row11Mapping(), layout: Self.layout)
+        XCTAssertTrue(on.allSatisfy { $0.skipReason == nil }, "\(on.compactMap(\.skipReason))")
+        let off = DevResolvedStep.resolve(template: t, mapping: .default, layout: Self.layout)
+        XCTAssertTrue(off.allSatisfy { $0.skipReason != nil })
+        XCTAssertEqual(off[1].skipReason, "needs Paddle inner left → Nothing: set it in Mapping", "the first miss, in control order")
+        var innerRightRemapped = row11Mapping()
+        innerRightRemapped.setOutput(.pad(.y), for: "paddle_inner_right")
+        XCTAssertEqual(DevResolvedStep.resolve(template: t, mapping: innerRightRemapped, layout: Self.layout)[1].skipReason,
+                       "needs Paddle inner right on Controller's profile: Reset it in Mapping")
+        // the paddle inner right step takes the builtInEcho rule; the remapped keys' steps carry the hiding check
+        XCTAssertTrue(on[6].builtInEcho)
+        XCTAssertEqual(on[1].hiddenKeys, ["paddle_outer_right"])
+        XCTAssertEqual(on[7].background, [.rs])
+        XCTAssertEqual(on[9].background, [.dpadLeft])
+        XCTAssertEqual(on[10].background, [.a])
+    }
+
+    // MARK: The run-long filter
+
+    func testTheReferenceAndTheWindowSeeTheCleanedReportsNotTheEcho() {
+        // Paddle outer right sent to Y, with its D-pad-right echo arriving a report AFTER the key's bit.
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "paddle_outer_right")
+        let r = Rig()
+        r.mapping = m
+        let yStep = DevStep(id: "y", kind: .digital, controls: ["paddle_outer_right"], title: "t", seconds: 6, readySeconds: 1)
+        var e = DevExpect(); e.items = DevExpectedItems(buttons: ["Y"])
+        var step = yStep; step.expect = e
+        r.prepare()
+        r.start(steps: [step])
+        r.untilGo()
+        func f(extra: UInt16, hat: UInt8) -> GamepadFrame { var g = GamepadFrame.idle; g.extra = extra; g.hat = hat; return g }
+        for _ in 0..<2 {
+            r.move(f(extra: 1, hat: 8), PassthroughPadMapper.padState(EchoFilter.apply(0, to: f(extra: 1, hat: 8)), m).with { $0.buttons = [.y] }, hold: 120)
+            r.frame = f(extra: 1, hat: 2); r.advance(120)           // the echo comes a report later
+            r.move(.idle, PadState(), hold: 200)
+        }
+        var spent = 0.0
+        while r.core.isRunning, spent < 10_000 { r.advance(100); spent += 100 }
+        let att = r.core.results[0][0]!.attempts.last!
+        XCTAssertEqual(att.metrics.expectedChanges, 4, "Y down and up twice; the late D-pad right edge is not an expected change")
+        XCTAssertEqual(r.core.results[0][0]!.expected, DevExpectedItems(buttons: ["Y"]))
+    }
+
+    func testADpadRightStepDoesNotOpenItsWindowOnAHiddenPaddleHold() {
+        var m = ControlMapping.default
+        m.setOutput(.pad(.y), for: "paddle_outer_right")
+        let r = Rig()
+        r.mapping = m
+        var step = DevStep(id: "right", kind: .digital, controls: ["dpad_right"], title: "t", seconds: 6, readySeconds: 1)
+        var e = DevExpect(); e.items = DevExpectedItems(hat: "E"); step.expect = e
+        r.prepare()
+        r.start(steps: [step])
+        r.untilGo()
+        var held = GamepadFrame.idle; held.extra = 1; held.hat = 2          // the paddle and its echo in one report
+        r.frame = held; r.advance(300)
+        XCTAssertEqual(r.core.state, .step(index: 0, phase: .ready), "the paddle's D-pad right is hidden: it does not start the D-pad step")
+        r.frame = .idle; r.advance(500)
+        r.untilGo()
+        var real = GamepadFrame.idle; real.hat = 2
+        r.frame = real; r.advance(50)
+        XCTAssertEqual(r.core.state, .step(index: 0, phase: .window), "a real D-pad right does")
+    }
+
+    func testStoppingAtTheDriverPassQuestionOnAMappingTheDriverCannotTakeStandsTheDriverPassDown() {
+        let r = Rig()
+        r.mapping.setOutput(.pad(.r3), for: "paddle_outer_right")
+        r.prepare()
+        r.start(.engine, steps: [Rig.restStep], paths: ["engine", "driver"])
+        r.untilGo()
+        r.advance(2500)
+        let note = "Paddle outer right sends R3: this driver version cannot hide the controller's own press"
+        r.send(.status(Rig.status(armed: "inert", path: "driver") { $0.mappingNote = note }))
+        r.advance(10_100)
+        guard case .runAnyway(let text)? = r.prompts.last else { return XCTFail("\(r.prompts)") }
+        XCTAssertEqual(text, "Driver pass cannot be confirmed: \(note). Press Stop to keep the App result, or Reset that remap first.")
+        r.send(.stop)
+        XCTAssertEqual(r.core.standDownPass, 1)
+        let words = "Driver pass not run: this driver version cannot take this mapping (\(note)). The App pass is the result of this run."
+        XCTAssertEqual(r.core.standDownNote, words)
+        XCTAssertTrue(r.core.notes.contains(words))
+        XCTAssertEqual(r.reportsWritten.first?.complete, true, "the App pass has its report")
+        XCTAssertEqual(r.reportsWritten.count, 1, "no report for a pass that never ran")
+        // Run anyway is not a stand-down
+        let other = Rig()
+        other.mapping.setOutput(.pad(.r3), for: "paddle_outer_right")
+        other.prepare(status: Rig.status(armed: "inert", path: "driver") { $0.mappingNote = note })
+        other.start(.driver)
+        other.advance(10_100)
+        other.send(.runAnyway)
+        other.send(.stop)
+        XCTAssertNil(other.core.standDownPass)
+    }
+
+    // MARK: Row 12 on the model
+
+    private func row12Mapping() -> ControlMapping {
+        var m = ControlMapping.default
+        m.setOutput(.pad(.lt), for: "g1"); m.setOutput(.pad(.rt), for: "lt"); m.setOutput(.pad(.a), for: "x"); m.setOutput(.pad(.a), for: "g5")
+        return m
+    }
+
+    /// Runs one step of row 12; each entry of `script` is a receiver frame held for `hold` ms, the pad shows what the mapper gives.
+    private func run12(_ id: String, _ script: [GamepadFrame], hold: Double = 120, mapping: ControlMapping? = nil,
+                       padOverride: ((GamepadFrame) -> PadState)? = nil) -> DevAttempt {
+        let r = Rig()
+        r.mapping = mapping ?? row12Mapping()
+        r.prepare()
+        r.start(steps: [DevBuiltins.remapTriggers().steps.first { $0.id == id }!], recordReceiver: nil)
+        r.untilGo()
+        for f in script { r.move(f, padOverride?(f) ?? PassthroughPadMapper.padState(f, r.mapping), hold: hold) }
+        var spent = 0.0
+        while r.core.isRunning, spent < 20_000 { r.advance(100); spent += 100 }
+        return r.core.results[0][0]!.attempts.last!
+    }
+
+    private func frame(_ edit: (inout GamepadFrame) -> Void) -> GamepadFrame { var f = GamepadFrame.idle; edit(&f); return f }
+
+    func testG1SentToLTPullsLTInFullEachPressAndRTStaysStill() {
+        let down = frame { $0.buttons = 1 << 11 }
+        let att = run12("g1", [down, .idle, down, .idle])
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertEqual(att.metrics.values["lt.pulls"], 2)
+        // RT moving as well is a failure
+        let bad = run12("g1", [down, .idle, down, .idle], padOverride: { f in var p = PassthroughPadMapper.padState(f, self.row12Mapping()); if f.buttons != 0 { p.rt = 0.7 }; return p })
+        guard case .fail(let why) = bad.verdict else { return XCTFail("\(bad.verdict)") }
+        XCTAssertTrue(why.contains("RT moved although only LT was expected"), why)
+    }
+
+    func testLTSentToRTJudgesRTAndLTStill() {
+        let pull = frame { $0.lt = 1023 }
+        let att = run12("lt", [pull, .idle, pull, .idle])
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertEqual(att.metrics.values["rt.pulls"], 2)
+        XCTAssertEqual(att.metrics.values["lt.peak"], 0)
+        // the pad showing LT instead (LT not remapped after all) fails
+        let wrong = run12("lt", [pull, .idle, pull, .idle], padOverride: { f in var p = PadState(); p.lt = f.lt > 0 ? 1 : 0; return p })
+        guard case .fail(let why) = wrong.verdict else { return XCTFail("\(wrong.verdict)") }
+        XCTAssertTrue(why.contains("RT only reached"), why)
+    }
+
+    func testRTStillSendsRTAndAButtonChangeIsUnexpected() {
+        let pull = frame { $0.rt = 1023 }
+        XCTAssertEqual(run12("rt", [pull, .idle, pull, .idle]).verdict, .pass)
+        let leak = run12("rt", [pull, .idle, pull, .idle], padOverride: { f in var p = PassthroughPadMapper.padState(f, self.row12Mapping()); if f.rt > 0 { p.buttons = [.a] }; return p })
+        guard case .fail(let why) = leak.verdict else { return XCTFail("\(leak.verdict)") }
+        XCTAssertTrue(why.contains("unexpected change on A"), why)
+    }
+
+    func testThreeSourcesOnAEachShowAAndAHeldHandOverStaysHeld() {
+        let x = frame { $0.buttons = 1 << 2 }
+        let g5 = frame { $0.buttons = 1 << 15 }
+        XCTAssertEqual(run12("x", [x, .idle, x, .idle]).verdict, .pass)
+        XCTAssertEqual(run12("g5", [g5, .idle, g5, .idle]).verdict, .pass)
+        let both = frame { $0.buttons = (1 << 2) | (1 << 15) }
+        let att = run12("hold-x-then-g5", [x, both, g5, g5, .idle], hold: 700)
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertEqual(att.metrics.values["held.released"], 1)
+        // A dropping when X is let go is the failure the step is about
+        let drop = run12("hold-x-then-g5", [x, both, g5, g5, .idle], hold: 700,
+                         padOverride: { f in var p = PassthroughPadMapper.padState(f, self.row12Mapping()); if f == g5 { p.buttons = [] }; return p })
+        guard case .fail = drop.verdict else { return XCTFail("\(drop.verdict): \(drop.metrics.detail)") }
+    }
+
+    func testPullingLTAndRTThenLettingGoOfLTKeepsRTHeld() {
+        let both = frame { $0.lt = 1023; $0.rt = 1023 }
+        let rt = frame { $0.rt = 1023 }
+        let att = run12("pull-lt-rt-let-go-lt", [both, rt, rt, .idle], hold: 700)
+        XCTAssertEqual(att.verdict, .pass, att.metrics.detail)
+        XCTAssertEqual(att.metrics.values["held.released"], 1)
+    }
+
+    func testRowTwelveStepsPassOnTheModelAndNeedTheirPicks() {
+        let t = DevBuiltins.remapTriggers()
+        XCTAssertEqual(t.title, "Remap check: triggers and three sources (App, then Driver)")
+        XCTAssertEqual(t.steps.count, 9)
+        XCTAssertEqual(t.validation(layout: Self.layout).errors, [])
+        XCTAssertEqual(t.steps[0].requires?.mapping, ["g1": "lt", "lt": "rt", "x": "a", "g5": "a", "a": "a", "rt": "rt"])
+        XCTAssertTrue(t.steps.allSatisfy { $0.requires?.mapping == t.steps[0].requires?.mapping })
+        var m = ControlMapping.default
+        m.setOutput(.pad(.lt), for: "g1"); m.setOutput(.pad(.rt), for: "lt"); m.setOutput(.pad(.a), for: "x"); m.setOutput(.pad(.a), for: "g5")
+        let on = DevResolvedStep.resolve(template: t, mapping: m, layout: Self.layout)
+        XCTAssertTrue(on.allSatisfy { $0.skipReason == nil }, "\(on.compactMap(\.skipReason))")
+        XCTAssertEqual(on[1].expected, DevExpectedItems(lt: true))
+        XCTAssertEqual(on[2].expected, DevExpectedItems(rt: true))
+        XCTAssertEqual(on[3].expected, DevExpectedItems(rt: true))
+        XCTAssertTrue(DevResolvedStep.resolve(template: t, mapping: .default, layout: Self.layout).allSatisfy { $0.skipReason != nil })
+    }
+}
+
+private extension PadState {
+    func with(_ edit: (inout PadState) -> Void) -> PadState { var s = self; edit(&s); return s }
 }

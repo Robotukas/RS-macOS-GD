@@ -199,7 +199,7 @@ final class DevTemplateTests: XCTestCase {
     func testBundledFilesAreTheGeneratorsOutputAndValidate() throws {
         let entries = DevTemplates.load(folder: fresh(), layout: layout)
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, remap-g1-as-y, remap-swap-a-b, gkeys-volume, t7-rt-hold-toggle, t8-latency, echo-survey, in that order")
+        XCTAssertEqual(entries.map(\.id), generated.map(\.id), "full, sticks, gkeys, paddles-sax-echo, remap-g1-as-y, remap-swap-a-b, gkeys-volume, t7-rt-hold-toggle, t8-latency, echo-survey, remap-paddles, remap-triggers, in that order")
         for (entry, want) in zip(entries, generated) {
             XCTAssertEqual(entry.source, .builtIn)
             XCTAssertEqual(entry.url.lastPathComponent, DevBuiltins.fileName(for: want))
@@ -527,13 +527,13 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertEqual(entry("wrong")?.errors, ["wrong.json step 1: unknown control g6"])
         XCTAssertEqual(entry("wrong")?.isRunnable, false, "Start stays disabled while an error stands")
         XCTAssertNil(entry("notes"))
-        XCTAssertEqual(entries.prefix(10).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b", "gkeys-volume", "t7-rt-hold-toggle", "t8-latency", "echo-survey"], "built-ins and overrides first, in their order")
+        XCTAssertEqual(entries.prefix(12).map(\.id), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y", "remap-swap-a-b", "gkeys-volume", "t7-rt-hold-toggle", "t8-latency", "echo-survey", "remap-paddles", "remap-triggers"], "built-ins and overrides first, in their order")
         XCTAssertEqual(entries.last?.source, .local)
     }
 
     func testAMissingFolderIsFine() {
         let entries = DevTemplates.load(folder: fresh().appendingPathComponent("nope"), layout: layout)
-        XCTAssertEqual(entries.count, 10)
+        XCTAssertEqual(entries.count, 12)
     }
 
     func testWarningsKeepATemplateRunnable() throws {
@@ -626,21 +626,29 @@ final class DevTemplateTests: XCTestCase {
         XCTAssertNil(DevRequirementCheck.startBlock(template: t, mapping: picked, layout: layout))
     }
 
-    /// Existing templates are untouched by the volume work: a pinned hash of each (compact sorted JSON).
+    /// Existing templates are untouched by the volume work: a pinned hash of each (compact sorted JSON). Remap step 2, S4,
+    /// rewords three on purpose (row 1 and the G keys row: the Profile sentence; row 4: its notes, to say that one pad item
+    /// per press is judged and not the stored echo) and adds rows 11 and 12; every other row keeps its bytes.
     func testExistingBuiltInTemplatesAreByteIdenticalToBeforeTheVolumeWork() {
         let pinned = [
-            "full": "f2774bac2edda1ef627ee5f9c85fc89ee061d6ad3974acc6cba7bbb058578b0c",
             "sticks": "3201055f3b02ff3b155a69a575a4d948267316589d25d6e01ab1d0163b3cc027",
-            "gkeys": "baf29ee65edd062a11cdb234339abe3ee711048a48e9847ee72af64194741d20",
-            "paddles-sax-echo": "51bb4fed4932c429f1d5ab15451ade7a02a9c4706cfe45ddbc1243755e6d90d0",
             "remap-g1-as-y": "b276c1d6b2d0f3420bf96555b6a8d98306ddf8e98807f69d300d465c19e06394",
             "remap-swap-a-b": "1da25b925a427722b788c981e5b8b2464cfd05f775e10e6b1462f53feb4e5788",
             "t7-rt-hold-toggle": "ade46865ef35704efe98f415254c19892c7d145eae262930d3f8ddffa6c870f0",
             "t8-latency": "d5b889447f85385d388a08729da1b30e12c5dc81377379caadff72fb4b5f25d7",
+            // S4: reworded
+            "full": "e04b13b558ee5e6ff214ac40ae4eb9c7a7fa065364de3b356779120050f219e7",
+            "gkeys": "f710a263e2d659f738ecb3522b9a1bc80276c9d9c9131d3e327ff2f3da64eed2",
+            "paddles-sax-echo": "4321807e1174b6b99e39d352c6598b83827504ac83cb621b43159ddb936213f2",
+            // rows 7, 10, 11 and 12
+            "gkeys-volume": "85d2d9921996c40e1220d10ca83f9a010ac41cef99f97f342c5e4a6a8d031843",
+            "echo-survey": "c5018ca6cba3fdbd31f668bd14db83e3d5d3b0e314a7485324382dde99746364",
+            "remap-paddles": "314f6f1918672b457081b0cfdcfe3fad9548d3bba4c798b9c18b224a70e6fae9",
+            "remap-triggers": "f712c4cf913666ca4e3106c5b8a7e9c2a80a7e14a01718f85c2c4c01f947af18",
         ]
         let generated = DevBuiltins.generate(layout: layout)
-        XCTAssertEqual(Set(generated.map(\.id)), Set(pinned.keys).union(["gkeys-volume", "echo-survey"]))
-        for t in generated where t.id != "gkeys-volume" && t.id != "echo-survey" {
+        XCTAssertEqual(Set(generated.map(\.id)), Set(pinned.keys))
+        for t in generated {
             XCTAssertEqual(DevRunReportStore.templateSha256(t), pinned[t.id], "\(t.id) changed")
         }
     }
@@ -648,17 +656,20 @@ final class DevTemplateTests: XCTestCase {
     // MARK: echo survey (picker row 10) and the record kind
 
     func testTheEchoSurveyIsRowTenAmongTheBuiltInsAndAfterNineExistingOnes() {
-        XCTAssertEqual(DevTemplates.builtInOrder.count, 10)
+        XCTAssertEqual(DevTemplates.builtInOrder.count, 12)
         XCTAssertEqual(DevTemplates.builtInOrder[9], "echo-survey", "appended: rows 1 to 9 keep their numbers")
+        XCTAssertEqual(DevTemplates.builtInOrder[10], "remap-paddles", "row 11, appended after the survey")
+        XCTAssertEqual(DevTemplates.builtInOrder[11], "remap-triggers", "row 12")
         XCTAssertEqual(Array(DevTemplates.builtInOrder.prefix(9)), ["full", "sticks", "gkeys", "paddles-sax-echo", "remap-g1-as-y",
                                                                    "remap-swap-a-b", "gkeys-volume", "t7-rt-hold-toggle", "t8-latency"])
-        // A local file that used to be row 10 is row 11 now.
+        // A local file that used to be row 12 is row 13 now.
         let dir = fresh()
         let mine = DevTemplate(id: "volume-spike", title: "Mine", steps: [digital("a", ["a"])])
         try? mine.encoded().write(to: dir.appendingPathComponent("volume-spike.json"))
         let ids = DevTemplates.load(folder: dir, layout: layout).map(\.id)
         XCTAssertEqual(ids.firstIndex(of: "echo-survey"), 9)
-        XCTAssertEqual(ids.firstIndex(of: "volume-spike"), 10)
+        XCTAssertEqual(ids.firstIndex(of: "remap-triggers"), 11)
+        XCTAssertEqual(ids.firstIndex(of: "volume-spike"), 12)
     }
 
     func testEchoSurveyTemplateIsAsSpecifiedAndValidates() throws {
@@ -747,7 +758,7 @@ final class DevTemplateTests: XCTestCase {
         let v = DevVerdict.recorded("Recorded 3 receiver reports")
         XCTAssertEqual(v.tag, "recorded")
         XCTAssertEqual(v.reason, "Recorded 3 receiver reports")
-        XCTAssertEqual(v.label, "Recorded")
+        XCTAssertEqual(v.label, "recorded", "lower case and grey (mockup v7)")
         XCTAssertFalse(v.isPass)
         XCTAssertEqual(try JSONDecoder().decode(DevVerdict.self, from: try JSONEncoder().encode(v)), v)
         var att = DevAttempt()
@@ -762,5 +773,138 @@ final class DevTemplateTests: XCTestCase {
         // a verdict word from a newer build is still shown, not guessed at
         XCTAssertEqual(try JSONDecoder().decode(DevVerdict.self, from: Data(#"{"verdict":"surveyed","reason":"x"}"#.utf8)),
                        .inconclusive("unknown verdict \"surveyed\": x"))
+    }
+
+    // MARK: rows 11 and 12, builtInEcho, background, trigger expectations (remap step 2, S4)
+
+    func testBuiltInEchoAndBackgroundAreValidated() {
+        func errors(_ s: DevStep) -> [String] { template(steps: [s]).validation(layout: layout).errors }
+        var echo = DevStep(id: "p", kind: .digital, controls: ["paddle_inner_right"], title: "t")
+        var e = DevExpect(); e.builtInEcho = true; echo.expect = e
+        XCTAssertEqual(errors(echo), [])
+        var two = echo; two.controls = ["paddle_inner_right", "paddle_inner_left"]
+        XCTAssertEqual(errors(two), ["full.json step 1: expect builtInEcho needs exactly one control, and it must be a paddle or SAX key"])
+        var notKey = echo; notKey.controls = ["a"]
+        XCTAssertEqual(errors(notKey), ["full.json step 1: expect builtInEcho needs exactly one control, and it must be a paddle or SAX key"])
+        var trig = DevStep(id: "t", kind: .trigger, controls: ["lt"], title: "t"); trig.expect = e
+        XCTAssertEqual(errors(trig), ["full.json step 1: expect builtInEcho only applies to digital steps"])
+
+        var bg = DevStep(id: "b", kind: .digital, controls: ["a", "sax_left"], title: "t")
+        var be = DevExpect(); be.background = ["a"]; bg.expect = be
+        XCTAssertEqual(errors(bg), [])
+        be.background = ["b"]; bg.expect = be
+        XCTAssertEqual(errors(bg), ["full.json step 1: expect background names b, which is not one of the step's controls (the control that is held first has to be one of them, or the step never starts)"])
+        var rec = DevStep(id: "r", kind: .record, controls: ["a"], title: "t"); be.background = ["a"]; rec.expect = be
+        XCTAssertEqual(errors(rec), ["full.json step 1: expect background only applies to digital, trigger and held steps"])
+    }
+
+    func testNewExpectKeysAndTriggerExpectationsRoundTripAndStayOutOfOldFiles() throws {
+        var s = DevStep(id: "p", kind: .digital, controls: ["paddle_inner_right"], title: "t")
+        var e = DevExpect(); e.builtInEcho = true; e.background = ["paddle_inner_right"]; e.items = DevExpectedItems(lt: true)
+        s.expect = e
+        let t = template(steps: [s])
+        let back = try DevTemplate.decode(try t.encoded())
+        XCTAssertEqual(back, t)
+        XCTAssertEqual(back.steps[0].expect?.items, DevExpectedItems(lt: true))
+        // lt and rt are written only when set; the old shape of an expectation is unchanged
+        let old = String(decoding: try JSONEncoder().encode(DevExpectedItems(buttons: ["A"], hat: "N")), as: UTF8.self)
+        XCTAssertFalse(old.contains("\"lt\"")); XCTAssertFalse(old.contains("\"rt\""))
+        XCTAssertTrue(String(decoding: try JSONEncoder().encode(DevExpectedItems(rt: true)), as: UTF8.self).contains("\"rt\":true"))
+        let plain = String(decoding: try template(steps: [digital("a", ["a"])]).encoded(), as: UTF8.self)
+        XCTAssertFalse(plain.contains("builtInEcho")); XCTAssertFalse(plain.contains("background"))
+        // an older file without them decodes
+        XCTAssertEqual(try JSONDecoder().decode(DevExpectedItems.self, from: Data(#"{"buttons":["A"],"guide":false}"#.utf8)), DevExpectedItems(buttons: ["A"]))
+        // the hiding check of a report round-trips and is absent from a plain attempt
+        var att = DevAttempt()
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(att), as: UTF8.self).contains("hiding"))
+        var p = DevHiding.Press(); p.control = "paddle_outer_right"; p.press = 12; p.item = "D-pad right"; p.found = "seen"; p.result = "hidden"
+        att.hiding = DevHiding(conclusive: true, line: "controller's own button hidden: pass (D-pad right seen on the receiver, never on the pad)", presses: [p])
+        XCTAssertEqual(try JSONDecoder().decode(DevAttempt.self, from: try JSONEncoder().encode(att)).hiding, att.hiding)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(DevAttempt()), as: UTF8.self).contains("echoItem"))
+        att.echoItem = "D-pad down"
+        XCTAssertEqual(try JSONDecoder().decode(DevAttempt.self, from: try JSONEncoder().encode(att)).echoItem, "D-pad down")
+    }
+
+    func testRowElevenIsAsSpecified() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "remap-paddles" })
+        XCTAssertEqual(t.title, "Remap check: paddles and SAX (App, then Driver)")
+        XCTAssertEqual(DevTemplates.builtInOrder.firstIndex(of: "remap-paddles"), 10, "picker row 11")
+        XCTAssertEqual(t.paths ?? [], ["engine", "driver"])
+        XCTAssertEqual(t.recordReceiver, true)
+        XCTAssertEqual(t.validation(layout: layout).messages, [])
+        XCTAssertEqual(t.steps.map(\.title), [
+            "Hands off everything",
+            "Press Paddle outer right ten times", "Press Paddle outer left ten times", "Press Paddle inner left ten times",
+            "Press SAX left ten times", "Press SAX right ten times", "Press Paddle inner right twice",
+            "Hold Paddle outer right, press D-pad up twice", "Hold Paddle outer right, press D-pad left twice",
+            "Hold D-pad left, press Paddle outer right twice", "Hold A, press SAX left twice",
+            "Both outer paddles together twice",
+            "Press D-pad right twice alone", "Press A twice alone",
+        ])
+        let need = ["paddle_outer_right": "r3", "paddle_outer_left": "l3", "paddle_inner_left": "nothing",
+                    "sax_left": "view", "sax_right": "menu", "paddle_inner_right": "built_in"]
+        for step in t.steps { XCTAssertEqual(step.requires?.mapping, need, step.id) }
+        // every expectation is written out, none is left to the mapper
+        for step in t.steps where step.devKind == .digital && step.expect?.builtInEcho != true {
+            XCTAssertNotNil(step.expect?.items, step.id)
+        }
+        func items(_ id: String) -> DevExpectedItems? { t.steps.first { $0.id == id }?.expect?.items }
+        XCTAssertEqual(items("outer-right"), DevExpectedItems(buttons: ["RS"]))
+        XCTAssertEqual(items("outer-left"), DevExpectedItems(buttons: ["LS"]))
+        XCTAssertEqual(items("inner-left"), DevExpectedItems())
+        XCTAssertEqual(items("sax-left"), DevExpectedItems(buttons: ["View"]))
+        XCTAssertEqual(items("sax-right"), DevExpectedItems(buttons: ["Menu"]))
+        XCTAssertEqual(t.steps.first { $0.id == "inner-right-profile" }?.expect?.builtInEcho, true)
+        XCTAssertEqual(items("outer-right-dpad-up"), DevExpectedItems(hat: "N"))
+        XCTAssertEqual(items("outer-right-dpad-left"), DevExpectedItems(hat: "W"))
+        XCTAssertEqual(items("dpad-left-outer-right"), DevExpectedItems(buttons: ["RS"]))
+        XCTAssertEqual(items("a-held-sax-left"), DevExpectedItems(buttons: ["View"]))
+        XCTAssertEqual(items("together-outer"), DevExpectedItems(buttons: ["LS", "RS"]))
+        XCTAssertEqual(t.steps.first { $0.id == "outer-right-dpad-left" }?.controls, ["paddle_outer_right", "dpad_left"])
+        XCTAssertEqual(t.steps.first { $0.id == "dpad-left-outer-right" }?.controls, ["dpad_left", "paddle_outer_right"])
+        XCTAssertEqual(t.steps.first { $0.id == "dpad-left-outer-right" }?.expect?.background, ["dpad_left"])
+        XCTAssertEqual(t.steps.first { $0.id == "a-held-sax-left" }?.expect?.background, ["a"])
+        for id in ["outer-right-dpad-up", "outer-right-dpad-left", "dpad-left-outer-right", "a-held-sax-left"] {
+            XCTAssertTrue(t.steps.first { $0.id == id }!.detail.hasPrefix("Press the held control first: press and hold "), id)
+        }
+        XCTAssertEqual(t.steps.first { $0.id == "outer-right" }?.expect?.times, 10)
+        // the notes list the picks, the Profile rule, the order rule, and end the first part with the reset
+        XCTAssertTrue(t.notes.hasPrefix("Picks: Paddle outer right → R3, Paddle outer left → L3, Paddle inner left → Nothing, SAX left → View, SAX right → Menu; Paddle inner right stays on Controller's profile. Do not press Profile. Press the held control first, as the step says. Afterwards: Mapping → Reset all remaps."), t.notes)
+        // plain words
+        for text in t.steps.flatMap({ [$0.title, $0.detail] }) + [t.notes] {
+            for word in ["paddle_", "sax_", "dpad_", "physicalBits", "builtInEcho", "background"] { XCTAssertFalse(text.contains(word), "\"\(word)\" in: \(text)") }
+        }
+    }
+
+    func testRowTwelveIsAsSpecified() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "remap-triggers" })
+        XCTAssertEqual(t.title, "Remap check: triggers and three sources (App, then Driver)")
+        XCTAssertEqual(DevTemplates.builtInOrder.firstIndex(of: "remap-triggers"), 11, "picker row 12")
+        XCTAssertEqual(t.paths ?? [], ["engine", "driver"])
+        XCTAssertEqual(t.validation(layout: layout).messages, [])
+        XCTAssertEqual(t.steps.map(\.title), [
+            "Hands off everything", "Press G1 twice", "Pull LT fully twice", "Pull RT fully twice", "Press X twice", "Press G5 twice",
+            "Press A twice", "Hold X until A shows, then add G5, then let go of X", "Pull LT and RT together, let go of LT",
+        ])
+        for step in t.steps { XCTAssertEqual(step.requires?.mapping, ["g1": "lt", "lt": "rt", "x": "a", "g5": "a", "a": "a", "rt": "rt"], step.id) }
+        XCTAssertEqual(t.steps[7].expect?.releases, ["x"]); XCTAssertEqual(t.steps[7].expect?.item, "A")
+        XCTAssertEqual(t.steps[8].expect?.releases, ["lt"]); XCTAssertEqual(t.steps[8].expect?.item, "RT")
+        XCTAssertNil(t.recordReceiver, "row 12 hides no paddle echo")
+        XCTAssertTrue(t.notes.hasPrefix("Picks: G1 → LT, LT → RT (RT still sends RT), X → A, G5 → A. Do not press Profile. Afterwards: Mapping → Reset all remaps."), t.notes)
+    }
+
+    func testRowFourNotesNameTheRuleAndKeepTheSteps() throws {
+        let t = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "paddles-sax-echo" })
+        XCTAssertEqual(t.steps.map(\.id), ["paddle_outer_left", "paddle_inner_left", "paddle_inner_right", "paddle_outer_right", "sax_left", "sax_right"])
+        XCTAssertTrue(t.notes.contains("exactly one pad item"), t.notes)
+        XCTAssertTrue(t.notes.contains("dev-run-compare.py"))
+        XCTAssertFalse(t.notes.contains("factory echo"), "the stored echo is not the oracle any more")
+        // the Profile step says what happens to remapped keys
+        let full = try XCTUnwrap(DevBuiltins.generate(layout: layout).first { $0.id == "full" })
+        let profile = try XCTUnwrap(full.steps.first { $0.id == "profile" })
+        XCTAssertTrue(profile.detail.hasSuffix("Each press also switches the controller's own profile. Paddles and SAX keys left on Controller's profile change with it; remapped ones keep sending only your pick."), profile.detail)
+        // untouched paddles in rows 1 and 4 are judged by the rule without saying so
+        let resolved = DevResolvedStep.resolve(template: t, mapping: .default, layout: layout)
+        XCTAssertTrue(resolved.allSatisfy(\.builtInEcho))
     }
 }

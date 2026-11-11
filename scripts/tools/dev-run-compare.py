@@ -12,6 +12,20 @@ A step with expect.volume carries a `volume` object in its attempt (what the Mac
 the tables get a volume column ("unchanged: pass ..."; an inconclusive volume verdict reads "cannot judge", never pass or
 fail), and a paired step whose volume verdict differs is marked "volume".
 
+Remap step 2 keys (docs/protocol/developer-mode-files.md):
+- a step on an untouched paddle or SAX key (`builtInEcho`) carries `echoItem`, the pad item each press brought ("D-pad
+  down"); the tables get an "echo" column, the side by side names it per key on both paths, and a pair whose item differs
+  (or that only one pass has) is marked "echo" and fails the comparison: the same key must bring the same item on the App
+  and on the Driver;
+- a step with a remapped paddle or SAX key in a template that records the receiver carries `hiding` (`conclusive`, a `line`
+  and one entry per press): the tables get a "hiding" column ("conclusive", "cannot judge: ...", "not exercised (...)"), and
+  a pair whose conclusive flag differs is marked "hiding";
+- `expected` may carry `lt` and `rt` (the pad triggers a step pulls); the tables get an "expected" column ("LT, RT still")
+  when some step has them;
+- `echo.*Before` / `echo.*After` values (the run's own filter, before and after each step) become one "echo counters"
+  cell of the change over the step ("hidden +120, recovered +4"), shown when a report has them. The Driver's own counters
+  (`echoValid`, `echoHiddenFrames` ...) come with the driver update and are not read here yet.
+
 Exit 0: nothing differs. 1: a paired verdict differs or a marked difference exists. 2: a file cannot be used
 (unreadable, not a report, or a schema newer than 1).
 """
@@ -121,6 +135,73 @@ def volume_text(vol):
     return "%s (%s, %s)%s" % (head, counts, levels, why)
 
 
+def echo_item_of(attempt):
+    """The pad item an untouched paddle or SAX key brought (`echoItem`), or None."""
+    v = attempt.get("echoItem")
+    return v if isinstance(v, str) and v else None
+
+
+def hiding_of(attempt):
+    """The attempt's hiding check reduced to what the tables show, or None when the step made no claim."""
+    h = attempt.get("hiding")
+    if not isinstance(h, dict):
+        return None
+    line = str(h.get("line") or "")
+    prefix = "controller's own button hidden: "
+    text = line[len(prefix):] if line.startswith(prefix) else line
+    presses = [p for p in (h.get("presses") or []) if isinstance(p, dict)]
+    return {
+        "conclusive": bool(h.get("conclusive")),
+        "text": text,
+        "presses": len(presses),
+        "hidden": sum(1 for p in presses if p.get("result") == "hidden"),
+    }
+
+
+def hiding_word(hiding):
+    """'conclusive (3 of 10 presses)', or the reason it was not."""
+    if hiding is None:
+        return DASH
+    if hiding["conclusive"]:
+        return "conclusive" + (" (%d of %d presses)" % (hiding["hidden"], hiding["presses"]) if hiding["presses"] else "")
+    return hiding["text"] or "not conclusive"
+
+
+def expected_text(expected):
+    """'A, hat N' / 'LT, RT still' from the report's expected object; the pad triggers a step pulls are `lt` and `rt`."""
+    if not isinstance(expected, dict):
+        return DASH
+    parts = [str(b) for b in (expected.get("buttons") or [])]
+    if expected.get("hat"):
+        parts.append("hat %s" % expected["hat"])
+    if expected.get("guide"):
+        parts.append("Guide")
+    lt, rt = bool(expected.get("lt")), bool(expected.get("rt"))
+    if lt:
+        parts.append("LT")
+    if rt:
+        parts.append("RT")
+    if lt != rt:
+        parts.append(("RT" if lt else "LT") + " still")
+    return ", ".join(parts) if parts else DASH
+
+
+ECHO_COUNTER_NAMES = (("hiddenFrames", "hidden"), ("recoveredFrames", "recovered"), ("other", "other"), ("unconfirmed", "unconfirmed"))
+
+
+def echo_counters(vals):
+    """The change of the run's own filter counters over one step ('hidden +120, recovered +4'), or None without them."""
+    out = []
+    seen = False
+    for key, word in ECHO_COUNTER_NAMES:
+        b, a = num(vals.get("echo.%sBefore" % key)), num(vals.get("echo.%sAfter" % key))
+        if b is None or a is None:
+            continue
+        seen = True
+        out.append("%s %+d" % (word, int(a - b)))
+    return ", ".join(out) if seen else None
+
+
 def rows(report):
     out = []
     for i, step in enumerate(report.get("steps") or []):
@@ -130,7 +211,12 @@ def rows(report):
         m = a.get("metrics") or {}
         tag, reason = verdict_of(a)
         vals = m.get("values") if isinstance(m.get("values"), dict) else {}
+        hiding = hiding_of(a)
         out.append({
+            "echoItem": echo_item_of(a),
+            "hiding": hiding,
+            "expected": expected_text(step.get("expected")),
+            "echoCounters": echo_counters(vals),
             "index": step.get("index", i),
             "stepId": step.get("stepId", ""),
             "kind": step.get("kind", ""),
@@ -205,6 +291,19 @@ def report_table(rs):
     vol = any(r["volume"] is not None for r in rs)
     if vol:
         head.append("volume")
+    # The expected column appears when a step pulls pad triggers (`lt` / `rt` in `expected`), the one thing the tables did not show.
+    exp = any(("LT" in r["expected"] or "RT" in r["expected"]) for r in rs)
+    if exp:
+        head.append("expected")
+    echo = any(r["echoItem"] is not None for r in rs)
+    if echo:
+        head.append("echo")
+    hid = any(r["hiding"] is not None for r in rs)
+    if hid:
+        head.append("hiding")
+    ctr = any(r["echoCounters"] is not None for r in rs)
+    if ctr:
+        head.append("echo counters")
     head.append("effectivePath")
     body = []
     for r in rs:
@@ -214,6 +313,14 @@ def report_table(rs):
             row += [fmt(r["latN"]), fmt(r["latP50"], 3), fmt(r["latP99"], 3), fmt(r["latUnmatched"])]
         if vol:
             row.append(volume_text(r["volume"]))
+        if exp:
+            row.append(r["expected"])
+        if echo:
+            row.append(r["echoItem"] or DASH)
+        if hid:
+            row.append(hiding_word(r["hiding"]))
+        if ctr:
+            row.append(r["echoCounters"] or DASH)
         row.append(fmt(r["effectivePath"]))
         body.append(row)
     return table(head, body) if body else "(no steps)"
@@ -293,6 +400,11 @@ def compare(a, b, loss_threshold, onset_threshold, latency_threshold=0.1):
                 marks.append("verdict")
             if x["volume"] is not None and y["volume"] is not None and x["volume"]["verdict"] != y["volume"]["verdict"]:
                 marks.append("volume")
+            # The same key must bring the same pad item on both paths; a pass that only one side has is a difference too.
+            if x["echoItem"] != y["echoItem"] and (x["echoItem"] is not None or y["echoItem"] is not None):
+                marks.append("echo")
+            if x["hiding"] is not None and y["hiding"] is not None and x["hiding"]["conclusive"] != y["hiding"]["conclusive"]:
+                marks.append("hiding")
             d_loss = delta(x["lossRatio"], y["lossRatio"])
             if d_loss is not None and abs(d_loss) > loss_threshold + 1e-12:
                 marks.append("lossRatio")
@@ -326,6 +438,12 @@ def side_by_side(cmp):
     vol = any((p["a"] and p["a"]["volume"]) or (p["b"] and p["b"]["volume"]) for p in cmp["pairs"])
     if vol:
         head.append("volume A/B")
+    echo = any((p["a"] and p["a"]["echoItem"]) or (p["b"] and p["b"]["echoItem"]) for p in cmp["pairs"])
+    if echo:
+        head.append("echo A/B")
+    hid = any((p["a"] and p["a"]["hiding"]) or (p["b"] and p["b"]["hiding"]) for p in cmp["pairs"])
+    if hid:
+        head.append("hiding A/B")
     head.append("diff")
     body = []
     for p in cmp["pairs"]:
@@ -342,6 +460,10 @@ def side_by_side(cmp):
                     fmt(x["latP99"], 3) if x else DASH, fmt(y["latP99"], 3) if y else DASH, signed(p["latP99Delta"], 3)]
         if vol:
             row.append("%s / %s" % (volume_word(x["volume"]) if x else DASH, volume_word(y["volume"]) if y else DASH))
+        if echo:
+            row.append("%s / %s" % ((x["echoItem"] or DASH) if x else DASH, (y["echoItem"] or DASH) if y else DASH))
+        if hid:
+            row.append("%s / %s" % (hiding_word(x["hiding"]) if x else DASH, hiding_word(y["hiding"]) if y else DASH))
         row.append(("* " + ",".join(p["marks"])) if p["marks"] else "")
         body.append(row)
     return table(head, body) if body else "(no steps)"
@@ -394,7 +516,7 @@ def main(argv=None):
                 print("WARNING: run %s is incomplete; steps it did not reach show %s" % (label, DASH))
         if cmp["headerWarnings"]:
             print()
-        print("Side by side (paired by stepId; * = verdict or volume verdict change, lossRatio Δ > %s, onsetMs Δ > %s ms, lat.p50Ms Δ > %s ms)" %
+        print("Side by side (paired by stepId; * = verdict, volume verdict, echo item or hiding change, lossRatio Δ > %s, onsetMs Δ > %s ms, lat.p50Ms Δ > %s ms)" %
               (fmt(args.loss_threshold, 3), fmt(args.onset_threshold, 2), fmt(args.latency_threshold, 3)))
         print(side_by_side(cmp))
         n = sum(1 for p in cmp["pairs"] if p["marks"])
