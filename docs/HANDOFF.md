@@ -46,7 +46,7 @@ the old chat. Read in this order:
   - Undo of a hand-set key mapping is always scoped:
     `hidutil property --matching '{"VendorID":0x1b1c,"ProductID":0x3a08,"PrimaryUsagePage":12}' --set '{"UserKeyMapping":[]}'`
     (never a bare `--set`: it writes to every keyboard).
-- **R6 (remap step 2) in progress, phase S4 (Developer-mode judges, rows 11 and 12, app-only install, the owner's sitting; S3 App-path code done 2026-11-11, not yet installed)**; see `docs/plans/remap-step2-plan.md` (ledger S0–S9 with S2b; the owner's answers
+- **R6 (remap step 2) in progress, phase S4(d) (the owner's sitting: rows 11 and 12; S3 and S4 code installed app-only 2026-11-11 11:21 on driver 24, 1158 Swift / 129 Python tests, not yet seen on screen; see the plan's "S4 notes")**; see `docs/plans/remap-step2-plan.md` (ledger S0–S9 with S2b; the owner's answers
   are in its "S0 answers": "OK all", which includes "apprall" and a push after each phase). During R6 the progress
   line counts that ledger. One driver replacement (24 → 25) comes in S7, by the takeover plan §7.1.
 - **Carried from T8:** Shadow play test with the Slipstream receiver *not* USB-forwarded by the Shadow client; a 30-flick

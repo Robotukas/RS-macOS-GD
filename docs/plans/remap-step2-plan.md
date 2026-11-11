@@ -1779,3 +1779,15 @@ answer, 08:19: "apprall" (approve all).
 - Q11 (what a Profile press can still upset): accepted.
 - Mockup v7b (`docs/mockups/remap-buttons-v7b.html`): approved by the same answer, so the UI code of S3(c) and rows 11
   and 12 may be written.
+
+## S4 notes (2026-11-11)
+
+- Code: S4(a,b) `a90a4c1`; an independent read-only review of `5d217b4..a90a4c1` before the install raised 16 findings,
+  13 confirmed (no blocker, 3 major: the result table and finished text after a stood-down Driver pass, and the template
+  notes never shown), all fixed in `c59bda8`. 1158 Swift and 129 Python tests green; the survey gate on the S2 fixture
+  passes.
+- Installed app-only at 11:21 with `--same-build` (driver build 24, activated enabled; engine connected). Layout and
+  mapping equal to their `pre-install-1120` copies after the relaunch; no before-edit file.
+- Not done: the on-screen check of every paddle and SAX menu (S4(c)). The owner declined screen control of GDHub, so
+  nothing of S3(c) and S4 has been seen on screen by the implementer; the owner's sitting is the first look.
+- Open: S4(d), the owner's sitting (rows 11 and 12 on App; Stop at the Driver-pass prompt; rows 4, 1 and 7).
