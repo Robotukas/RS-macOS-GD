@@ -1763,3 +1763,13 @@ remove the known extra button in the same report and work out the real D-pad dir
 design that is reviewed before any code), or keep paddles and SAX keys as today for this step (Q8 b). The plan's
 sections on the hiding rule are rewritten as plan v3 and reviewed again before S3.
 
+
+## S2b answers (2026-11-11)
+
+Asked on 2026-11-11 with the two limits of "Questions for the owner (v3)" and mockup v7b sent in chat. The owner's
+answer, 08:19: "apprall" (approve all).
+
+- Q10 (both paddles of a pair remapped and held together): accepted.
+- Q11 (what a Profile press can still upset): accepted.
+- Mockup v7b (`docs/mockups/remap-buttons-v7b.html`): approved by the same answer, so the UI code of S3(c) and rows 11
+  and 12 may be written.
