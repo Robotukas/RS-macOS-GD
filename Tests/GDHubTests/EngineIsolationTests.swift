@@ -23,7 +23,7 @@ final class EngineIsolationTests: XCTestCase {
         for rel in ["Output/VirtualHID/DextClient.swift", "Output/VirtualHID/DextControlling.swift",
                     "Output/VirtualHID/DextProtocol.swift", "Output/VirtualHID/DextStatusPoller.swift",
                     "Output/VirtualHID/HIDReportSizer.swift", "Mapping/ControlMapping.swift", "Mapping/MappingStore.swift",
-                    "HID/ConsumerKeyMute.swift", "Mapping/MapBlobEncoder.swift",
+                    "HID/ConsumerKeyMute.swift", "Mapping/MapBlobEncoder.swift", "Mapping/EchoFilter.swift",
                     "Devices/EnvisionPro/EnvisionProReport.swift", "Shared/ControllerStatus.swift", "Shared/GDHubID.swift"] {
             urls.append(root.appendingPathComponent(rel))
         }
@@ -35,7 +35,7 @@ final class EngineIsolationTests: XCTestCase {
         for n in ["EngineMain.swift", "EngineService.swift", "EngineCore.swift", "GamepadHIDReader.swift",
                   "ControllerPresence.swift", "PowerObserver.swift", "ThrottleCheck.swift", "MappingWatcher.swift",
                   "DextClient.swift", "VirtualPadSink.swift", "ControlMapping.swift",
-                  "ConsumerKeyMute.swift", "MapBlobEncoder.swift"] {
+                  "ConsumerKeyMute.swift", "MapBlobEncoder.swift", "EchoFilter.swift"] {
             XCTAssertTrue(names.contains(n), "\(n) is not in the scanned set")
         }
     }
